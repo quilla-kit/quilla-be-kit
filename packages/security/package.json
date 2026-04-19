@@ -1,0 +1,57 @@
+{
+  "name": "@quilla-kit/security",
+  "version": "0.1.0",
+  "description": "Security primitives: JWT, password hashing, authorization decorators, identity → IExecutionContext materialization.",
+  "license": "MIT",
+  "author": "Max Martinez",
+  "homepage": "https://github.com/quilla-kit/quilla-kit/tree/main/packages/security",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/quilla-kit/quilla-kit.git",
+    "directory": "packages/security"
+  },
+  "bugs": {
+    "url": "https://github.com/quilla-kit/quilla-kit/issues"
+  },
+  "keywords": [
+    "security",
+    "authentication",
+    "authorization",
+    "jwt",
+    "password",
+    "identity",
+    "typescript"
+  ],
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": ["dist", "README.md", "LICENSE"],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "test": "vitest run --passWithNoTests",
+    "clean": "rm -rf dist *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@quilla-kit/ddd": "workspace:^",
+    "@quilla-kit/execution-context": "workspace:^",
+    "@quilla-kit/observability": "workspace:^",
+    "@quilla-kit/http": "workspace:^",
+    "@quilla-kit/persistence": "workspace:^",
+    "@quilla-kit/messaging": "workspace:^",
+    "@quilla-kit/runtime": "workspace:^"
+  }
+}

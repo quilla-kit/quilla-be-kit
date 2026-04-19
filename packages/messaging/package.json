@@ -1,0 +1,45 @@
+{
+  "name": "@quilla-kit/messaging",
+  "version": "0.1.0",
+  "description": "Messaging infrastructure: IEventBus, IEventConsumer, ILocalOutbox, EventSubscriptionBuilder, OutboxForwarder.",
+  "license": "MIT",
+  "author": "Max Martinez",
+  "homepage": "https://github.com/quilla-kit/quilla-kit/tree/main/packages/messaging",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/quilla-kit/quilla-kit.git",
+    "directory": "packages/messaging"
+  },
+  "bugs": {
+    "url": "https://github.com/quilla-kit/quilla-kit/issues"
+  },
+  "keywords": ["messaging", "event-bus", "outbox", "integration-events", "typescript"],
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": ["dist", "README.md", "LICENSE"],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "test": "vitest run --passWithNoTests",
+    "clean": "rm -rf dist *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@quilla-kit/ddd": "workspace:^",
+    "@quilla-kit/execution-context": "workspace:^",
+    "@quilla-kit/observability": "workspace:^"
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "files": [],
+  "references": [
+    { "path": "./packages/ddd" },
+    { "path": "./packages/lifecycle" },
+    { "path": "./packages/observability" },
+    { "path": "./packages/execution-context" },
+    { "path": "./packages/http" },
+    { "path": "./packages/persistence" },
+    { "path": "./packages/messaging" },
+    { "path": "./packages/runtime" },
+    { "path": "./packages/security" }
+  ]
+}

@@ -1,0 +1,45 @@
+{
+  "name": "@quilla-kit/persistence",
+  "version": "0.1.0",
+  "description": "Persistence primitives: IUnitOfWork, base DAOs with auto-SQL, base repositories, OutboxRepository, UnitOfWorkWithOutbox.",
+  "license": "MIT",
+  "author": "Max Martinez",
+  "homepage": "https://github.com/quilla-kit/quilla-kit/tree/main/packages/persistence",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/quilla-kit/quilla-kit.git",
+    "directory": "packages/persistence"
+  },
+  "bugs": {
+    "url": "https://github.com/quilla-kit/quilla-kit/issues"
+  },
+  "keywords": ["repository", "unit-of-work", "outbox", "dao", "ddd", "typescript"],
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": ["dist", "README.md", "LICENSE"],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "test": "vitest run --passWithNoTests",
+    "clean": "rm -rf dist *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@quilla-kit/ddd": "workspace:^",
+    "@quilla-kit/execution-context": "workspace:^",
+    "@quilla-kit/observability": "workspace:^"
+  }
+}

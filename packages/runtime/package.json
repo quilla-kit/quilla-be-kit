@@ -1,0 +1,45 @@
+{
+  "name": "@quilla-kit/runtime",
+  "version": "0.1.0",
+  "description": "Runtime composition primitives: IRegisteredModule, ModuleRegistry, wiring helpers for a quilla-kit process.",
+  "license": "MIT",
+  "author": "Max Martinez",
+  "homepage": "https://github.com/quilla-kit/quilla-kit/tree/main/packages/runtime",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/quilla-kit/quilla-kit.git",
+    "directory": "packages/runtime"
+  },
+  "bugs": {
+    "url": "https://github.com/quilla-kit/quilla-kit/issues"
+  },
+  "keywords": ["runtime", "composition-root", "module-registry", "wiring", "typescript"],
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": ["dist", "README.md", "LICENSE"],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "test": "vitest run --passWithNoTests",
+    "clean": "rm -rf dist *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@quilla-kit/lifecycle": "workspace:^",
+    "@quilla-kit/execution-context": "workspace:^",
+    "@quilla-kit/observability": "workspace:^"
+  }
+}

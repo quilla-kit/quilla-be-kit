@@ -1,0 +1,40 @@
+{
+  "name": "@quilla-kit/lifecycle",
+  "version": "0.1.0",
+  "description": "Lifecycle primitives: IDisposable and a 5-phase, idempotent, time-bounded ShutdownManager.",
+  "license": "MIT",
+  "author": "Max Martinez",
+  "homepage": "https://github.com/quilla-kit/quilla-kit/tree/main/packages/lifecycle",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/quilla-kit/quilla-kit.git",
+    "directory": "packages/lifecycle"
+  },
+  "bugs": {
+    "url": "https://github.com/quilla-kit/quilla-kit/issues"
+  },
+  "keywords": ["shutdown", "graceful-shutdown", "lifecycle", "disposable", "typescript"],
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": ["dist", "README.md", "LICENSE"],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "test": "vitest run --passWithNoTests",
+    "clean": "rm -rf dist *.tsbuildinfo"
+  }
+}
