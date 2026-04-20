@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { AggregateRoot } from '../../src/entities/aggregate-root.js';
 import type { BaseEntityProps } from '../../src/entities/entity.js';
-import { DomainEvent } from '../../src/events/domain-event.js';
+import { AggregateRoot } from '../../src/entities/root.aggregate.js';
+import { DomainEvent } from '../../src/events/domain.event.js';
 
 class Bumped extends DomainEvent<{ by: number }> {}
 

@@ -1,3 +1,3 @@
-export { AggregateRoot } from './aggregate-root.js';
+export { AggregateRoot } from './root.aggregate.js';
 export type { BaseEntityProps, EntityId } from './entity.js';
 export { Entity } from './entity.js';

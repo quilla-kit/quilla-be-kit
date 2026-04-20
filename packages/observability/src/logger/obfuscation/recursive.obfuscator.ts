@@ -1,6 +1,6 @@
 import type { webcrypto } from 'node:crypto';
 import { encryptValue, hmacValue, importObfuscationKey } from './crypto.js';
-import type { LogObfuscationStrategy, LogObfuscator } from './log-obfuscator.js';
+import type { LogObfuscationStrategy, LogObfuscator } from './log.obfuscator.js';
 
 type CryptoKey = webcrypto.CryptoKey;
 

@@ -1,12 +1,12 @@
-import { JsonFormatter } from './json-formatter.js';
-import type { LogEntryEnricher } from './log-entry-enricher.js';
-import type { LogLevel } from './log-entry.js';
-import type { LogFormatter } from './log-formatter.js';
-import type { LogObserver } from './log-observer.js';
+import { JsonFormatter } from './json.formatter.js';
+import type { LogEntryEnricher } from './log-entry.enricher.js';
+import type { LogLevel } from './log.entry.js';
+import type { LogFormatter } from './log.formatter.js';
+import type { LogObserver } from './log.observer.js';
 import type { Logger } from './logger.js';
-import type { LogObfuscator } from './obfuscation/log-obfuscator.js';
-import { PrettyFormatter } from './pretty-formatter.js';
-import { StructuredLogger } from './structured-logger.js';
+import type { LogObfuscator } from './obfuscation/log.obfuscator.js';
+import { PrettyFormatter } from './pretty.formatter.js';
+import { StructuredLogger } from './structured.logger.js';
 
 export type LogOutputMode = 'json' | 'pretty';
 

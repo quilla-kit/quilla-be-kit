@@ -1,5 +1,5 @@
 import type { webcrypto } from 'node:crypto';
-import type { LogObfuscationStrategy } from './log-obfuscator.js';
+import type { LogObfuscationStrategy } from './log.obfuscator.js';
 
 type CryptoKey = webcrypto.CryptoKey;
 

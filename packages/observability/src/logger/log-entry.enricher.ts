@@ -1,4 +1,4 @@
-import type { LogContext } from './log-entry.js';
+import type { LogContext } from './log.entry.js';
 
 export type LogEnricherContribution = {
   readonly context?: Partial<LogContext>;

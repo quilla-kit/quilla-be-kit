@@ -1,5 +1,5 @@
-import type { LogEntry, LogLevel } from './log-entry.js';
-import type { LogFormatter } from './log-formatter.js';
+import type { LogEntry, LogLevel } from './log.entry.js';
+import type { LogFormatter } from './log.formatter.js';
 
 const RESET = '\x1b[0m';
 const BOLD = '\x1b[1m';

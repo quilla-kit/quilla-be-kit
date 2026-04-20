@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { DomainEvent } from '../../src/events/domain-event.js';
+import { DomainEvent } from '../../src/events/domain.event.js';
 import { EnvelopedEvent } from '../../src/events/envelope.js';
-import { EventKind, EventMetadata } from '../../src/events/event-metadata.js';
+import { EventKind, EventMetadata } from '../../src/events/event.metadata.js';
 
 class Sample extends DomainEvent<{ n: number }> {}
 

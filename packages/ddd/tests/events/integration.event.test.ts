@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { IntegrationEvent } from '../../src/events/integration-event.js';
+import { IntegrationEvent } from '../../src/events/integration.event.js';
 
 class UserAuthenticated extends IntegrationEvent<{ userId: string }> {}
 

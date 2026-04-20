@@ -38,18 +38,59 @@ src/
 src/
 ├── logger/
 │   ├── obfuscation/    (a real sub-topic within logger)
-│   ├── json-formatter.ts
-│   ├── log-entry.ts
-│   ├── log-formatter.ts
-│   ├── log-observer.ts
-│   ├── logger-factory.ts
+│   ├── json.formatter.ts
+│   ├── log.entry.ts
+│   ├── log.formatter.ts
+│   ├── log.observer.ts
+│   ├── log-entry.enricher.ts
+│   ├── logger.factory.ts
 │   ├── logger.ts
-│   ├── noop-logger.ts
-│   ├── pretty-formatter.ts
-│   ├── structured-logger.ts
+│   ├── noop.logger.ts
+│   ├── pretty.formatter.ts
+│   ├── structured.logger.ts
 │   └── index.ts
 └── index.ts
 ```
+
+## Source file naming
+
+Files follow the shape **`{subject}.{type}.ts`** where:
+
+- **`{type}`** is the single-word role suffix — always simple, never compound.
+  Current vocabulary: `provider`, `factory`, `formatter`, `event`, `metadata`,
+  `enricher`, `observer`, `obfuscator`, `logger`, `entry`, `aggregate`, `root`.
+- **`{subject}`** is everything before the dot. May contain hyphens for
+  multi-word subjects (`execution-context`, `async-execution-context`,
+  `log-entry`).
+
+**Examples:**
+
+| File | Subject | Type |
+| --- | --- | --- |
+| `domain.event.ts` | `domain` | `event` |
+| `integration.event.ts` | `integration` | `event` |
+| `event.metadata.ts` | `event` | `metadata` |
+| `execution-context.provider.ts` | `execution-context` | `provider` |
+| `async-execution-context.provider.ts` | `async-execution-context` | `provider` |
+| `execution-context.enricher.ts` | `execution-context` | `enricher` |
+| `log-entry.enricher.ts` | `log-entry` | `enricher` |
+| `structured.logger.ts` | `structured` | `logger` |
+| `recursive.obfuscator.ts` | `recursive` | `obfuscator` |
+| `root.aggregate.ts` | `root` | `aggregate` |
+
+**Do not use compound type suffixes.** Never `context-provider`,
+`context-enricher`, or `entry-enricher` as the type segment. Flatten to the
+simple role and let the subject carry the qualification. Same role gets the
+same type suffix everywhere.
+
+**Files that stay single-word** (no subject/type split): `entity.ts`,
+`actor.ts`, `envelope.ts`, `crypto.ts`, `logger.ts`, `execution-context.ts`,
+plus every package's `index.ts`. These either have a one-word name or are
+the package's naming anchor (the base type everything else in the package
+describes).
+
+**Test files mirror** the source name with `.test.ts` appended:
+`domain.event.ts` → `domain.event.test.ts`.
 
 ## Tests
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DomainEvent } from '../../src/events/domain-event.js';
+import { DomainEvent } from '../../src/events/domain.event.js';
 
 class OrderPlaced extends DomainEvent<{ total: number }> {}
 

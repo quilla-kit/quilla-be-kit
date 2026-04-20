@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { LogEntry } from '../../src/logger/log-entry.js';
-import { PrettyFormatter } from '../../src/logger/pretty-formatter.js';
+import type { LogEntry } from '../../src/logger/log.entry.js';
+import { PrettyFormatter } from '../../src/logger/pretty.formatter.js';
 
 const formatter = new PrettyFormatter();
 

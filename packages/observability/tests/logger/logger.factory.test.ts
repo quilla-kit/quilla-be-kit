@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { JsonFormatter } from '../../src/logger/json-formatter.js';
-import type { LogFormatter } from '../../src/logger/log-formatter.js';
-import type { LogObserver } from '../../src/logger/log-observer.js';
-import { createLoggerFactory } from '../../src/logger/logger-factory.js';
-import type { LogObfuscator } from '../../src/logger/obfuscation/log-obfuscator.js';
-import { PrettyFormatter } from '../../src/logger/pretty-formatter.js';
-import { StructuredLogger } from '../../src/logger/structured-logger.js';
+import { JsonFormatter } from '../../src/logger/json.formatter.js';
+import type { LogFormatter } from '../../src/logger/log.formatter.js';
+import type { LogObserver } from '../../src/logger/log.observer.js';
+import { createLoggerFactory } from '../../src/logger/logger.factory.js';
+import type { LogObfuscator } from '../../src/logger/obfuscation/log.obfuscator.js';
+import { PrettyFormatter } from '../../src/logger/pretty.formatter.js';
+import { StructuredLogger } from '../../src/logger/structured.logger.js';
 
 describe('createLoggerFactory', () => {
   beforeEach(() => {

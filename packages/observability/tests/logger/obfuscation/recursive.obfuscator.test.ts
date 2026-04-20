@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { decryptValue } from '../../../src/logger/obfuscation/crypto.js';
-import { createRecursiveObfuscator } from '../../../src/logger/obfuscation/recursive-obfuscator.js';
+import { createRecursiveObfuscator } from '../../../src/logger/obfuscation/recursive.obfuscator.js';
 
 const SECRET = 'this-is-a-32-char-secret-key-abc';
 

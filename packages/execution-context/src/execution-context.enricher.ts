@@ -1,5 +1,5 @@
 import type { LogEnricherContribution, LogEntryEnricher } from '@quilla-kit/observability';
-import type { ExecutionContextProvider } from './execution-context-provider.js';
+import type { ExecutionContextProvider } from './execution-context.provider.js';
 
 /**
  * `LogEntryEnricher` that bridges `@quilla-kit/execution-context` into

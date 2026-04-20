@@ -1,4 +1,4 @@
-import type { DomainEvent } from '../events/domain-event.js';
+import type { DomainEvent } from '../events/domain.event.js';
 import { Entity } from './entity.js';
 
 export abstract class AggregateRoot<TProps extends object = object> extends Entity<TProps> {

@@ -1,5 +1,5 @@
-import type { LogEntry } from './log-entry.js';
-import type { LogFormatter } from './log-formatter.js';
+import type { LogEntry } from './log.entry.js';
+import type { LogFormatter } from './log.formatter.js';
 
 /**
  * Produces a single-line JSON string per log entry. Designed for production

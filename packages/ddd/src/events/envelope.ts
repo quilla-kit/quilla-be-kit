@@ -1,6 +1,6 @@
-import type { DomainEvent } from './domain-event.js';
-import type { EventMetadata } from './event-metadata.js';
-import type { IntegrationEvent } from './integration-event.js';
+import type { DomainEvent } from './domain.event.js';
+import type { EventMetadata } from './event.metadata.js';
+import type { IntegrationEvent } from './integration.event.js';
 
 export type AnyEvent = DomainEvent | IntegrationEvent;
 

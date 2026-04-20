@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { NoopLogger } from '../../src/logger/noop-logger.js';
+import { NoopLogger } from '../../src/logger/noop.logger.js';
 
 describe('NoopLogger', () => {
   it('does not throw on any level', () => {

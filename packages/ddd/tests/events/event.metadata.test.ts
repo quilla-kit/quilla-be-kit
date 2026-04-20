@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { EventKind, EventMetadata } from '../../src/events/event-metadata.js';
+import { EventKind, EventMetadata } from '../../src/events/event.metadata.js';
 
 describe('EventMetadata', () => {
   it('captures the required fields', () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { AsyncExecutionContextProvider } from '../src/async-execution-context-provider.js';
+import { AsyncExecutionContextProvider } from '../src/async-execution-context.provider.js';
 import type { ExecutionContext } from '../src/execution-context.js';
 
 const baseCtx: ExecutionContext = {

@@ -1,9 +1,9 @@
-import type { LogEntryEnricher } from './log-entry-enricher.js';
-import type { LogContext, LogEntry, LogLevel, SerializedError } from './log-entry.js';
-import type { LogFormatter } from './log-formatter.js';
-import type { LogObserver } from './log-observer.js';
+import type { LogEntryEnricher } from './log-entry.enricher.js';
+import type { LogContext, LogEntry, LogLevel, SerializedError } from './log.entry.js';
+import type { LogFormatter } from './log.formatter.js';
+import type { LogObserver } from './log.observer.js';
 import type { LogParams, Logger } from './logger.js';
-import type { LogObfuscator } from './obfuscation/log-obfuscator.js';
+import type { LogObfuscator } from './obfuscation/log.obfuscator.js';
 
 const LOG_LEVEL_ORDER: Record<LogLevel, number> = {
   debug: 0,

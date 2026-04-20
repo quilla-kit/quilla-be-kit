@@ -1,6 +1,6 @@
 import { EventKind, EventMetadata } from '@quilla-kit/ddd';
 import { describe, expect, it } from 'vitest';
-import { executionContextFactory } from '../src/execution-context-factory.js';
+import { executionContextFactory } from '../src/execution-context.factory.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 

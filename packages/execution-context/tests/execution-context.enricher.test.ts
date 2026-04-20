@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { AsyncExecutionContextProvider } from '../src/async-execution-context-provider.js';
-import { ExecutionContextEnricher } from '../src/execution-context-enricher.js';
+import { AsyncExecutionContextProvider } from '../src/async-execution-context.provider.js';
+import { ExecutionContextEnricher } from '../src/execution-context.enricher.js';
 
 describe('ExecutionContextEnricher', () => {
   it('contributes all context fields when provider has an active scope', async () => {

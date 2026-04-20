@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
-import type { ExecutionContextProvider } from './execution-context-provider.js';
 import type { ExecutionContext } from './execution-context.js';
+import type { ExecutionContextProvider } from './execution-context.provider.js';
 
 /**
  * Node-native `ExecutionContextProvider` backed by an `AsyncLocalStorage`
