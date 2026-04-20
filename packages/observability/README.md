@@ -1,11 +1,33 @@
 # @quilla-kit/observability
 
-Observability primitives: `ILogger`, `StructuredLogger`, `NoopLogger`,
-formatters, and log enrichers.
+Structured logger with pluggable formatters, observers, enrichers, and
+optional PII obfuscation for the `data` bucket.
 
-Zero runtime dependencies. Deliberately has no dependency on
-`@quilla-kit/execution-context` — the execution-context-aware log enricher lives in
-`@quilla-kit/execution-context`, so this package stays adoptable standalone.
+Zero runtime dependencies. Uses only Node's built-in Web Crypto
+(`crypto.subtle`) when obfuscation is enabled.
+
+## Why this package exists
+
+Every `@quilla-kit/*` service-side package needs a logger with a consistent
+shape so logs can be queried and correlated across packages. This package
+ships:
+
+- A `Logger` interface with `debug/info/warn/error` and `forMethod(name)`
+  for method-scoped child loggers.
+- Two built-in `LogFormatter`s — `JsonFormatter` (production aggregators)
+  and `PrettyFormatter` (ANSI-colored dev output).
+- `LogObserver` plugin hooks for shipping entries to Datadog / Splunk / Loki /
+  test captures.
+- `LogEntryEnricher` plugin hooks for contributing `context`
+  (`scopeId` / `userId` / `actorType` / `correlationId`) and `extra` fields.
+- A two-bucket payload: `data` (PII, obfuscated when enabled) and `meta`
+  (operational, always plain).
+- `RecursiveObfuscator` with HMAC-SHA256 (stable pseudonym) or AES-GCM
+  (reversible) strategies for GDPR / PII compliance.
+
+Deliberately has no dependency on `@quilla-kit/execution-context` — the
+execution-context enricher lives *there* to keep this package adoptable
+standalone.
 
 ## Install
 
@@ -13,6 +35,88 @@ Zero runtime dependencies. Deliberately has no dependency on
 pnpm add @quilla-kit/observability
 ```
 
-## Status
+## Quick start
 
-Interface surface not yet implemented — scaffolded only.
+```ts
+import { createLoggerFactory } from '@quilla-kit/observability';
+
+const factory = createLoggerFactory({
+  config: { level: 'info', mode: process.env.NODE_ENV === 'production' ? 'json' : 'pretty' },
+});
+
+const logger = factory.create('UserService');
+logger.info('user created', { meta: { durationMs: 42 }, data: { email: 'a@b.c' } });
+```
+
+## With obfuscation (PII protection)
+
+```ts
+import { createLoggerFactory, createRecursiveObfuscator } from '@quilla-kit/observability';
+
+const obfuscator = await createRecursiveObfuscator({
+  strategy: 'hmac',           // 'hmac' (stable pseudonym) or 'encrypt' (reversible)
+  secretKey: process.env.LOG_OBFUSCATION_SECRET!,   // must be >=32 chars
+});
+
+const factory = createLoggerFactory({
+  config: { level: 'info', mode: 'json' },
+  obfuscator,
+});
+
+const logger = factory.create('UserService');
+logger.info('user created', {
+  data: { email: 'a@b.c', phone: '555-0100' }, // <-- values get HMAC-ed
+  meta: { durationMs: 42 },                    // <-- stays plain
+});
+```
+
+The `data` bucket is the designated PII carrier. Keys are preserved; leaf
+values (strings, numbers, booleans) are replaced with their HMAC or ciphertext.
+`message`, `context`, `extra`, `meta`, and `error` are never obfuscated.
+
+## API
+
+### Interfaces
+- `Logger` — the core contract
+- `LoggerFactory` — returned by `createLoggerFactory()`
+- `LogFormatter` — `format(entry) => string`
+- `LogObserver` — `onEntry(entry)`
+- `LogEntryEnricher` — `enrich() => { context?, extra? }`
+- `LogObfuscator` — `obfuscate(data) => Promise<data>`
+
+### Types
+- `LogLevel`, `LogOutputMode`, `LogParams`, `LogContext`, `LogEntry`,
+  `SerializedError`, `LoggerConfig`, `LoggerFactoryOptions`,
+  `LogEnricherContribution`, `LogObfuscationStrategy`,
+  `RecursiveObfuscatorOptions`
+
+### Classes and functions
+- `StructuredLogger` — default `Logger` impl. Has `flush()` for graceful
+  shutdown.
+- `NoopLogger` — silent, for tests.
+- `JsonFormatter`, `PrettyFormatter` — bundled formatters.
+- `RecursiveObfuscator` — default `LogObfuscator` impl.
+- `createLoggerFactory(opts)` — construct a factory.
+- `createRecursiveObfuscator(opts)` — async; imports the `CryptoKey` once.
+- `decryptValue(ciphertext, key)` — incident-response reversal for `'encrypt'`
+  strategy. Not for hot paths.
+
+## Graceful shutdown
+
+`StructuredLogger.emit()` is async so obfuscation can run without blocking the
+caller. The public methods (`debug`/`info`/`warn`/`error`) are fire-and-forget.
+Before process exit, call `logger.flush()` to await any in-flight emissions.
+
+## Design notes
+
+- **Optional fields are omitted when absent**, not filled with sentinel strings.
+  JSON output varies by entry shape — this is the standard for Datadog / Splunk /
+  Loki and lets you query `correlationId:*` for scoped-only entries.
+- **Enricher errors are silently swallowed.** Logging must never surface errors
+  to the caller.
+- **Observer errors are silently swallowed** for the same reason.
+- **Obfuscation failures** are recorded in-band: the `data` field becomes
+  `{ _obfuscationError: true }` instead of dropping the entry. You still get
+  the log; you know something's wrong.
+- **No I-prefix on interfaces.** `Logger`, `LoggerFactory`, `LogObserver` —
+  TypeScript's structural typing does not benefit from Hungarian notation.
