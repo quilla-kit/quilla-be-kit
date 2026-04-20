@@ -6,6 +6,6 @@
     "tsBuildInfoFile": "dist/.tsbuildinfo"
   },
   "include": ["src/**/*"],
-  "exclude": ["src/**/*.test.ts", "dist"],
+  "exclude": ["dist", "tests"],
   "references": [{ "path": "../ddd" }, { "path": "../observability" }]
 }

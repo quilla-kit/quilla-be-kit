@@ -1,7 +1,7 @@
 {
   "name": "@quilla-kit/execution-context",
   "version": "0.1.0",
-  "description": "Execution context: IExecutionContext, IExecutionContextProvider, AsyncLocalStorage-backed storage, logger enricher.",
+  "description": "Execution context: per-operation actor / scope / correlation, AsyncLocalStorage-backed provider, factory, and logger enricher.",
   "license": "MIT",
   "author": "Max Martinez",
   "homepage": "https://github.com/quilla-kit/quilla-kit/tree/main/packages/execution-context",
@@ -34,8 +34,12 @@
   },
   "scripts": {
     "build": "tsc -b",
+    "typecheck": "tsc -p tsconfig.test.json",
     "test": "vitest run --passWithNoTests",
     "clean": "rm -rf dist *.tsbuildinfo"
+  },
+  "devDependencies": {
+    "vitest": "^2.1.3"
   },
   "dependencies": {
     "@quilla-kit/ddd": "workspace:^",
