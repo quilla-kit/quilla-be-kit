@@ -9,9 +9,10 @@
 
 ```sh
 pnpm install
-pnpm build   # tsc -b; this is also your typecheck
-pnpm test
-pnpm lint
+pnpm build       # tsc -b across the workspace; also typechecks src/
+pnpm typecheck   # typechecks tests/ against src/ (per-package tsconfig.test.json)
+pnpm test        # vitest
+pnpm lint        # biome check
 ```
 
 ## Workflow
@@ -19,11 +20,16 @@ pnpm lint
 1. Create a feature branch from `main`.
 2. Make your changes. Keep each package's public surface minimal — if something
    only makes sense inside one package, don't export it.
-3. Add tests next to the code (`*.test.ts`).
-4. Run `pnpm build && pnpm test && pnpm lint` locally.
-5. If your change affects published behavior of any `@quilla-kit/*` package, run
-   `pnpm changeset` and commit the generated file.
-6. Open a PR. CI must pass. A maintainer will review.
+3. Add tests in the package's `tests/` folder, mirroring the `src/` layout.
+   Shared fixtures and helpers belong in `tests/helpers/` or `tests/fixtures/`.
+4. If the package doesn't yet have a `tsconfig.test.json`, add one (extends
+   the package's `tsconfig.json` with `composite: false`, `noEmit: true`,
+   `include: ["src/**/*", "tests/**/*"]`) plus a `"typecheck"` script that
+   runs `tsc -p tsconfig.test.json`.
+5. Run `pnpm build && pnpm typecheck && pnpm test && pnpm lint` locally.
+6. If your change affects published behavior of any `@quilla-kit/*` package,
+   run `pnpm changeset` and commit the generated file.
+7. Open a PR. CI must pass. A maintainer will review.
 
 ## Package boundaries
 

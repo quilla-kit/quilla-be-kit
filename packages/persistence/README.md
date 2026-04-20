@@ -8,16 +8,17 @@ Persistence primitives for quilla-kit.
 **Bases:** `BaseReadDao`, `BaseWriteDao` (auto-SQL: `insertOne`, `insertMany`,
 `update`, `updateMany`, `delete`, `deleteMany`, `findOne`, `findMany`,
 `findOneForUpdate`, `findManyForUpdate`, `existsBy`, `buildWhere`),
-`BaseBasicRepository`, `BaseAggregateRepository`,
-`BaseUnscopedAggregateRepository`, `BaseTenantScopedAggregateRepository`.
+`BaseBasicRepository`, `BaseAggregateRepository`, `BaseScopedAggregateRepository`,
+`BaseUnscopedAggregateRepository`.
 
 **Outbox:** `OutboxRepository`, `UnitOfWorkWithOutbox`.
 
 ## Architectural invariants
 
-- **Tenant scoping is repo-layer explicit.** `BaseTenantScopedAggregateRepository`
-  accepts `tenantId` as a parameter and raises `CrossTenantAccessError` on
-  mismatch. DAOs never inject `tenant_id` implicitly.
+- **Scope isolation is repo-layer explicit.** `BaseScopedAggregateRepository`
+  accepts `scopeId` as a parameter and raises `CrossScopeAccessError` on
+  mismatch. DAOs never inject `scope_id` implicitly. Consumers choose what
+  `scopeId` represents (tenant, workspace, organization, project, etc.).
 - **Audit fields are DAO-layer implicit.** `inserted_by` and `updated_by` are
   resolved from `IExecutionContextProvider` (via `@quilla-kit/execution-context`).
   Callers never pass them.

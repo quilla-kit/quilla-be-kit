@@ -7,9 +7,14 @@
       "inputs": ["src/**", "tsconfig.json", "package.json"],
       "outputs": ["dist/**", "*.tsbuildinfo"]
     },
+    "typecheck": {
+      "dependsOn": ["^build"],
+      "inputs": ["src/**", "tests/**", "tsconfig.json", "tsconfig.test.json", "package.json"],
+      "outputs": []
+    },
     "test": {
       "dependsOn": ["^build"],
-      "inputs": ["src/**", "vitest.config.ts", "package.json"],
+      "inputs": ["src/**", "tests/**", "vitest.config.ts", "package.json"],
       "outputs": []
     },
     "clean": {

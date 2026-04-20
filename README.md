@@ -39,9 +39,10 @@ consumer projects until their shape has stabilized here.
 These rules are design-time contracts for quilla-kit. They are enforced at the
 package boundary (interface vs. adapter split) and documented in package READMEs.
 
-1. **Tenant scoping is repo-layer explicit.** Repositories accept `tenantId` as a
-   parameter and raise `CrossTenantAccessError` on mismatch. DAOs never inject
-   `tenant_id` implicitly.
+1. **Scope isolation is repo-layer explicit.** Repositories accept `scopeId` as a
+   parameter and raise `CrossScopeAccessError` on mismatch. DAOs never inject
+   `scope_id` implicitly. Consumers choose what `scopeId` represents (tenant,
+   workspace, organization, project, etc.).
 2. **Audit fields are DAO-layer implicit.** `inserted_by` and `updated_by` are
    resolved from `IExecutionContextProvider`; callers never pass them.
 3. **Outbox iff UoW iff durable domain state.** The outbox entry is committed in
@@ -56,9 +57,10 @@ package boundary (interface vs. adapter split) and documented in package READMEs
 
 ```sh
 pnpm install
-pnpm build   # tsc -b across the workspace (typecheck + emit)
-pnpm test
-pnpm lint
+pnpm build       # tsc -b across the workspace (typecheck + emit for src/)
+pnpm typecheck   # typecheck tests/ against src/
+pnpm test        # vitest
+pnpm lint        # biome check
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow, including changesets.

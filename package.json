@@ -21,6 +21,7 @@
   "scripts": {
     "build": "turbo run build",
     "clean": "turbo run clean && rm -rf node_modules",
+    "typecheck": "turbo run typecheck",
     "test": "turbo run test",
     "lint": "biome check .",
     "format": "biome format --write .",
