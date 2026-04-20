@@ -2,6 +2,7 @@
   "files": [],
   "references": [
     { "path": "./packages/ddd" },
+    { "path": "./packages/errors" },
     { "path": "./packages/lifecycle" },
     { "path": "./packages/observability" },
     { "path": "./packages/execution-context" },
