@@ -5,4 +5,4 @@ export {
   type ExecutionContextFactory,
 } from './execution-context.factory.js';
 export type { ExecutionContextProvider } from './execution-context.provider.js';
-export type { ExecutionContext } from './execution-context.js';
+export type { ExecutionContext } from './execution-context.type.js';

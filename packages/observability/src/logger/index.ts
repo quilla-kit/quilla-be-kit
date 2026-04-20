@@ -4,10 +4,10 @@ export type {
   LogEntry,
   LogLevel,
   SerializedError,
-} from './log.entry.js';
+} from './log-entry.type.js';
 export type { LogFormatter } from './log.formatter.js';
 export type { LogObserver } from './log.observer.js';
-export type { LogParams, Logger } from './logger.js';
+export type { LogParams, Logger } from './logger.interface.js';
 export { NoopLogger } from './noop.logger.js';
 export type {
   StructuredLoggerConfig,

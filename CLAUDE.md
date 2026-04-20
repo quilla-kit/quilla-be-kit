@@ -39,12 +39,12 @@ src/
 ├── logger/
 │   ├── obfuscation/    (a real sub-topic within logger)
 │   ├── json.formatter.ts
-│   ├── log.entry.ts
+│   ├── log-entry.type.ts
 │   ├── log.formatter.ts
 │   ├── log.observer.ts
 │   ├── log-entry.enricher.ts
 │   ├── logger.factory.ts
-│   ├── logger.ts
+│   ├── logger.interface.ts
 │   ├── noop.logger.ts
 │   ├── pretty.formatter.ts
 │   ├── structured.logger.ts
@@ -96,10 +96,13 @@ simple role and let the subject carry the qualification. Same role gets the
 same type suffix everywhere.
 
 **Files that stay single-word** (no subject/type split): `entity.ts`,
-`actor.ts`, `envelope.ts`, `crypto.ts`, `logger.ts`, `execution-context.ts`,
-`disposable.ts`, `unit-of-work.ts`, plus every package's `index.ts`. These
-either have a one-word name or are the package's naming anchor (the base
-type everything else in the package describes).
+`envelope.ts`, `crypto.ts`, `unit-of-work.ts`, plus every package's
+`index.ts`. Reserved for files whose main export is a class with no
+specific role suffix that fits, and that anchors the package's vocabulary
+(the base type everything else describes). Pure type or interface files
+always take `.type.ts` or `.interface.ts` — even when they are the
+package's central concept (prefer `logger.interface.ts` over `logger.ts`,
+`execution-context.type.ts` over `execution-context.ts`).
 
 **Test files mirror** the source name with `.test.ts` appended:
 `domain.event.ts` → `domain.event.test.ts`.

@@ -1,9 +1,9 @@
-export type { Disposable } from './disposable.js';
-export type { ShutdownPhaseConfig } from './shutdown.phase.js';
-export type { ShutdownEvent } from './shutdown.event.js';
+export type { Disposable } from './disposable.interface.js';
+export type { ShutdownPhaseConfig } from './shutdown-phase.type.js';
+export type { ShutdownEvent } from './shutdown-event.type.js';
 export type {
   ShutdownParticipantError,
   ShutdownPhaseResult,
   ShutdownResult,
-} from './shutdown.result.js';
+} from './shutdown-result.type.js';
 export { ShutdownManager, type ShutdownManagerOptions } from './shutdown.manager.js';

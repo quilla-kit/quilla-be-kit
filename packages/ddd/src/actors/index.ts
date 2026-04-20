@@ -1,1 +1,1 @@
-export type { ActorType } from './actor.js';
+export type { ActorType } from './actor.type.js';

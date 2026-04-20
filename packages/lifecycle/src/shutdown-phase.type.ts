@@ -1,4 +1,4 @@
-import type { Disposable } from './disposable.js';
+import type { Disposable } from './disposable.interface.js';
 
 export type ShutdownPhaseConfig = {
   readonly name: string;

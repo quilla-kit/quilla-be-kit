@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { JsonFormatter } from '../../src/logger/json.formatter.js';
 import type { LogEntryEnricher } from '../../src/logger/log-entry.enricher.js';
-import type { LogEntry } from '../../src/logger/log.entry.js';
+import type { LogEntry } from '../../src/logger/log-entry.type.js';
 import type { LogObserver } from '../../src/logger/log.observer.js';
 import type { LogObfuscator } from '../../src/logger/obfuscation/log.obfuscator.js';
 import { StructuredLogger } from '../../src/logger/structured.logger.js';

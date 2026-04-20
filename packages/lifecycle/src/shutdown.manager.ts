@@ -1,11 +1,11 @@
-import type { Disposable } from './disposable.js';
-import type { ShutdownEvent } from './shutdown.event.js';
-import type { ShutdownPhaseConfig } from './shutdown.phase.js';
+import type { Disposable } from './disposable.interface.js';
+import type { ShutdownEvent } from './shutdown-event.type.js';
+import type { ShutdownPhaseConfig } from './shutdown-phase.type.js';
 import type {
   ShutdownParticipantError,
   ShutdownPhaseResult,
   ShutdownResult,
-} from './shutdown.result.js';
+} from './shutdown-result.type.js';
 
 export type ShutdownManagerOptions = {
   readonly timeoutMs: number;

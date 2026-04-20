@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { AsyncExecutionContextProvider } from '../src/async-execution-context.provider.js';
-import type { ExecutionContext } from '../src/execution-context.js';
+import type { ExecutionContext } from '../src/execution-context.type.js';
 
 const baseCtx: ExecutionContext = {
   actorType: 'system',

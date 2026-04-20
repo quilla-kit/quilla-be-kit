@@ -1,4 +1,4 @@
-import type { LogEntry } from './log.entry.js';
+import type { LogEntry } from './log-entry.type.js';
 import type { LogFormatter } from './log.formatter.js';
 
 /**

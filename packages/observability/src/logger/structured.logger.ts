@@ -1,8 +1,8 @@
 import type { LogEntryEnricher } from './log-entry.enricher.js';
-import type { LogContext, LogEntry, LogLevel, SerializedError } from './log.entry.js';
+import type { LogContext, LogEntry, LogLevel, SerializedError } from './log-entry.type.js';
 import type { LogFormatter } from './log.formatter.js';
 import type { LogObserver } from './log.observer.js';
-import type { LogParams, Logger } from './logger.js';
+import type { LogParams, Logger } from './logger.interface.js';
 import type { LogObfuscator } from './obfuscation/log.obfuscator.js';
 
 const LOG_LEVEL_ORDER: Record<LogLevel, number> = {

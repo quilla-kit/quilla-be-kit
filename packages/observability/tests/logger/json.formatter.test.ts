@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { JsonFormatter } from '../../src/logger/json.formatter.js';
-import type { LogEntry } from '../../src/logger/log.entry.js';
+import type { LogEntry } from '../../src/logger/log-entry.type.js';
 
 const formatter = new JsonFormatter();
 

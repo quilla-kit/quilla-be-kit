@@ -1,4 +1,4 @@
-import type { ExecutionContext } from './execution-context.js';
+import type { ExecutionContext } from './execution-context.type.js';
 
 export interface ExecutionContextProvider {
   /**

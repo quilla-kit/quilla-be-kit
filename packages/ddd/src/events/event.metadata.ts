@@ -1,4 +1,4 @@
-import type { ActorType } from '../actors/actor.js';
+import type { ActorType } from '../actors/actor.type.js';
 
 export enum EventKind {
   DOMAIN = 'domain',

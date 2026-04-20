@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { EventMetadata } from '@quilla-kit/ddd';
-import type { ExecutionContext } from './execution-context.js';
+import type { ExecutionContext } from './execution-context.type.js';
 
 export interface ExecutionContextFactory {
   /** For background operations (schedulers, startup jobs, workers). */

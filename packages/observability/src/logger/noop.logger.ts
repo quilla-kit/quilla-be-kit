@@ -1,4 +1,4 @@
-import type { LogParams, Logger } from './logger.js';
+import type { LogParams, Logger } from './logger.interface.js';
 
 /** Silent logger — useful in tests and code paths that opt out of logging. */
 export class NoopLogger implements Logger {
