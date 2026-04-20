@@ -58,7 +58,14 @@ Files follow the shape **`{subject}.{type}.ts`** where:
 
 - **`{type}`** is the single-word role suffix — always simple, never compound.
   Current vocabulary: `provider`, `factory`, `formatter`, `event`, `metadata`,
-  `enricher`, `observer`, `obfuscator`, `logger`, `entry`, `aggregate`, `root`.
+  `enricher`, `observer`, `obfuscator`, `logger`, `entry`, `aggregate`, `root`,
+  `error`, `repository`, `dao`, `manager`, `phase`, `result`, `transaction`,
+  `writer`, `context`, `mapper`, `interface`, `type`.
+- Use **`.interface.ts`** when the file's main export is a TypeScript
+  `interface` (contract to be implemented by a class) and no more specific
+  role fits (e.g. prefer `.provider.ts` or `.writer.ts` if accurate).
+- Use **`.type.ts`** when the file's main export is a pure data `type`
+  (union, mapped type, record shape) and no more specific role fits.
 - **`{subject}`** is everything before the dot. May contain hyphens for
   multi-word subjects (`execution-context`, `async-execution-context`,
   `log-entry`).
@@ -77,6 +84,11 @@ Files follow the shape **`{subject}.{type}.ts`** where:
 | `structured.logger.ts` | `structured` | `logger` |
 | `recursive.obfuscator.ts` | `recursive` | `obfuscator` |
 | `root.aggregate.ts` | `root` | `aggregate` |
+| `database.interface.ts` | `database` | `interface` |
+| `database-transaction.interface.ts` | `database-transaction` | `interface` |
+| `filter-query.type.ts` | `filter-query` | `type` |
+| `shutdown.manager.ts` | `shutdown` | `manager` |
+| `outbox-writer.interface.ts` | `outbox-writer` | `interface` |
 
 **Do not use compound type suffixes.** Never `context-provider`,
 `context-enricher`, or `entry-enricher` as the type segment. Flatten to the
@@ -85,9 +97,9 @@ same type suffix everywhere.
 
 **Files that stay single-word** (no subject/type split): `entity.ts`,
 `actor.ts`, `envelope.ts`, `crypto.ts`, `logger.ts`, `execution-context.ts`,
-plus every package's `index.ts`. These either have a one-word name or are
-the package's naming anchor (the base type everything else in the package
-describes).
+`disposable.ts`, `unit-of-work.ts`, plus every package's `index.ts`. These
+either have a one-word name or are the package's naming anchor (the base
+type everything else in the package describes).
 
 **Test files mirror** the source name with `.test.ts` appended:
 `domain.event.ts` → `domain.event.test.ts`.
