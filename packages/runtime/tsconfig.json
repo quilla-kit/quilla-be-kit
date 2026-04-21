@@ -7,9 +7,5 @@
   },
   "include": ["src/**/*"],
   "exclude": ["src/**/*.test.ts", "dist"],
-  "references": [
-    { "path": "../lifecycle" },
-    { "path": "../execution-context" },
-    { "path": "../observability" }
-  ]
+  "references": []
 }

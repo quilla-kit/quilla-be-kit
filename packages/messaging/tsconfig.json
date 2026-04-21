@@ -9,7 +9,7 @@
   "exclude": ["src/**/*.test.ts", "dist"],
   "references": [
     { "path": "../execution-context" },
-    { "path": "../lifecycle" },
-    { "path": "../observability" }
+    { "path": "../observability" },
+    { "path": "../runtime" }
   ]
 }

@@ -1,7 +1,7 @@
 {
   "name": "@quilla-kit/runtime",
   "version": "0.1.0",
-  "description": "Runtime composition primitives: IRegisteredModule, ModuleRegistry, wiring helpers for a quilla-kit process.",
+  "description": "Process runtime: phased ShutdownManager, OS-signal / uncaught-error bridge that owns process.exit, and a transport-agnostic ComponentRegistry.",
   "license": "MIT",
   "author": "Max Martinez",
   "homepage": "https://github.com/quilla-kit/quilla-kit/tree/main/packages/runtime",
@@ -13,7 +13,15 @@
   "bugs": {
     "url": "https://github.com/quilla-kit/quilla-kit/issues"
   },
-  "keywords": ["runtime", "composition-root", "module-registry", "wiring", "typescript"],
+  "keywords": [
+    "runtime",
+    "shutdown",
+    "graceful-shutdown",
+    "lifecycle",
+    "signals",
+    "component-registry",
+    "typescript"
+  ],
   "type": "module",
   "engines": {
     "node": ">=22"
@@ -34,12 +42,11 @@
   },
   "scripts": {
     "build": "tsc -b",
+    "typecheck": "tsc -p tsconfig.test.json",
     "test": "vitest run --passWithNoTests",
     "clean": "rm -rf dist *.tsbuildinfo"
   },
-  "dependencies": {
-    "@quilla-kit/lifecycle": "workspace:^",
-    "@quilla-kit/execution-context": "workspace:^",
-    "@quilla-kit/observability": "workspace:^"
+  "devDependencies": {
+    "vitest": "^2.1.3"
   }
 }

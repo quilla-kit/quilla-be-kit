@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { Disposable } from '../src/disposable.interface.js';
-import type { ShutdownEvent } from '../src/shutdown-event.type.js';
-import { ShutdownManager } from '../src/shutdown.manager.js';
+import type { Disposable } from '../../src/shutdown/disposable.interface.js';
+import type { ShutdownEvent } from '../../src/shutdown/shutdown-event.type.js';
+import { ShutdownManager } from '../../src/shutdown/shutdown.manager.js';
 
 const disposable = (name: string, fn?: () => Promise<void>): Disposable => ({
   name,

@@ -155,7 +155,7 @@ const forwarder = new OutboxForwarder({
 });
 forwarder.start();
 
-// On shutdown (via @quilla-kit/lifecycle ShutdownManager):
+// On shutdown (via @quilla-kit/runtime ShutdownManager):
 await forwarder.dispose();
 ```
 
@@ -417,7 +417,7 @@ cutoff).
 Both `OutboxForwarder` and `EventConsumer` implement `Disposable`:
 
 ```ts
-import { ShutdownManager } from '@quilla-kit/lifecycle';
+import { ShutdownManager } from '@quilla-kit/runtime';
 
 const shutdown = new ShutdownManager({ logger });
 shutdown.registerPhase('consumers', [consumer]);

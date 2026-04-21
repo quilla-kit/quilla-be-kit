@@ -21,13 +21,12 @@ ESM-only, and target Node 22+.
 | Package | Purpose |
 | --- | --- |
 | [`@quilla-kit/ddd`](packages/ddd) | DDD tactical primitives — `AggregateRoot`, `Entity`, `DomainEvent`, `IntegrationEvent`, `EventMetadata`, `ActorType` |
-| [`@quilla-kit/lifecycle`](packages/lifecycle) | `IDisposable`, `ShutdownManager` (5-phase, idempotent, time-bounded) |
-| [`@quilla-kit/observability`](packages/observability) | `ILogger`, `StructuredLogger`, `NoopLogger`, formatters, enrichers |
-| [`@quilla-kit/execution-context`](packages/execution-context) | `IExecutionContext`, `IExecutionContextProvider`, AsyncLocalStorage storage |
-| [`@quilla-kit/http`](packages/http) | `IHttpRequest`, `IWebServer`, `@Controller`, `@Route`, `@Authorize`, `@ValidateRequest` |
-| [`@quilla-kit/persistence`](packages/persistence) | `IUnitOfWork`, base DAOs, base repositories, outbox pattern |
-| [`@quilla-kit/messaging`](packages/messaging) | Messaging infrastructure — `IEventBus`, `IEventConsumer`, `ILocalOutbox`, `OutboxForwarder` |
-| [`@quilla-kit/runtime`](packages/runtime) | `IRegisteredModule`, `ModuleRegistry`, composition-root and wiring primitives |
+| [`@quilla-kit/observability`](packages/observability) | `Logger`, `StructuredLogger`, `NoopLogger`, formatters, enrichers |
+| [`@quilla-kit/execution-context`](packages/execution-context) | `ExecutionContext`, `ExecutionContextProvider`, AsyncLocalStorage storage |
+| [`@quilla-kit/http`](packages/http) | `HttpRequest`, `WebServer`, `@Controller`, `@Route`, `@Authorize`, `@ValidateRequest` |
+| [`@quilla-kit/persistence`](packages/persistence) | `UnitOfWork`, base DAOs, base repositories, outbox pattern |
+| [`@quilla-kit/messaging`](packages/messaging) | Messaging infrastructure — `EventBus`, `EventConsumer`, `LocalOutbox`, `OutboxForwarder` |
+| [`@quilla-kit/runtime`](packages/runtime) | `ShutdownManager`, `Runtime` (OS signal / uncaught-error bridge), `ComponentRegistry` |
 | [`@quilla-kit/security`](packages/security) | JWT, password hashing, authorization decorators, identity materialization — primitives, not a drop-in auth module. Also the toolkit's rule-of-three validation harness |
 
 Transport and storage adapters (Hono, Postgres, etc.) are intentionally **not**

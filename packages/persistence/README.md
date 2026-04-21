@@ -113,7 +113,7 @@ await uow.transaction(async (ctx) => {
   await userRepo.create(newUser, ctx);
 });
 
-// Pool lifecycle: register with @quilla-kit/lifecycle:
+// Pool lifecycle: register with @quilla-kit/runtime:
 shutdown.addPhase({
   name: 'database',
   participants: [{ name: 'PgDatabase', dispose: () => db.disconnect() }],

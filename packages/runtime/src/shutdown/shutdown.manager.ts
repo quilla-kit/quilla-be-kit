@@ -1,4 +1,3 @@
-import type { Disposable } from './disposable.interface.js';
 import type { ShutdownEvent } from './shutdown-event.type.js';
 import type { ShutdownPhaseConfig } from './shutdown-phase.type.js';
 import type {

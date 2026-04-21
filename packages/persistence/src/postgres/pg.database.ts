@@ -9,7 +9,7 @@ import { PgTransaction } from './pg.transaction.js';
  * Postgres implementation of `Database`. Owns a `pg.Pool` — pass a
  * `PoolConfig` at construction; the adapter creates and manages the pool.
  * Register `disconnect()` on a `ShutdownManager` from
- * `@quilla-kit/lifecycle` to drain the pool gracefully.
+ * `@quilla-kit/runtime` to drain the pool gracefully.
  */
 export class PgDatabase implements Database {
   private readonly pool: Pool;

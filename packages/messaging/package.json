@@ -44,8 +44,8 @@
   },
   "dependencies": {
     "@quilla-kit/execution-context": "workspace:^",
-    "@quilla-kit/lifecycle": "workspace:^",
-    "@quilla-kit/observability": "workspace:^"
+    "@quilla-kit/observability": "workspace:^",
+    "@quilla-kit/runtime": "workspace:^"
   },
   "peerDependencies": {
     "pg": ">=8.0"
