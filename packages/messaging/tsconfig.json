@@ -8,8 +8,8 @@
   "include": ["src/**/*"],
   "exclude": ["src/**/*.test.ts", "dist"],
   "references": [
-    { "path": "../ddd" },
     { "path": "../execution-context" },
+    { "path": "../lifecycle" },
     { "path": "../observability" }
   ]
 }

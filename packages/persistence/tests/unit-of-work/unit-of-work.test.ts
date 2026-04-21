@@ -1,15 +1,22 @@
 import type { AnyEvent } from '@quilla-kit/ddd';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DatabaseTransaction } from '../../src/database/database-transaction.interface.js';
-import type { OutboxWriter } from '../../src/unit-of-work/outbox-writer.interface.js';
+import type { EventSink } from '../../src/unit-of-work/event-sink.interface.js';
 import { UnitOfWork } from '../../src/unit-of-work/unit-of-work.js';
 import { FakeDatabase } from '../helpers/fake-database.js';
 import { TestAggregate } from '../helpers/test.aggregate.js';
 
-class CapturingOutboxWriter implements OutboxWriter {
-  calls: { events: readonly AnyEvent[]; trx: DatabaseTransaction }[] = [];
-  write = vi.fn(async (events: readonly AnyEvent[], trx: DatabaseTransaction) => {
-    this.calls.push({ events, trx });
+type TestEntry = { readonly name: string; readonly payload: unknown };
+
+const serialize = (event: AnyEvent): TestEntry => ({
+  name: event.name,
+  payload: event.payload,
+});
+
+class CapturingSink implements EventSink<TestEntry> {
+  calls: { entries: readonly TestEntry[]; trx: DatabaseTransaction }[] = [];
+  sink = vi.fn(async (entries: readonly TestEntry[], trx: DatabaseTransaction) => {
+    this.calls.push({ entries, trx });
   });
 }
 
@@ -77,30 +84,32 @@ describe('UnitOfWork', () => {
     expect(uow.getContext()).toBeUndefined();
   });
 
-  describe('outbox drain', () => {
-    it('drains domain events from registered aggregates before commit', async () => {
-      const outbox = new CapturingOutboxWriter();
-      const uow = new UnitOfWork({ db, outboxWriter: outbox });
+  describe('event drain', () => {
+    it('drains domain events from registered aggregates, serializes them, and calls the sink', async () => {
+      const sink = new CapturingSink();
+      const uow = new UnitOfWork<TestEntry>({ db, events: { sink, serialize } });
 
       await uow.transaction(async (ctx) => {
         const agg = TestAggregate.create('agg-1', 'foo');
         ctx.registerAggregate(agg);
       });
 
-      expect(outbox.calls).toHaveLength(1);
-      expect(outbox.calls[0]?.events).toHaveLength(1);
-      expect(outbox.calls[0]?.trx).toBe(db.transaction);
+      expect(sink.calls).toHaveLength(1);
+      expect(sink.calls[0]?.entries).toHaveLength(1);
+      expect(sink.calls[0]?.entries[0]?.name).toBe('TestCreatedEvent');
+      expect(sink.calls[0]?.entries[0]?.payload).toEqual({ name: 'foo' });
+      expect(sink.calls[0]?.trx).toBe(db.transaction);
     });
 
-    it('includes registered integration events in the outbox write', async () => {
-      const outbox = new CapturingOutboxWriter();
-      const uow = new UnitOfWork({ db, outboxWriter: outbox });
+    it('includes registered integration events in the sink call', async () => {
+      const sink = new CapturingSink();
+      const uow = new UnitOfWork<TestEntry>({ db, events: { sink, serialize } });
 
       class SomeIntegrationEvent {
         readonly id = 'e1';
         readonly occurredAt = new Date();
         readonly name = 'SomeIntegrationEvent';
-        readonly payload = {};
+        readonly payload = { foo: 'bar' };
         toJSON() {
           return {
             id: this.id,
@@ -119,19 +128,20 @@ describe('UnitOfWork', () => {
         );
       });
 
-      expect(outbox.calls[0]?.events).toHaveLength(1);
+      expect(sink.calls[0]?.entries).toHaveLength(1);
+      expect(sink.calls[0]?.entries[0]?.name).toBe('SomeIntegrationEvent');
     });
 
-    it('does not call outbox when no events are registered', async () => {
-      const outbox = new CapturingOutboxWriter();
-      const uow = new UnitOfWork({ db, outboxWriter: outbox });
+    it('does not call the sink when no events are registered', async () => {
+      const sink = new CapturingSink();
+      const uow = new UnitOfWork<TestEntry>({ db, events: { sink, serialize } });
 
       await uow.transaction(async () => {});
 
-      expect(outbox.write).not.toHaveBeenCalled();
+      expect(sink.sink).not.toHaveBeenCalled();
     });
 
-    it('does nothing outbox-related when no OutboxWriter is configured', async () => {
+    it('does nothing sink-related when no sink is configured', async () => {
       const uow = new UnitOfWork({ db });
 
       await uow.transaction(async (ctx) => {
@@ -141,9 +151,9 @@ describe('UnitOfWork', () => {
       expect(db.transaction.committed).toBe(true);
     });
 
-    it('rolls back (and does not call outbox) when operation throws', async () => {
-      const outbox = new CapturingOutboxWriter();
-      const uow = new UnitOfWork({ db, outboxWriter: outbox });
+    it('rolls back (and does not call sink) when operation throws', async () => {
+      const sink = new CapturingSink();
+      const uow = new UnitOfWork<TestEntry>({ db, events: { sink, serialize } });
 
       await expect(
         uow.transaction(async (ctx) => {
@@ -152,7 +162,7 @@ describe('UnitOfWork', () => {
         }),
       ).rejects.toThrow('nope');
 
-      expect(outbox.write).not.toHaveBeenCalled();
+      expect(sink.sink).not.toHaveBeenCalled();
       expect(db.transaction.rolledBack).toBe(true);
     });
   });

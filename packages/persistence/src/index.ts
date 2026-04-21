@@ -38,7 +38,7 @@ export {
   type UnitOfWorkOptions,
 } from './unit-of-work/unit-of-work.js';
 export type { UnitOfWorkContext } from './unit-of-work/unit-of-work-context.type.js';
-export type { OutboxWriter } from './unit-of-work/outbox-writer.interface.js';
+export type { EventSink } from './unit-of-work/event-sink.interface.js';
 
 // errors
 export { CrossScopeAccessError } from './errors/cross-scope-access.error.js';

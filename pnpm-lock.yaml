@@ -69,15 +69,22 @@ importers:
 
   packages/messaging:
     dependencies:
-      '@quilla-kit/ddd':
-        specifier: workspace:^
-        version: link:../ddd
       '@quilla-kit/execution-context':
         specifier: workspace:^
         version: link:../execution-context
+      '@quilla-kit/lifecycle':
+        specifier: workspace:^
+        version: link:../lifecycle
       '@quilla-kit/observability':
         specifier: workspace:^
         version: link:../observability
+    devDependencies:
+      '@types/pg':
+        specifier: ^8.15.5
+        version: 8.20.0
+      pg:
+        specifier: ^8.13.0
+        version: 8.20.0
 
   packages/observability:
     devDependencies:

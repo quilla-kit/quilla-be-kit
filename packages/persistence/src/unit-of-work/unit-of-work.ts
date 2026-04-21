@@ -1,32 +1,25 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { AggregateRoot, AnyEvent, IntegrationEvent } from '@quilla-kit/ddd';
 import type { Database } from '../database/database.interface.js';
-import type { OutboxWriter } from './outbox-writer.interface.js';
+import type { EventSink } from './event-sink.interface.js';
 import type { UnitOfWorkContext } from './unit-of-work-context.type.js';
 
-export type UnitOfWorkOptions = {
+export type UnitOfWorkOptions<TEntry = unknown> = {
   readonly db: Database;
-  readonly outboxWriter?: OutboxWriter;
+  readonly events?: {
+    readonly sink: EventSink<TEntry>;
+    readonly serialize: (event: AnyEvent) => TEntry;
+  };
 };
 
-/**
- * Coordinates a database transaction over a unit of work: starts the trx,
- * tracks registered aggregates, drains their events plus registered
- * integration events into the outbox (when configured), and commits
- * atomically. Rolls back on error, releases the connection in `finally`.
- *
- * Nested `transaction()` calls detect an active UoW via AsyncLocalStorage
- * and JOIN it — the inner call reuses the outer trx/context without
- * starting a new one.
- */
-export class UnitOfWork {
+export class UnitOfWork<TEntry = unknown> {
   private readonly db: Database;
-  private readonly outboxWriter: OutboxWriter | undefined;
+  private readonly events: UnitOfWorkOptions<TEntry>['events'];
   private readonly storage = new AsyncLocalStorage<UnitOfWorkContext>();
 
-  constructor(options: UnitOfWorkOptions) {
+  constructor(options: UnitOfWorkOptions<TEntry>) {
     this.db = options.db;
-    this.outboxWriter = options.outboxWriter;
+    this.events = options.events;
   }
 
   getContext(): UnitOfWorkContext | undefined {
@@ -61,11 +54,13 @@ export class UnitOfWork {
       const result = await this.storage.run(ctx, async () => {
         const opResult = await operation(ctx);
 
-        if (this.outboxWriter) {
+        const events = this.events;
+        if (events) {
           const domainEvents = [...tracked.values()].flatMap((a) => a.drainDomainEvents());
           const allEvents: AnyEvent[] = [...domainEvents, ...integrationEvents];
           if (allEvents.length > 0) {
-            await this.outboxWriter.write(allEvents, trx);
+            const entries = allEvents.map((e) => events.serialize(e));
+            await events.sink.sink(entries, trx);
           }
         }
 

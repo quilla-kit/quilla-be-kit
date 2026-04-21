@@ -1,7 +1,7 @@
 {
   "name": "@quilla-kit/messaging",
   "version": "0.1.0",
-  "description": "Messaging infrastructure: IEventBus, IEventConsumer, ILocalOutbox, EventSubscriptionBuilder, OutboxForwarder.",
+  "description": "Broker-agnostic messaging: event-bus + consumer interfaces, local-outbox pattern, outbox forwarder, Postgres reference implementation.",
   "license": "MIT",
   "author": "Max Martinez",
   "homepage": "https://github.com/quilla-kit/quilla-kit/tree/main/packages/messaging",
@@ -23,6 +23,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./postgres": {
+      "types": "./dist/postgres/index.d.ts",
+      "import": "./dist/postgres/index.js"
     }
   },
   "main": "./dist/index.js",
@@ -34,12 +38,25 @@
   },
   "scripts": {
     "build": "tsc -b",
+    "typecheck": "tsc -p tsconfig.test.json",
     "test": "vitest run --passWithNoTests",
     "clean": "rm -rf dist *.tsbuildinfo"
   },
   "dependencies": {
-    "@quilla-kit/ddd": "workspace:^",
     "@quilla-kit/execution-context": "workspace:^",
+    "@quilla-kit/lifecycle": "workspace:^",
     "@quilla-kit/observability": "workspace:^"
+  },
+  "peerDependencies": {
+    "pg": ">=8.0"
+  },
+  "peerDependenciesMeta": {
+    "pg": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/pg": "^8.15.5",
+    "pg": "^8.13.0"
   }
 }
