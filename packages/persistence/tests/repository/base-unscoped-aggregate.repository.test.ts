@@ -3,8 +3,8 @@ import { BaseWriteDao } from '../../src/dao/base-write.dao.js';
 import { BaseUnscopedAggregateRepository } from '../../src/repository/base-unscoped-aggregate.repository.js';
 import type { PersistenceMapper } from '../../src/repository/mapper.interface.js';
 import { FakeExecutionContextProvider } from '../helpers/fake-context-provider.js';
-import { FakeDatabase } from '../helpers/fake-database.js';
-import { FakeWriteQueryBuilder } from '../helpers/fake-query-builder.js';
+import { FakeDatabaseTransaction } from '../helpers/fake-database.js';
+import { FakeWriteDbAdapter } from '../helpers/fake-db-adapter.js';
 import { TestAggregate } from '../helpers/test.aggregate.js';
 
 type AggRow = { id: string; name: string };
@@ -28,43 +28,40 @@ class TestMapper implements PersistenceMapper<TestAggregate, AggRow> {
 class UnscopedRepo extends BaseUnscopedAggregateRepository<TestAggregate, AggRow> {}
 
 describe('BaseUnscopedAggregateRepository', () => {
-  let db: FakeDatabase;
+  let adapter: FakeWriteDbAdapter;
   let repo: UnscopedRepo;
+  let trx: FakeDatabaseTransaction;
 
   beforeEach(() => {
-    db = new FakeDatabase();
-    const qb = new FakeWriteQueryBuilder();
+    adapter = new FakeWriteDbAdapter();
     const ctx = new FakeExecutionContextProvider({
       actorType: 'user',
       userId: 'u1',
       correlationId: 'c1',
     });
-    const dao = new AggDao(db, qb, ctx);
+    const dao = new AggDao(adapter, ctx);
     repo = new UnscopedRepo(new TestMapper(), dao);
+    trx = new FakeDatabaseTransaction();
   });
 
   it('returns null when loadById finds nothing (not a throw)', async () => {
-    db.queryResults.push({ rows: [] });
+    adapter.findResults = [[]];
     const agg = await repo.loadById('missing');
     expect(agg).toBeNull();
   });
 
   it('returns the aggregate when found', async () => {
-    db.queryResults.push({
-      rows: [{ id: 'a1', name: 'foo' }],
-    });
+    adapter.findResults = [[{ id: 'a1', name: 'foo' }]];
     const agg = await repo.loadById('a1');
     expect(agg?.id).toBe('a1');
   });
 
   it('registers aggregate in UoW context on loadForUpdateById', async () => {
-    db.transaction.queryResults.push({
-      rows: [{ id: 'a1', name: 'foo' }],
-    });
+    adapter.findForUpdateResults = [[{ id: 'a1', name: 'foo' }]];
 
     const registered: unknown[] = [];
     const ctx = {
-      trx: db.transaction,
+      trx,
       registerAggregate: (...aggs: unknown[]) => registered.push(...aggs),
       registerIntegrationEvent: () => {},
     };

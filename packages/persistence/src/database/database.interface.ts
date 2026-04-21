@@ -1,3 +1,4 @@
+import type { DatabaseHealth } from './database-health.type.js';
 import type { DatabaseResult } from './database-result.type.js';
 import type { DatabaseTransaction } from './database-transaction.interface.js';
 
@@ -9,5 +10,5 @@ export interface Database {
   ): Promise<DatabaseResult>;
   getDbTransaction(): Promise<DatabaseTransaction>;
   disconnect(): Promise<void>;
-  healthCheck(): Promise<void>;
+  healthCheck(): Promise<DatabaseHealth>;
 }

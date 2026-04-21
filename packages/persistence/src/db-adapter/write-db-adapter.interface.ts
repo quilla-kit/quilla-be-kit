@@ -1,0 +1,58 @@
+import type { DatabaseResult } from '../database/database-result.type.js';
+import type { DatabaseTransaction } from '../database/database-transaction.interface.js';
+import type { FilterQuery } from './filter-query.type.js';
+import type { SelectOptions } from './read-db-adapter.interface.js';
+
+export type OptimisticLock = {
+  readonly column: string;
+  readonly expected: unknown;
+};
+
+export type InsertOptions = {
+  readonly table: string;
+  readonly rows: readonly Record<string, unknown>[];
+  readonly returning?: readonly string[];
+};
+
+export type UpdateOptions<T> = {
+  readonly table: string;
+  readonly set: Record<string, unknown>;
+  readonly where: FilterQuery<T>;
+  readonly optimisticLock?: OptimisticLock;
+  readonly returning?: readonly string[];
+};
+
+export type DeleteOptions<T> = {
+  readonly table: string;
+  readonly where: FilterQuery<T>;
+};
+
+export type ExistsOptions<T> = {
+  readonly table: string;
+  readonly where: FilterQuery<T>;
+};
+
+/**
+ * Write-side adapter. Owns a `Database` reference internally (for schema
+ * introspection and pool access), builds SQL with dialect-specific
+ * primitives, and executes it. DAOs call adapter methods directly; the
+ * adapter's Database is never exposed.
+ *
+ * CQRS note: `find`/`exists` are write-side reads (unlocked, optional trx
+ * — for pre-create uniqueness checks), and `findForUpdate` is the locked
+ * variant (required trx — for read-before-update). Read projections live
+ * entirely on `ReadDbAdapter`.
+ */
+export interface WriteDbAdapter {
+  insert(opts: InsertOptions, trx?: DatabaseTransaction): Promise<DatabaseResult>;
+
+  update<T>(opts: UpdateOptions<T>, trx?: DatabaseTransaction): Promise<DatabaseResult>;
+
+  delete<T>(opts: DeleteOptions<T>, trx?: DatabaseTransaction): Promise<DatabaseResult>;
+
+  find<T>(opts: SelectOptions<T>, trx?: DatabaseTransaction): Promise<readonly T[]>;
+
+  findForUpdate<T>(opts: SelectOptions<T>, trx: DatabaseTransaction): Promise<readonly T[]>;
+
+  exists<T>(opts: ExistsOptions<T>, trx?: DatabaseTransaction): Promise<boolean>;
+}

@@ -1,88 +1,99 @@
 import type { ExecutionContextProvider } from '@quilla-kit/execution-context';
 import type { DatabaseTransaction } from '../database/database-transaction.interface.js';
-import type { Database } from '../database/database.interface.js';
+import type { FilterQuery } from '../db-adapter/filter-query.type.js';
+import type { WriteDbAdapter } from '../db-adapter/write-db-adapter.interface.js';
 import { OptimisticLockError } from '../errors/optimistic-lock.error.js';
-import type { FilterQuery } from '../query/filter-query.type.js';
-import type { WriteQueryBuilder } from '../query/write-query-builder.interface.js';
-
-const INSERT_EXCLUDED_KEYS = new Set(['created_at', 'updated_at']);
-const UPDATE_EXCLUDED_KEYS = new Set(['id', 'created_at', 'updated_at', 'inserted_by']);
+import { AUDIT_COLUMNS, INSERT_EXCLUDED_KEYS, UPDATE_EXCLUDED_KEYS } from './audit-columns.js';
 
 /**
  * Write-side DAO. Orchestrates row writes with audit-field injection,
- * excluded-keys filtering, and optimistic-lock enforcement. Delegates
- * SQL generation to `WriteQueryBuilder` and execution to `Database`.
+ * excluded-keys filtering, and optimistic-lock enforcement. Delegates SQL
+ * generation and execution to `WriteDbAdapter`.
  *
- * Verb: `find*` — returns raw `TRow` (DB-level). Repository layer wraps
+ * `find*` — returns raw `TRow` (DB-level); the repository layer wraps
  * these into `load*` for aggregate loading.
+ *
+ * Unlocked reads (`findOne` / `findMany` / `existsBy`) accept optional
+ * `trx` for pre-create uniqueness checks. Locked reads (`findOneForUpdate`
+ * / `findManyForUpdate`) require `trx` — they're for read-before-update.
  */
 export abstract class BaseWriteDao<TRow extends { id: string }> {
   protected abstract readonly tableName: string;
 
   constructor(
-    protected readonly db: Database,
-    protected readonly queryBuilder: WriteQueryBuilder,
+    protected readonly adapter: WriteDbAdapter,
     protected readonly contextProvider: ExecutionContextProvider,
   ) {}
 
   async findOneById(id: string, trx?: DatabaseTransaction): Promise<TRow | null> {
-    const stmt = this.queryBuilder.selectForUpdate<TRow>({
-      table: this.tableName,
-      where: { id } as FilterQuery<TRow>,
-    });
-    const result = await this.db.query(stmt.text, stmt.params, trx);
-    return (result.rows[0] as TRow | undefined) ?? null;
+    const rows = await this.adapter.find<TRow>(
+      {
+        table: this.tableName,
+        where: { id } as FilterQuery<TRow>,
+        limit: 1,
+      },
+      trx,
+    );
+    return rows[0] ?? null;
+  }
+
+  async findOne(where: FilterQuery<TRow>, trx?: DatabaseTransaction): Promise<TRow | null> {
+    const rows = await this.adapter.find<TRow>({ table: this.tableName, where, limit: 1 }, trx);
+    return rows[0] ?? null;
+  }
+
+  async findMany(where: FilterQuery<TRow>, trx?: DatabaseTransaction): Promise<readonly TRow[]> {
+    return this.adapter.find<TRow>({ table: this.tableName, where }, trx);
+  }
+
+  async existsBy(where: FilterQuery<TRow>, trx?: DatabaseTransaction): Promise<boolean> {
+    return this.adapter.exists<TRow>({ table: this.tableName, where }, trx);
   }
 
   async findOneForUpdate(where: FilterQuery<TRow>, trx: DatabaseTransaction): Promise<TRow | null> {
-    const stmt = this.queryBuilder.selectForUpdate<TRow>({
-      table: this.tableName,
-      where,
-    });
-    const result = await this.db.query(stmt.text, stmt.params, trx);
-    return (result.rows[0] as TRow | undefined) ?? null;
+    const rows = await this.adapter.findForUpdate<TRow>(
+      { table: this.tableName, where, limit: 1 },
+      trx,
+    );
+    return rows[0] ?? null;
   }
 
-  async findManyForUpdate(where: FilterQuery<TRow>, trx: DatabaseTransaction): Promise<TRow[]> {
-    const stmt = this.queryBuilder.selectForUpdate<TRow>({
-      table: this.tableName,
-      where,
-    });
-    const result = await this.db.query(stmt.text, stmt.params, trx);
-    return result.rows as TRow[];
+  async findManyForUpdate(
+    where: FilterQuery<TRow>,
+    trx: DatabaseTransaction,
+  ): Promise<readonly TRow[]> {
+    return this.adapter.findForUpdate<TRow>({ table: this.tableName, where }, trx);
   }
 
   async create(row: TRow, trx?: DatabaseTransaction): Promise<void> {
-    const prepared = this.prepareInsertRow(row);
-    const stmt = this.queryBuilder.insert({
-      table: this.tableName,
-      rows: [prepared],
-    });
-    await this.db.query(stmt.text, stmt.params, trx);
+    const userId = this.contextProvider.getContext().userId;
+    await this.adapter.insert(
+      { table: this.tableName, rows: [this.prepareInsertRow(row, userId)] },
+      trx,
+    );
   }
 
   async createMany(rows: readonly TRow[], trx?: DatabaseTransaction): Promise<void> {
     if (rows.length === 0) return;
-    const prepared = rows.map((row) => this.prepareInsertRow(row));
-    const stmt = this.queryBuilder.insert({
-      table: this.tableName,
-      rows: prepared,
-    });
-    await this.db.query(stmt.text, stmt.params, trx);
+    const userId = this.contextProvider.getContext().userId;
+    const prepared = rows.map((row) => this.prepareInsertRow(row, userId));
+    await this.adapter.insert({ table: this.tableName, rows: prepared }, trx);
   }
 
   async update(row: TRow & { updated_at?: Date }, trx?: DatabaseTransaction): Promise<void> {
     const { id, updated_at } = row;
-    const prepared = this.prepareUpdateRow(row);
-    const stmt = this.queryBuilder.update<TRow>({
-      table: this.tableName,
-      set: prepared,
-      where: { id } as FilterQuery<TRow>,
-      ...(updated_at !== undefined
-        ? { optimisticLock: { column: 'updated_at', expected: updated_at } }
-        : {}),
-    });
-    const result = await this.db.query(stmt.text, stmt.params, trx);
+    const userId = this.contextProvider.getContext().userId;
+    const result = await this.adapter.update<TRow>(
+      {
+        table: this.tableName,
+        set: this.prepareUpdateRow(row, userId),
+        where: { id } as FilterQuery<TRow>,
+        ...(updated_at !== undefined
+          ? { optimisticLock: { column: AUDIT_COLUMNS.updatedAt, expected: updated_at } }
+          : {}),
+      },
+      trx,
+    );
 
     if (updated_at !== undefined && result.rowCount === 0) {
       throw new OptimisticLockError({ entity: this.tableName, id });
@@ -90,38 +101,38 @@ export abstract class BaseWriteDao<TRow extends { id: string }> {
   }
 
   async delete(id: string, trx?: DatabaseTransaction): Promise<void> {
-    const stmt = this.queryBuilder.delete<TRow>({
-      table: this.tableName,
-      where: { id } as FilterQuery<TRow>,
-    });
-    await this.db.query(stmt.text, stmt.params, trx);
+    await this.adapter.delete<TRow>(
+      {
+        table: this.tableName,
+        where: { id } as FilterQuery<TRow>,
+      },
+      trx,
+    );
   }
 
   async deleteMany(ids: readonly string[], trx?: DatabaseTransaction): Promise<void> {
     if (ids.length === 0) return;
-    const stmt = this.queryBuilder.delete<TRow>({
-      table: this.tableName,
-      where: { id: ids } as FilterQuery<TRow>,
-    });
-    await this.db.query(stmt.text, stmt.params, trx);
+    await this.adapter.delete<TRow>(
+      {
+        table: this.tableName,
+        where: { id: ids } as FilterQuery<TRow>,
+      },
+      trx,
+    );
   }
 
-  private prepareInsertRow(row: TRow): Record<string, unknown> {
-    const filtered = this.stripKeys(row, INSERT_EXCLUDED_KEYS);
-    const userId = this.contextProvider.getContext().userId;
+  private prepareInsertRow(row: TRow, userId: string | undefined): Record<string, unknown> {
     return {
-      ...filtered,
-      inserted_by: userId,
-      updated_by: userId,
+      ...this.stripKeys(row, INSERT_EXCLUDED_KEYS),
+      [AUDIT_COLUMNS.insertedBy]: userId,
+      [AUDIT_COLUMNS.updatedBy]: userId,
     };
   }
 
-  private prepareUpdateRow(row: TRow): Record<string, unknown> {
-    const filtered = this.stripKeys(row, UPDATE_EXCLUDED_KEYS);
-    const userId = this.contextProvider.getContext().userId;
+  private prepareUpdateRow(row: TRow, userId: string | undefined): Record<string, unknown> {
     return {
-      ...filtered,
-      updated_by: userId,
+      ...this.stripKeys(row, UPDATE_EXCLUDED_KEYS),
+      [AUDIT_COLUMNS.updatedBy]: userId,
     };
   }
 

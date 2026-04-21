@@ -65,5 +65,5 @@ export class FakeDatabase implements Database {
 
   disconnect = vi.fn(async () => {});
 
-  healthCheck = vi.fn(async () => {});
+  healthCheck = vi.fn(async () => ({ version: 'fake' }));
 }

@@ -2,23 +2,23 @@
 export type { Database } from './database/database.interface.js';
 export type { DatabaseTransaction } from './database/database-transaction.interface.js';
 export type { DatabaseResult } from './database/database-result.type.js';
+export type { DatabaseHealth } from './database/database-health.type.js';
 
-// query
-export type { FilterQuery } from './query/filter-query.type.js';
-export type { SqlStatement } from './query/sql-statement.type.js';
+// db-adapter
+export type { FilterQuery } from './db-adapter/filter-query.type.js';
 export type {
-  ReadQueryBuilder,
+  ReadDbAdapter,
   SelectOptions,
   OrderBy,
-} from './query/read-query-builder.interface.js';
+} from './db-adapter/read-db-adapter.interface.js';
 export type {
-  WriteQueryBuilder,
+  WriteDbAdapter,
   InsertOptions,
   UpdateOptions,
   DeleteOptions,
-  SelectForUpdateOptions,
+  ExistsOptions,
   OptimisticLock,
-} from './query/write-query-builder.interface.js';
+} from './db-adapter/write-db-adapter.interface.js';
 
 // dao
 export { BaseReadDao } from './dao/base-read.dao.js';
@@ -30,6 +30,7 @@ export { BaseAggregateRepository } from './repository/base-aggregate.repository.
 export { BaseScopedAggregateRepository } from './repository/base-scoped-aggregate.repository.js';
 export { BaseUnscopedAggregateRepository } from './repository/base-unscoped-aggregate.repository.js';
 export type { PersistenceMapper } from './repository/mapper.interface.js';
+export { BasePersistenceMapper } from './repository/base-persistence.mapper.js';
 
 // unit of work
 export {

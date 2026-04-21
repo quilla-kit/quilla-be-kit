@@ -2,8 +2,8 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { BaseWriteDao } from '../../src/dao/base-write.dao.js';
 import { OptimisticLockError } from '../../src/errors/optimistic-lock.error.js';
 import { FakeExecutionContextProvider } from '../helpers/fake-context-provider.js';
-import { FakeDatabase } from '../helpers/fake-database.js';
-import { FakeWriteQueryBuilder } from '../helpers/fake-query-builder.js';
+import { FakeDatabaseTransaction } from '../helpers/fake-database.js';
+import { FakeWriteDbAdapter } from '../helpers/fake-db-adapter.js';
 
 type UserRow = {
   id: string;
@@ -19,28 +19,28 @@ class UserDao extends BaseWriteDao<UserRow> {
 }
 
 describe('BaseWriteDao', () => {
-  let db: FakeDatabase;
-  let qb: FakeWriteQueryBuilder;
+  let adapter: FakeWriteDbAdapter;
   let ctxProvider: FakeExecutionContextProvider;
   let dao: UserDao;
+  let trx: FakeDatabaseTransaction;
 
   beforeEach(() => {
-    db = new FakeDatabase();
-    qb = new FakeWriteQueryBuilder();
+    adapter = new FakeWriteDbAdapter();
     ctxProvider = new FakeExecutionContextProvider({
       actorType: 'user',
       userId: 'user-42',
       correlationId: 'corr-1',
     });
-    dao = new UserDao(db, qb, ctxProvider);
+    dao = new UserDao(adapter, ctxProvider);
+    trx = new FakeDatabaseTransaction();
   });
 
   describe('create', () => {
     it('injects inserted_by and updated_by from the execution context', async () => {
       await dao.create({ id: 'u1', name: 'Alice' });
 
-      expect(qb.insertCalls).toHaveLength(1);
-      expect(qb.insertCalls[0]?.rows[0]).toEqual({
+      expect(adapter.insertCalls).toHaveLength(1);
+      expect(adapter.insertCalls[0]?.opts.rows[0]).toEqual({
         id: 'u1',
         name: 'Alice',
         inserted_by: 'user-42',
@@ -56,21 +56,21 @@ describe('BaseWriteDao', () => {
         updated_at: new Date(),
       });
 
-      const inserted = qb.insertCalls[0]?.rows[0];
+      const inserted = adapter.insertCalls[0]?.opts.rows[0];
       expect(inserted).not.toHaveProperty('created_at');
       expect(inserted).not.toHaveProperty('updated_at');
     });
 
-    it('passes trx through to the db when present', async () => {
-      await dao.create({ id: 'u1', name: 'Alice' }, db.transaction);
-      expect(db.calls[0]?.viaTrx).toBe(true);
+    it('passes trx through to the adapter when present', async () => {
+      await dao.create({ id: 'u1', name: 'Alice' }, trx);
+      expect(adapter.insertCalls[0]?.trx).toBe(trx);
     });
   });
 
   describe('createMany', () => {
     it('no-ops on empty array', async () => {
       await dao.createMany([]);
-      expect(qb.insertCalls).toHaveLength(0);
+      expect(adapter.insert).not.toHaveBeenCalled();
     });
 
     it('prepares each row with audit fields', async () => {
@@ -79,22 +79,18 @@ describe('BaseWriteDao', () => {
         { id: 'u2', name: 'b' },
       ]);
 
-      const inserted = qb.insertCalls[0]?.rows;
-      expect(inserted).toHaveLength(2);
-      expect(inserted?.[0]).toMatchObject({ inserted_by: 'user-42' });
-      expect(inserted?.[1]).toMatchObject({ inserted_by: 'user-42' });
+      const rows = adapter.insertCalls[0]?.opts.rows;
+      expect(rows).toHaveLength(2);
+      expect(rows?.[0]).toMatchObject({ inserted_by: 'user-42' });
+      expect(rows?.[1]).toMatchObject({ inserted_by: 'user-42' });
     });
   });
 
   describe('update', () => {
-    beforeEach(() => {
-      db.transaction.queryResults.push({ rows: [], rowCount: 1 });
-    });
-
     it('injects updated_by but not inserted_by', async () => {
-      await dao.update({ id: 'u1', name: 'Alice2' }, db.transaction);
+      await dao.update({ id: 'u1', name: 'Alice2' }, trx);
 
-      const set = qb.updateCalls[0]?.set;
+      const set = adapter.updateCalls[0]?.opts.set;
       expect(set).toMatchObject({ name: 'Alice2', updated_by: 'user-42' });
       expect(set).not.toHaveProperty('inserted_by');
     });
@@ -107,10 +103,10 @@ describe('BaseWriteDao', () => {
           inserted_by: 'old-user',
           created_at: new Date(),
         },
-        db.transaction,
+        trx,
       );
 
-      const set = qb.updateCalls[0]?.set;
+      const set = adapter.updateCalls[0]?.opts.set;
       expect(set).not.toHaveProperty('id');
       expect(set).not.toHaveProperty('inserted_by');
       expect(set).not.toHaveProperty('created_at');
@@ -119,66 +115,101 @@ describe('BaseWriteDao', () => {
 
     it('passes updated_at as optimisticLock when present', async () => {
       const updatedAt = new Date('2026-01-01');
-      await dao.update({ id: 'u1', name: 'x', updated_at: updatedAt }, db.transaction);
+      await dao.update({ id: 'u1', name: 'x', updated_at: updatedAt }, trx);
 
-      expect(qb.updateCalls[0]?.optimisticLock).toEqual({
+      expect(adapter.updateCalls[0]?.opts.optimisticLock).toEqual({
         column: 'updated_at',
         expected: updatedAt,
       });
     });
 
     it('omits optimisticLock when updated_at is absent', async () => {
-      await dao.update({ id: 'u1', name: 'x' }, db.transaction);
-      expect(qb.updateCalls[0]?.optimisticLock).toBeUndefined();
+      await dao.update({ id: 'u1', name: 'x' }, trx);
+      expect(adapter.updateCalls[0]?.opts.optimisticLock).toBeUndefined();
     });
 
     it('throws OptimisticLockError when rowCount is 0 and updated_at was provided', async () => {
-      db.transaction.queryResults = [{ rows: [], rowCount: 0 }];
+      adapter.updateResults = [{ rows: [], rowCount: 0 }];
 
       await expect(
-        dao.update({ id: 'u1', name: 'x', updated_at: new Date() }, db.transaction),
+        dao.update({ id: 'u1', name: 'x', updated_at: new Date() }, trx),
       ).rejects.toThrow(OptimisticLockError);
     });
 
     it('does not throw when rowCount is 0 but no optimistic lock was requested', async () => {
-      db.transaction.queryResults = [{ rows: [], rowCount: 0 }];
+      adapter.updateResults = [{ rows: [], rowCount: 0 }];
 
-      await expect(dao.update({ id: 'u1', name: 'x' }, db.transaction)).resolves.toBeUndefined();
+      await expect(dao.update({ id: 'u1', name: 'x' }, trx)).resolves.toBeUndefined();
     });
   });
 
   describe('delete', () => {
-    it('passes id as where clause to the query builder', async () => {
+    it('passes id as where clause', async () => {
       await dao.delete('u1');
-      expect(qb.deleteCalls[0]?.where).toEqual({ id: 'u1' });
+      expect(adapter.deleteCalls[0]?.opts.where).toEqual({ id: 'u1' });
     });
   });
 
   describe('deleteMany', () => {
     it('no-ops on empty array', async () => {
       await dao.deleteMany([]);
-      expect(qb.deleteCalls).toHaveLength(0);
+      expect(adapter.delete).not.toHaveBeenCalled();
     });
 
     it('passes ids array as where clause', async () => {
       await dao.deleteMany(['u1', 'u2']);
-      expect(qb.deleteCalls[0]?.where).toEqual({ id: ['u1', 'u2'] });
+      expect(adapter.deleteCalls[0]?.opts.where).toEqual({ id: ['u1', 'u2'] });
     });
   });
 
-  describe('findOneForUpdate', () => {
-    it('uses selectForUpdate on the query builder', async () => {
-      db.transaction.queryResults = [{ rows: [{ id: 'u1', name: 'a' }] }];
+  describe('read-side methods (unlocked)', () => {
+    it('findOne uses find() on the adapter with limit 1', async () => {
+      adapter.findResults = [[{ id: 'u1', name: 'a' }]];
+      const row = await dao.findOne({ name: 'a' });
 
-      const row = await dao.findOneForUpdate({ id: 'u1' }, db.transaction);
-      expect(qb.selectForUpdate).toHaveBeenCalledTimes(1);
+      expect(adapter.findCalls[0]?.opts).toEqual({
+        table: 'users',
+        where: { name: 'a' },
+        limit: 1,
+      });
+      expect(row).toEqual({ id: 'u1', name: 'a' });
+    });
+
+    it('findOne returns null when no rows', async () => {
+      adapter.findResults = [[]];
+      expect(await dao.findOne({ id: 'missing' })).toBeNull();
+    });
+
+    it('existsBy delegates to adapter.exists', async () => {
+      adapter.existsResults = [true];
+      const result = await dao.existsBy({ id: 'u1' });
+      expect(adapter.existsCalls[0]?.opts).toEqual({
+        table: 'users',
+        where: { id: 'u1' },
+      });
+      expect(result).toBe(true);
+    });
+
+    it('find* methods accept optional trx for read-within-write-trx', async () => {
+      adapter.findResults = [[{ id: 'u1', name: 'a' }]];
+      await dao.findOne({ id: 'u1' }, trx);
+      expect(adapter.findCalls[0]?.trx).toBe(trx);
+    });
+  });
+
+  describe('findOneForUpdate (locked)', () => {
+    it('uses findForUpdate on the adapter', async () => {
+      adapter.findForUpdateResults = [[{ id: 'u1', name: 'a' }]];
+
+      const row = await dao.findOneForUpdate({ id: 'u1' }, trx);
+      expect(adapter.findForUpdateCalls).toHaveLength(1);
+      expect(adapter.findForUpdateCalls[0]?.trx).toBe(trx);
       expect(row).toEqual({ id: 'u1', name: 'a' });
     });
 
     it('returns null when no rows match', async () => {
-      db.transaction.queryResults = [{ rows: [] }];
-      const row = await dao.findOneForUpdate({ id: 'u1' }, db.transaction);
-      expect(row).toBeNull();
+      adapter.findForUpdateResults = [[]];
+      expect(await dao.findOneForUpdate({ id: 'u1' }, trx)).toBeNull();
     });
   });
 });

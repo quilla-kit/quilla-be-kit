@@ -1,44 +1,34 @@
-import type { Database } from '../database/database.interface.js';
-import type { FilterQuery } from '../query/filter-query.type.js';
-import type { ReadQueryBuilder } from '../query/read-query-builder.interface.js';
+import type { FilterQuery } from '../db-adapter/filter-query.type.js';
+import type { ReadDbAdapter } from '../db-adapter/read-db-adapter.interface.js';
 
 /**
- * Read-side DAO. Projects database rows into read-model shapes.
- * Verb: `find*` — returns raw `TReadModel` from the replica. Does NOT
- * participate in write transactions.
+ * Read-side DAO. Projects database rows into read-model shapes. Never
+ * participates in write transactions — its API has no `trx` parameter.
+ *
+ * Verb: `find*` — returns raw `TReadModel` from the read connection.
  */
 export abstract class BaseReadDao<TReadModel> {
   protected abstract readonly tableName: string;
 
-  constructor(
-    protected readonly db: Database,
-    protected readonly queryBuilder: ReadQueryBuilder,
-  ) {}
+  constructor(protected readonly adapter: ReadDbAdapter) {}
 
   async findOne(where: FilterQuery<TReadModel>): Promise<TReadModel | null> {
-    const stmt = this.queryBuilder.select<TReadModel>({
+    const rows = await this.adapter.select<TReadModel>({
       table: this.tableName,
       where,
       limit: 1,
     });
-    const result = await this.db.query(stmt.text, stmt.params);
-    return (result.rows[0] as TReadModel | undefined) ?? null;
+    return rows[0] ?? null;
   }
 
-  async findMany(where: FilterQuery<TReadModel>): Promise<TReadModel[]> {
-    const stmt = this.queryBuilder.select<TReadModel>({
+  async findMany(where: FilterQuery<TReadModel>): Promise<readonly TReadModel[]> {
+    return this.adapter.select<TReadModel>({
       table: this.tableName,
       where,
     });
-    const result = await this.db.query(stmt.text, stmt.params);
-    return result.rows as TReadModel[];
   }
 
-  async findAll(): Promise<TReadModel[]> {
-    const stmt = this.queryBuilder.select<TReadModel>({
-      table: this.tableName,
-    });
-    const result = await this.db.query(stmt.text, stmt.params);
-    return result.rows as TReadModel[];
+  async findAll(): Promise<readonly TReadModel[]> {
+    return this.adapter.select<TReadModel>({ table: this.tableName });
   }
 }

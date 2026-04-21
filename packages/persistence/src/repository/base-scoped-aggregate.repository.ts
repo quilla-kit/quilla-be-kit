@@ -1,6 +1,6 @@
 import type { AggregateRoot } from '@quilla-kit/ddd';
+import type { FilterQuery } from '../db-adapter/filter-query.type.js';
 import { CrossScopeAccessError } from '../errors/cross-scope-access.error.js';
-import type { FilterQuery } from '../query/filter-query.type.js';
 import type { UnitOfWorkContext } from '../unit-of-work/unit-of-work-context.type.js';
 import { BaseAggregateRepository } from './base-aggregate.repository.js';
 

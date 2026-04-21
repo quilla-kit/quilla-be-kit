@@ -23,6 +23,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./postgres": {
+      "types": "./dist/postgres/index.d.ts",
+      "import": "./dist/postgres/index.js"
     }
   },
   "main": "./dist/index.js",
@@ -41,12 +45,18 @@
   "peerDependencies": {
     "@quilla-kit/ddd": "workspace:^",
     "@quilla-kit/errors": "workspace:^",
-    "@quilla-kit/execution-context": "workspace:^"
+    "@quilla-kit/execution-context": "workspace:^",
+    "pg": ">=8.0"
+  },
+  "peerDependenciesMeta": {
+    "pg": { "optional": true }
   },
   "devDependencies": {
     "@quilla-kit/ddd": "workspace:^",
     "@quilla-kit/errors": "workspace:^",
     "@quilla-kit/execution-context": "workspace:^",
+    "@types/pg": "^8.11",
+    "pg": "^8.20.0",
     "vitest": "^2.1.3"
   }
 }

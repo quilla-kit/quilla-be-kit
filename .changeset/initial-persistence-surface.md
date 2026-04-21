@@ -2,61 +2,96 @@
 "@quilla-kit/persistence": minor
 ---
 
-Initial public surface (core): `Database` / `DatabaseTransaction` /
-`DatabaseResult` types, `FilterQuery` / `SqlStatement` / `ReadQueryBuilder` /
-`WriteQueryBuilder` for CQRS-isolated query building, `BaseReadDao` /
-`BaseWriteDao` abstract base classes, `BaseBasicRepository` /
-`BaseAggregateRepository` / `BaseScopedAggregateRepository` /
-`BaseUnscopedAggregateRepository`, `UnitOfWork` with AsyncLocalStorage
-nesting + optional `OutboxWriter` injection, `UnitOfWorkContext`,
-`PersistenceMapper`, `CrossScopeAccessError`, `OptimisticLockError`.
+Initial public surface: transport-agnostic core + Postgres reference
+implementation under the `/postgres` sub-path.
 
-Key design decisions:
+**Core (`@quilla-kit/persistence`):**
 
-- **Transport-agnostic core.** No SQL strings in the package. `Database`
-  and `QueryBuilder` are interfaces; the package ships the orchestration
-  (audit injection, optimistic-lock enforcement, excluded-keys filtering,
-  aggregate registration, event draining) while dialect-specific SQL
-  generation lives in a concrete `QueryBuilder` supplied by the consumer.
-  A Postgres reference implementation ships in a follow-up PR under the
-  `@quilla-kit/persistence/postgres` sub-path.
-- **CQRS isolation at the type level.** `ReadQueryBuilder` has only
-  `select`; `WriteQueryBuilder` has `insert`/`update`/`delete`/
-  `selectForUpdate` (write-side locked reads). `BaseReadDao` injects only
-  `ReadQueryBuilder` — read-side code cannot mutate. A concrete class
-  may implement both interfaces for wiring convenience.
-- **DAO vs repository verbs signal the layer.** DAOs use `find*`
-  (DB-neutral, returns `TRow`); repositories use `load*` (DDD, returns
-  `TAggregate`). Different verbs, different layer contracts.
-- **Audit fields baked into DAO layer.** `inserted_by` / `updated_by`
-  resolved from `ExecutionContextProvider` on every write — callers
-  cannot bypass. `created_at` / `updated_at` stripped from input on
-  insert (DB generates). `id` / `inserted_by` / `created_at` stripped
-  on update (immutable post-insert).
-- **Optimistic lock via `updated_at` opt-in.** If present on an update
-  input, the DAO passes it as `optimisticLock` to the query builder and
-  asserts `rowCount === 1` — mismatch throws `OptimisticLockError`.
-  Omit `updated_at` for an unconditional update.
-- **Scope isolation at the repo layer, explicit.** `BaseScopedAggregate-
-  Repository` accepts `scopeId` on every load and throws `CrossScope-
-  AccessError` (extends `@quilla-kit/errors` `NotFoundError`) on miss
-  or mismatch. The toolkit stays scope-agnostic — consumers choose what
-  `scopeId` represents (tenant, workspace, organization, project).
-- **Outbox is pluggable, not built-in.** `UnitOfWork` accepts an
-  optional `OutboxWriter`; when wired, it drains registered aggregates'
-  domain events plus explicitly registered integration events in the
-  same transaction. When absent, the UoW just commits. Concrete
-  `OutboxWriter` implementations live in `@quilla-kit/messaging`.
-- **`UnitOfWork.transaction` is idempotent under nesting.** Nested calls
-  detect an active UoW via AsyncLocalStorage and JOIN the outer trx —
-  inner call receives the outer `UnitOfWorkContext`, no new trx is
-  started. Only the outermost commits/rolls back.
-- **Repositories receive a `UnitOfWorkContext`**, not a bare trx — they
-  register aggregates for event draining as a side effect of write
-  operations. `loadForUpdate*` variants register on successful load.
-- **Errors extend `@quilla-kit/errors`** with fixed codes per class
-  (`CROSS_SCOPE_ACCESS`, `OPTIMISTIC_LOCK`) — consumers classify via
-  `instanceof` against the category base.
-- **Peer dependencies** on `@quilla-kit/ddd`, `@quilla-kit/execution-
-  context`, `@quilla-kit/errors` to avoid duplicate copies across the
-  workspace and keep `instanceof` reliable.
+- `Database` / `DatabaseTransaction` / `DatabaseResult` / `DatabaseHealth`
+  types — the transport abstraction.
+- `FilterQuery<T>` — typed WHERE shape; value or readonly-array per field
+  → emits `=` or `IN`.
+- `ReadDbAdapter` / `WriteDbAdapter` interfaces — CQRS-split adapter
+  contracts. Read side exposes `select` only (never accepts `trx`). Write
+  side exposes `insert` / `update` / `delete` / `find` / `findForUpdate` /
+  `exists`. A single concrete class may implement both for wiring
+  convenience, but DAO types enforce the boundary.
+- `BaseReadDao<TReadModel>` — projections-only, no `trx` parameter anywhere.
+- `BaseWriteDao<TRow>` — writes with audit-field injection, excluded-keys
+  filtering, and optimistic-lock enforcement. Unlocked reads (`findOne` /
+  `findMany` / `existsBy`) for pre-create validation; locked reads
+  (`findOneForUpdate` / `findManyForUpdate`) for read-before-update.
+- `BaseBasicRepository` / `BaseAggregateRepository` /
+  `BaseScopedAggregateRepository` / `BaseUnscopedAggregateRepository`.
+- `UnitOfWork` — AsyncLocalStorage-scoped nested `transaction()`
+  JOIN semantics + optional `OutboxWriter` injection for domain +
+  integration event draining in the same transaction.
+- `UnitOfWorkContext`, `OutboxWriter`, `PersistenceMapper` types.
+- `BasePersistenceMapper<TAggregate, TProps, TRow>` — abstract base that
+  auto-converts row↔aggregate via prototype reflection: enumerates every
+  `get`+`set` accessor pair on the aggregate's prototype chain to discover
+  persisted properties, then maps names via camelCase↔snake_case. Consumer
+  declares only `createDomain` (required, reconstructs the aggregate) plus
+  optional `columnOverrides` (sparse map for non-conventional column names)
+  and `createPersistence` (for value-object serialization / derived
+  columns). Inherits the `Entity` base accessors automatically, so
+  `createdAt` / `updatedAt` / `insertedBy` / `updatedBy` map to
+  `created_at` / `updated_at` / `inserted_by` / `updated_by` without any
+  consumer declaration. Getter-only accessors (computed / derived) are
+  excluded — no opt-out needed.
+- `CrossScopeAccessError` (extends `NotFoundError`, code
+  `CROSS_SCOPE_ACCESS`), `OptimisticLockError` (extends `ConflictError`,
+  code `OPTIMISTIC_LOCK`).
+
+**Postgres (`@quilla-kit/persistence/postgres`):**
+
+- `PgDatabase` — owns a `pg.Pool`; constructor takes `PoolConfig`. Wire
+  `disconnect()` into `ShutdownManager` for graceful drain. `healthCheck()`
+  runs `SELECT version()` and returns `{ version }`.
+- `PgTransaction` — wraps a `PoolClient`, explicit `start` →
+  `commit`/`rollback` → `release` lifecycle.
+- `PgWriteDbAdapter` — implements `WriteDbAdapter`. Queries
+  `information_schema.columns` once per table (per-process cache), maps
+  types via `mapPostgresType` for explicit `::UUID` / `::JSONB` /
+  `::TIMESTAMPTZ` / `::INTEGER` etc. casts. JSONB values get
+  `JSON.stringify`'d. `created_at` / `updated_at` emitted as
+  `date_trunc('milliseconds', CURRENT_TIMESTAMP)` for round-trip
+  consistency with JS `Date`. Optimistic lock clause appended as
+  `AND col = date_trunc('milliseconds', $n::timestamptz)`. Array values
+  rendered as `= ANY($n::TYPE[])`.
+- `PgReadDbAdapter` — implements `ReadDbAdapter`. Same info-schema cache
+  + type casts, no transactions, no `FOR UPDATE`.
+
+**Key design decisions:**
+
+- **Transport-agnostic core, dialect-specific sub-path.** Consumers who
+  target Postgres import from `@quilla-kit/persistence/postgres`.
+  Consumers targeting another dialect implement `Database` +
+  `WriteDbAdapter` + `ReadDbAdapter` themselves. Invariants (audit,
+  optimistic-lock check, scope isolation, excluded-keys filtering, event
+  draining, UoW JOIN) live in the core and are tested once.
+- **`pg` as optional peer dependency** — `>=8.0` range, `peerDepend-
+  enciesMeta.optional: true`. Consumers who don't use the Postgres
+  sub-path don't need `pg` installed.
+- **Adapter owns `Database` internally.** DAO constructors take only
+  `(WriteDbAdapter, ExecutionContextProvider)` or `(ReadDbAdapter)` —
+  no direct `Database` reference. Composition root passes `Database`
+  to the adapters + UoW; DAOs are insulated.
+- **CQRS at the type level.** Read DAOs/adapters have no `trx`
+  parameter anywhere — a compile-time guarantee that read projections
+  cannot participate in write transactions. The write side's unlocked
+  `findOne` / `existsBy` are the sanctioned path for pre-create checks;
+  `findOneForUpdate` is exclusively for read-before-update (its `trx`
+  argument is required, not optional).
+- **`code` is class-fixed** on every toolkit error — no constructor
+  parameter varies it. `CrossScopeAccessError.code === 'CROSS_SCOPE_
+  ACCESS'`, `OptimisticLockError.code === 'OPTIMISTIC_LOCK'`.
+- **Peer dependencies on toolkit packages** (`@quilla-kit/ddd`,
+  `@quilla-kit/execution-context`, `@quilla-kit/errors`) — avoid
+  duplicate copies across consumer graphs; keeps `instanceof` reliable.
+
+**Tests:** 64 abstract-level unit tests — audit injection, optimistic-
+lock enforcement, scope mismatch, null-on-miss semantics, UoW commit /
+rollback / release lifecycle, nested JOIN, outbox drain, CQRS boundary
+enforcement, and Postgres SQL-string assertions against a stub
+`Database`. No live-Postgres integration tests (consumer concern).

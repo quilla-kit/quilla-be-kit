@@ -4,8 +4,8 @@ import { CrossScopeAccessError } from '../../src/errors/cross-scope-access.error
 import { BaseScopedAggregateRepository } from '../../src/repository/base-scoped-aggregate.repository.js';
 import type { PersistenceMapper } from '../../src/repository/mapper.interface.js';
 import { FakeExecutionContextProvider } from '../helpers/fake-context-provider.js';
-import { FakeDatabase } from '../helpers/fake-database.js';
-import { FakeWriteQueryBuilder } from '../helpers/fake-query-builder.js';
+import { FakeDatabaseTransaction } from '../helpers/fake-database.js';
+import { FakeWriteDbAdapter } from '../helpers/fake-db-adapter.js';
 import { TestAggregate } from '../helpers/test.aggregate.js';
 
 type AggRow = {
@@ -36,38 +36,34 @@ class TestMapper implements PersistenceMapper<TestAggregate, AggRow> {
 class ScopedRepo extends BaseScopedAggregateRepository<TestAggregate, AggRow> {}
 
 describe('BaseScopedAggregateRepository', () => {
-  let db: FakeDatabase;
-  let qb: FakeWriteQueryBuilder;
+  let adapter: FakeWriteDbAdapter;
   let ctxProvider: FakeExecutionContextProvider;
   let dao: AggDao;
   let repo: ScopedRepo;
+  let trx: FakeDatabaseTransaction;
 
   beforeEach(() => {
-    db = new FakeDatabase();
-    qb = new FakeWriteQueryBuilder();
+    adapter = new FakeWriteDbAdapter();
     ctxProvider = new FakeExecutionContextProvider({
       actorType: 'user',
       userId: 'u1',
       correlationId: 'c1',
     });
-    dao = new AggDao(db, qb, ctxProvider);
+    dao = new AggDao(adapter, ctxProvider);
     repo = new ScopedRepo(new TestMapper(), dao);
+    trx = new FakeDatabaseTransaction();
   });
 
   describe('loadByIdAndScopeOrFail', () => {
     it('returns the aggregate when scope matches', async () => {
-      db.queryResults.push({
-        rows: [{ id: 'a1', scope_id: 'scope-1', name: 'foo' }],
-      });
+      adapter.findResults = [[{ id: 'a1', scope_id: 'scope-1', name: 'foo' }]];
 
       const agg = await repo.loadByIdAndScopeOrFail('a1', 'scope-1');
       expect(agg.id).toBe('a1');
     });
 
     it('throws CrossScopeAccessError when row has a different scope', async () => {
-      db.queryResults.push({
-        rows: [{ id: 'a1', scope_id: 'scope-OTHER', name: 'foo' }],
-      });
+      adapter.findResults = [[{ id: 'a1', scope_id: 'scope-OTHER', name: 'foo' }]];
 
       await expect(repo.loadByIdAndScopeOrFail('a1', 'scope-1')).rejects.toThrow(
         CrossScopeAccessError,
@@ -75,7 +71,7 @@ describe('BaseScopedAggregateRepository', () => {
     });
 
     it('throws CrossScopeAccessError when no row found', async () => {
-      db.queryResults.push({ rows: [] });
+      adapter.findResults = [[]];
 
       await expect(repo.loadByIdAndScopeOrFail('missing', 'scope-1')).rejects.toThrow(
         CrossScopeAccessError,
@@ -85,13 +81,11 @@ describe('BaseScopedAggregateRepository', () => {
 
   describe('loadForUpdateByIdAndScopeOrFail', () => {
     it('registers the aggregate in the UoW context on success', async () => {
-      db.transaction.queryResults.push({
-        rows: [{ id: 'a1', scope_id: 'scope-1', name: 'foo' }],
-      });
+      adapter.findForUpdateResults = [[{ id: 'a1', scope_id: 'scope-1', name: 'foo' }]];
 
       const registered: unknown[] = [];
       const ctx = {
-        trx: db.transaction,
+        trx,
         registerAggregate: (...aggs: unknown[]) => registered.push(...aggs),
         registerIntegrationEvent: () => {},
       };
@@ -107,12 +101,10 @@ describe('BaseScopedAggregateRepository', () => {
     });
 
     it('throws on scope mismatch', async () => {
-      db.transaction.queryResults.push({
-        rows: [{ id: 'a1', scope_id: 'other', name: 'foo' }],
-      });
+      adapter.findForUpdateResults = [[{ id: 'a1', scope_id: 'other', name: 'foo' }]];
 
       const ctx = {
-        trx: db.transaction,
+        trx,
         registerAggregate: () => {},
         registerIntegrationEvent: () => {},
       };
