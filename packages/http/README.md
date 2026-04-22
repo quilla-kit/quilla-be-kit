@@ -3,7 +3,8 @@
 Framework-agnostic HTTP layer for a quilla-kit service:
 
 - **Controller decorators** — `@Controller`, `@Get` / `@Post` / `@Put` / `@Patch` / `@Delete` + `*Public` variants, `@AuthorizeScope`, `@ValidateRequest`.
-- **Router** — walks decorated controller instances, composes prefixes, sorts routes by specificity, bridges to `ComponentRegistry<HttpModuleMeta>` from `@quilla-kit/runtime`.
+- **Router** — walks decorated controller instances, composes prefixes, sorts routes by specificity, bridges to `ComponentRegistry<HttpModuleMeta>` from `@quilla-kit/runtime`, and (when `executionContext` is configured) installs a **system-owned execution-context bootstrap** so every handler can rely on `provider.getContext()`.
+- **Typed auth middleware stack** — `AuthMiddlewareStack` enforces phase ordering (`tokenVerification` → `sessionLoad?`) so consumers can't misorder security middlewares. Compose it directly from `@quilla-kit/security`'s middleware factories.
 - **Request / response contracts** — `HttpRequest`, `HttpResponse`, `HttpMiddleware`, `AuthenticatedToken`, `HttpAttributes`.
 - **Validator contract** — `RequestValidator` interface; wire Zod / Joi / Valibot / ArkType with a ~5-line adapter.
 - **Hono adapter** — `@quilla-kit/http/adapter/hono` sub-path ships a `HonoServer` that implements `WebServer`. `hono` is an optional peer dep.
@@ -48,7 +49,7 @@ Consumers do **not** need to polyfill `Symbol.metadata` themselves — the libra
 ## Quick start
 
 ```ts
-import { AsyncExecutionContextProvider, executionContextFactory } from '@quilla-kit/execution-context';
+import { AsyncExecutionContextProvider } from '@quilla-kit/execution-context';
 import {
   Controller,
   Get,
@@ -57,13 +58,16 @@ import {
   AuthorizeScope,
   ValidateRequest,
   Router,
-  executionContextMiddleware,
   type HttpRequest,
   type HttpResponse,
   type RequestValidator,
 } from '@quilla-kit/http';
 import { HonoServer } from '@quilla-kit/http/adapter/hono';
 import { Runtime, ShutdownManager, ComponentRegistry } from '@quilla-kit/runtime';
+import {
+  authenticatedSessionMiddleware,
+  bearerTokenMiddleware,
+} from '@quilla-kit/security';
 import { serve } from '@hono/node-server';
 
 @Controller('/users')
@@ -103,16 +107,20 @@ components.register({
 
 const router = new Router({
   modules: components.getAll(),
-  globalMiddlewares: [
-    executionContextMiddleware({ provider, factory: executionContextFactory }),
-  ],
-  authMiddlewares: [/* your requireAuthMiddleware, authenticatedSessionMiddleware */],
+  executionContext: { provider },
+  globalMiddlewares: [/* your custom globals (cors, rate-limit, request-logger, ...) */],
+  authMiddlewares: {
+    tokenVerification: bearerTokenMiddleware({ tokenService }),
+    sessionLoad: authenticatedSessionMiddleware({
+      sessionStore,
+      executionContextProvider: provider,
+    }),
+  },
 });
 
 const server = new HonoServer({
   port: 3000,
   router,
-  executionContextProvider: provider,
   requestValidator: zodRequestValidator, // see below
   serve: (app, port) => {
     const handle = serve({ fetch: app.fetch, port });
@@ -229,8 +237,20 @@ const router = new Router({
   // OR via modules from ComponentRegistry<HttpModuleMeta>:
   modules: registry.getAll(),
 
-  globalMiddlewares: [...],               // run on every route
-  authMiddlewares: [...],                 // run on non-public routes
+  // Optional — when provided, Router installs a system execution-context
+  // bootstrap before any consumer middleware. Every route (public and
+  // non-public) gets a baseline anonymous context with a correlation id from
+  // the `x-correlation-id` header (or a generated UUID).
+  // **Required iff `authMiddlewares` is set** — Router throws at construction
+  // otherwise. Skip it for pure-public services that never call
+  // `request.getExecutionContext()`. The provider carries its own factory
+  // (default `executionContextFactory`); pass a custom factory via
+  // `new AsyncExecutionContextProvider({ factory })` if you've extended the
+  // ExecutionContext shape.
+  executionContext: { provider },
+
+  globalMiddlewares: [...],               // custom — run on every route after system bootstrap
+  authMiddlewares: { tokenVerification, sessionLoad? },  // typed stack — non-public routes only
 });
 ```
 
@@ -238,6 +258,22 @@ const router = new Router({
 - Routes are sorted by **specificity** (static segments > parametric > wildcard) so `/users/healthz` matches before `/users/:id`.
 - Path composition: `[module prefix] + [registration prefix] + [@Controller prefix] + [@Route path]`, normalized to a single leading slash and no trailing slash.
 - Duplicate routes (same method + path) throw at construction time — you catch double-registrations at startup, not under load.
+
+### Middleware chain order
+
+On a **non-public** route:
+
+```
+system executionContext bootstrap  →  globalMiddlewares[]  →  tokenVerification  →  sessionLoad?  →  route middlewares  →  handler
+```
+
+On a **`*Public` route**, the entire `authMiddlewares` stack is skipped:
+
+```
+system executionContext bootstrap  →  globalMiddlewares[]  →  route middlewares  →  handler
+```
+
+The system bootstrap is Router-owned and not configurable from outside — this eliminates "I forgot to add `executionContextMiddleware`" as a failure mode for services that use auth or read `ExecutionContext`. When `executionContext` is omitted, the bootstrap step is skipped entirely; services that never read context pay no boilerplate. Router throws at construction if `authMiddlewares` is set without `executionContext` — the known-static dependency is caught at startup, not at the first authenticated request. The typed `AuthMiddlewareStack` prevents phase misordering at the type level; the array in `globalMiddlewares` stays open-ended because custom middleware ordering is consumer-owned.
 
 ## Bridge to `ComponentRegistry<HttpModuleMeta>`
 
@@ -314,8 +350,7 @@ const honoServe: HonoServeFn = (app, port) => {
 
 const server = new HonoServer({
   port: 3000,
-  router,
-  executionContextProvider,
+  router,                 // HonoServer reads the execution-context provider from Router
   requestValidator,       // optional — required only if any route uses @ValidateRequest
   logger,                 // optional — used for startup/shutdown/error logs
   serve: honoServe,

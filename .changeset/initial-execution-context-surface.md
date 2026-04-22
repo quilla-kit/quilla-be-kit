@@ -25,6 +25,12 @@ Key design decisions:
   `createLoggerFactory` function-factory pattern in observability.
   Consumers inject the `ExecutionContextFactory` interface; tests provide
   stubs.
+- **Provider carries its factory.** `ExecutionContextProvider` exposes
+  `readonly factory: ExecutionContextFactory`; `AsyncExecutionContextProvider`
+  defaults it to `executionContextFactory` and accepts a
+  `{ factory }` override. Downstream components (http Router, outbox
+  forwarders, event consumers) take a single provider instead of
+  `{ provider, factory }` twice.
 - **Factory methods**: `createSystemContext('system' | 'job')`,
   `createBaselineContext({ correlationId? })`, `createFromEventMetadata(meta)`.
   JWT and HTTP-specific factories belong in `@quilla-kit/security` and

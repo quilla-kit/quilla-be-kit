@@ -128,27 +128,18 @@ importers:
 
   packages/security:
     dependencies:
-      '@quilla-kit/ddd':
+      '@quilla-kit/errors':
         specifier: workspace:^
-        version: link:../ddd
+        version: link:../errors
       '@quilla-kit/execution-context':
         specifier: workspace:^
         version: link:../execution-context
       '@quilla-kit/http':
         specifier: workspace:^
         version: link:../http
-      '@quilla-kit/messaging':
-        specifier: workspace:^
-        version: link:../messaging
       '@quilla-kit/observability':
         specifier: workspace:^
         version: link:../observability
-      '@quilla-kit/persistence':
-        specifier: workspace:^
-        version: link:../persistence
-      '@quilla-kit/runtime':
-        specifier: workspace:^
-        version: link:../runtime
 
 packages:
 

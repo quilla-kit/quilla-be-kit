@@ -7,7 +7,12 @@ export type NormalizedRoute = {
   readonly httpMethod: HttpMethod;
   readonly fullPath: string;
   readonly public: boolean;
-  readonly middlewares: readonly HttpMiddleware[];
+  /**
+   * Complete ordered middleware chain for this route:
+   * `[system? → globalMiddlewares → (public ? [] : authMiddlewares) → moduleMiddlewares → registrationMiddlewares]`.
+   * Adapters iterate and wrap each entry; they do not re-compose the chain.
+   */
+  readonly middlewareChain: readonly HttpMiddleware[];
   readonly handler: (request: HttpRequest) => Promise<HttpResponse>;
   readonly handlerMethodName: string;
   readonly controllerName: string;

@@ -1,15 +1,12 @@
 import { NotFoundError } from '@quilla-kit/errors';
-import {
-  AsyncExecutionContextProvider,
-  executionContextFactory,
-} from '@quilla-kit/execution-context';
+import { AsyncExecutionContextProvider } from '@quilla-kit/execution-context';
 import { describe, expect, it } from 'vitest';
 import { type HonoServeHandle, HonoServer } from '../../src/adapter/hono/hono.server.js';
 import { Controller, Get, GetPublic, Post, ValidateRequest } from '../../src/decorator/index.js';
-import { executionContextMiddleware } from '../../src/middleware/execution-context.middleware.js';
 import type { HttpMiddleware } from '../../src/request/http-middleware.type.js';
 import type { HttpRequest } from '../../src/request/http-request.interface.js';
 import type { HttpResponse } from '../../src/request/http-response.type.js';
+import type { AuthMiddlewareStack } from '../../src/router/auth-middleware-stack.type.js';
 import { Router } from '../../src/router/router.js';
 import type { RequestValidator } from '../../src/validator/request-validator.interface.js';
 
@@ -37,7 +34,7 @@ class UsersController {
 
 function buildServer(options: {
   validator?: RequestValidator;
-  authMiddlewares?: readonly HttpMiddleware[];
+  authMiddlewares?: AuthMiddlewareStack;
 }): {
   server: HonoServer;
   fetch: (req: Request) => Promise<Response>;
@@ -45,8 +42,8 @@ function buildServer(options: {
   const provider = new AsyncExecutionContextProvider();
   const router = new Router({
     controllers: [new UsersController()],
-    globalMiddlewares: [executionContextMiddleware({ provider, factory: executionContextFactory })],
-    authMiddlewares: options.authMiddlewares ?? [],
+    executionContext: { provider },
+    ...(options.authMiddlewares ? { authMiddlewares: options.authMiddlewares } : {}),
   });
 
   let capturedFetch: ((req: Request) => Promise<Response>) | undefined;
@@ -58,12 +55,10 @@ function buildServer(options: {
   const server = new HonoServer({
     port: 0,
     router,
-    executionContextProvider: provider,
     ...(options.validator ? { requestValidator: options.validator } : {}),
     serve: noopServe as never,
   });
   server.bootstrap();
-  // listen() invokes serve() which captures fetch
   void server.listen();
   if (!capturedFetch) throw new Error('serve never captured fetch');
   return { server, fetch: capturedFetch };
@@ -125,21 +120,103 @@ describe('HonoServer adapter', () => {
     expect(bad.status).toBe(400);
   });
 
-  it('applies auth middlewares to non-public routes only', async () => {
-    const authCalls: string[] = [];
-    const authMw: HttpMiddleware = async (req, next) => {
-      authCalls.push(req.getPath());
+  it('runs the auth stack on non-public routes only, in phase order', async () => {
+    const calls: string[] = [];
+    const tokenMw: HttpMiddleware = async (_req, next) => {
+      calls.push('token');
+      await next();
+    };
+    const sessionMw: HttpMiddleware = async (_req, next) => {
+      calls.push('session');
       await next();
     };
 
-    const { fetch } = buildServer({ authMiddlewares: [authMw] });
+    const { fetch } = buildServer({
+      authMiddlewares: { tokenVerification: tokenMw, sessionLoad: sessionMw },
+    });
 
     await fetch(new Request('http://localhost/users/42'));
-    expect(authCalls).toEqual(['/users/42']);
+    expect(calls).toEqual(['token', 'session']);
 
-    // Public route — auth should NOT fire
-    authCalls.length = 0;
+    calls.length = 0;
     await fetch(new Request('http://localhost/users/healthz'));
-    expect(authCalls).toEqual([]);
+    expect(calls).toEqual([]);
+  });
+
+  it('serves routes without executionContext wired; getExecutionContext throws a clear error when called', async () => {
+    let thrown: Error | undefined;
+
+    @Controller('/public')
+    class PublicOnlyController {
+      @GetPublic('/')
+      async root(_req: HttpRequest): Promise<HttpResponse> {
+        return { httpCode: 200, payload: { ok: true } };
+      }
+
+      @GetPublic('/touches-ctx')
+      async touchesCtx(req: HttpRequest): Promise<HttpResponse> {
+        try {
+          req.getExecutionContext();
+        } catch (err) {
+          thrown = err as Error;
+        }
+        return { httpCode: 200 };
+      }
+    }
+
+    const router = new Router({ controllers: [new PublicOnlyController()] });
+    let capturedFetch: ((req: Request) => Promise<Response>) | undefined;
+    const server = new HonoServer({
+      port: 0,
+      router,
+      serve: ((app: { fetch: (req: Request) => Promise<Response> }) => {
+        capturedFetch = (req) => app.fetch(req);
+        return { close: async () => {} };
+      }) as never,
+    });
+    server.bootstrap();
+    void server.listen();
+
+    const ok = await capturedFetch?.(new Request('http://localhost/public'));
+    expect(ok?.status).toBe(200);
+
+    await capturedFetch?.(new Request('http://localhost/public/touches-ctx'));
+    expect(thrown?.message).toMatch(/No ExecutionContext provider wired on Router/);
+  });
+
+  it('establishes an execution context for every route via the system middleware', async () => {
+    const provider = new AsyncExecutionContextProvider();
+    let capturedCorrelationId: string | undefined;
+
+    @Controller('/probe')
+    class ProbeController {
+      @GetPublic('/')
+      async probe(_req: HttpRequest): Promise<HttpResponse> {
+        capturedCorrelationId = provider.getContext().correlationId;
+        return { httpCode: 200 };
+      }
+    }
+
+    const router = new Router({
+      controllers: [new ProbeController()],
+      executionContext: { provider },
+    });
+
+    let capturedFetch: ((req: Request) => Promise<Response>) | undefined;
+    const server = new HonoServer({
+      port: 0,
+      router,
+      serve: ((app: { fetch: (req: Request) => Promise<Response> }) => {
+        capturedFetch = (req) => app.fetch(req);
+        return { close: async () => {} };
+      }) as never,
+    });
+    server.bootstrap();
+    void server.listen();
+
+    await capturedFetch?.(
+      new Request('http://localhost/probe', { headers: { 'x-correlation-id': 'req-42' } }),
+    );
+    expect(capturedCorrelationId).toBe('req-42');
   });
 });

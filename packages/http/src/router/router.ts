@@ -1,3 +1,4 @@
+import type { ExecutionContextProvider } from '@quilla-kit/execution-context';
 import {
   type RouteDefinition,
   getControllerPrefix,
@@ -6,9 +7,10 @@ import {
 import type { HttpMiddleware } from '../request/http-middleware.type.js';
 import type { HttpRequest } from '../request/http-request.interface.js';
 import type { HttpResponse } from '../request/http-response.type.js';
+import type { AuthMiddlewareStack } from './auth-middleware-stack.type.js';
 import type { ControllerRegistration } from './controller-registration.type.js';
 import type { NormalizedRoute } from './normalized-route.type.js';
-import type { RouterOptions } from './router-options.type.js';
+import type { RouterExecutionContextOptions, RouterOptions } from './router-options.type.js';
 
 type Registration = ControllerRegistration & {
   readonly modulePrefix: string;
@@ -17,12 +19,22 @@ type Registration = ControllerRegistration & {
 
 export class Router {
   private readonly routes: readonly NormalizedRoute[];
-  private readonly globalMiddlewares: readonly HttpMiddleware[];
-  private readonly authMiddlewares: readonly HttpMiddleware[];
+  private readonly executionContextProvider: ExecutionContextProvider | undefined;
 
   constructor(options: RouterOptions) {
-    this.globalMiddlewares = options.globalMiddlewares ?? [];
-    this.authMiddlewares = options.authMiddlewares ?? [];
+    if (options.authMiddlewares && !options.executionContext) {
+      throw new Error(
+        'Router: `authMiddlewares` requires `executionContext` — auth middlewares depend on an active ExecutionContext scope. Wire `{ provider }` on the `executionContext` option.',
+      );
+    }
+
+    this.executionContextProvider = options.executionContext?.provider;
+
+    const systemMiddleware = options.executionContext
+      ? buildExecutionContextMiddleware(options.executionContext)
+      : undefined;
+    const globalMiddlewares = options.globalMiddlewares ?? [];
+    const authChain = flattenAuthStack(options.authMiddlewares);
 
     const registrations: Registration[] = [];
     for (const raw of options.controllers ?? []) {
@@ -44,23 +56,51 @@ export class Router {
       }
     }
 
-    this.routes = buildRoutes(registrations);
+    this.routes = buildRoutes(registrations, {
+      systemMiddleware,
+      globalMiddlewares,
+      authChain,
+    });
   }
 
   getRoutes(): readonly NormalizedRoute[] {
     return this.routes;
   }
 
-  getGlobalMiddlewares(): readonly HttpMiddleware[] {
-    return this.globalMiddlewares;
-  }
-
-  getAuthMiddlewares(): readonly HttpMiddleware[] {
-    return this.authMiddlewares;
+  getExecutionContextProvider(): ExecutionContextProvider | undefined {
+    return this.executionContextProvider;
   }
 }
 
-function buildRoutes(registrations: readonly Registration[]): readonly NormalizedRoute[] {
+function buildExecutionContextMiddleware(options: RouterExecutionContextOptions): HttpMiddleware {
+  const header = options.correlationIdHeader ?? 'x-correlation-id';
+  const { provider } = options;
+  return async (request, next) => {
+    const correlationId = request.getHeader(header);
+    const ctx = provider.factory.createBaselineContext(
+      correlationId !== null ? { correlationId } : undefined,
+    );
+    await provider.runWithContext(ctx, next);
+  };
+}
+
+function flattenAuthStack(stack: AuthMiddlewareStack | undefined): readonly HttpMiddleware[] {
+  if (!stack) return [];
+  return stack.sessionLoad
+    ? [stack.tokenVerification, stack.sessionLoad]
+    : [stack.tokenVerification];
+}
+
+type ChainContext = {
+  readonly systemMiddleware: HttpMiddleware | undefined;
+  readonly globalMiddlewares: readonly HttpMiddleware[];
+  readonly authChain: readonly HttpMiddleware[];
+};
+
+function buildRoutes(
+  registrations: readonly Registration[],
+  chain: ChainContext,
+): readonly NormalizedRoute[] {
   const normalized: NormalizedRoute[] = [];
   const seen = new Map<string, string>();
 
@@ -80,11 +120,18 @@ function buildRoutes(registrations: readonly Registration[]): readonly Normalize
       }
       seen.set(key, `${controllerName}.${def.handlerMethodName}`);
 
+      const registrationMiddlewares = reg.middlewares ?? [];
+      const middlewareChain: HttpMiddleware[] = [];
+      if (chain.systemMiddleware) middlewareChain.push(chain.systemMiddleware);
+      middlewareChain.push(...chain.globalMiddlewares);
+      if (!def.public) middlewareChain.push(...chain.authChain);
+      middlewareChain.push(...reg.moduleMiddlewares, ...registrationMiddlewares);
+
       normalized.push({
         httpMethod: def.httpMethod,
         fullPath,
         public: def.public,
-        middlewares: [...reg.moduleMiddlewares, ...(reg.middlewares ?? [])],
+        middlewareChain,
         handler: buildHandler(reg.controller, def),
         handlerMethodName: def.handlerMethodName,
         controllerName,

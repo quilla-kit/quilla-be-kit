@@ -1,4 +1,7 @@
-export { AsyncExecutionContextProvider } from './async-execution-context.provider.js';
+export {
+  AsyncExecutionContextProvider,
+  type AsyncExecutionContextProviderOptions,
+} from './async-execution-context.provider.js';
 export { ExecutionContextEnricher } from './execution-context.enricher.js';
 export {
   executionContextFactory,

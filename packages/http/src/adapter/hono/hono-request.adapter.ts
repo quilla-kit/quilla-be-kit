@@ -5,17 +5,24 @@ import type { HttpResponse } from '../../request/http-response.type.js';
 import type { RequestAdapter } from '../../server/request-adapter.interface.js';
 import { createHttpRequest } from './create-http-request.js';
 import { getRequestAttributes } from './get-request-attributes.js';
-import { HONO_CONTEXT_PARSED_BODY_KEY, type ParsedBody } from './hono.types.js';
+import {
+  HONO_CONTEXT_HTTP_REQUEST_KEY,
+  HONO_CONTEXT_PARSED_BODY_KEY,
+  type ParsedBody,
+} from './hono.types.js';
 
 export class HonoRequestAdapter implements RequestAdapter {
-  constructor(private readonly executionContextProvider: ExecutionContextProvider) {}
+  constructor(private readonly executionContextProvider: ExecutionContextProvider | undefined) {}
 
   async toHttpRequest(frameworkContext: unknown): Promise<HttpRequest> {
     const c = frameworkContext as Context;
+    const cached = c.get(HONO_CONTEXT_HTTP_REQUEST_KEY) as HttpRequest | undefined;
+    if (cached) return cached;
+
     const attributes = getRequestAttributes(c);
     const { body, binary, formData } = await this.ensureParsedBody(c);
 
-    return createHttpRequest(
+    const request = createHttpRequest(
       {
         path: c.req.path,
         method: c.req.method,
@@ -29,6 +36,9 @@ export class HonoRequestAdapter implements RequestAdapter {
       },
       attributes,
     );
+
+    c.set(HONO_CONTEXT_HTTP_REQUEST_KEY, request);
+    return request;
   }
 
   controller(

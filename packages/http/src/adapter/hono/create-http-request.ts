@@ -11,7 +11,7 @@ export type CreateHttpRequestInput = {
   readonly body: unknown;
   readonly binary: Uint8Array | null;
   readonly formData: FormData | null;
-  readonly executionContextProvider: ExecutionContextProvider;
+  readonly executionContextProvider: ExecutionContextProvider | undefined;
 };
 
 export function createHttpRequest(
@@ -48,7 +48,14 @@ export function createHttpRequest(
       }
       return fields;
     },
-    getExecutionContext: () => input.executionContextProvider.getContext(),
+    getExecutionContext: () => {
+      if (!input.executionContextProvider) {
+        throw new Error(
+          'No ExecutionContext provider wired on Router. Pass `executionContext: { provider, factory }` to the Router options to use `request.getExecutionContext()`.',
+        );
+      }
+      return input.executionContextProvider.getContext();
+    },
     setAttribute: (key, value) => {
       attributes.set(key, value);
     },

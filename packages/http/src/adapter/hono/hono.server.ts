@@ -1,10 +1,8 @@
-import type { ExecutionContextProvider } from '@quilla-kit/execution-context';
 import type { Logger } from '@quilla-kit/observability';
 import { Hono } from 'hono';
 import type { Context, Next } from 'hono';
 import { resolveHttpError } from '../../error/resolve-http-error.js';
 import { HttpAttributes } from '../../request/http-attributes.js';
-import type { HttpMiddleware } from '../../request/http-middleware.type.js';
 import type { NormalizedRoute } from '../../router/normalized-route.type.js';
 import type { Router } from '../../router/router.js';
 import type { WebServer } from '../../server/web-server.interface.js';
@@ -22,7 +20,6 @@ export type HonoServeFn = (app: Hono, port: number) => HonoServeHandle;
 export type HonoServerOptions = {
   readonly port: number;
   readonly router: Router;
-  readonly executionContextProvider: ExecutionContextProvider;
   readonly serve: HonoServeFn;
   readonly requestValidator?: RequestValidator;
   readonly logger?: Logger;
@@ -36,7 +33,7 @@ export class HonoServer implements WebServer {
   private handle: HonoServeHandle | undefined;
 
   constructor(private readonly options: HonoServerOptions) {
-    this.requestAdapter = new HonoRequestAdapter(options.executionContextProvider);
+    this.requestAdapter = new HonoRequestAdapter(options.router.getExecutionContextProvider());
     this.middlewareAdapter = new HonoMiddlewareAdapter(this.requestAdapter);
   }
 
@@ -59,16 +56,8 @@ export class HonoServer implements WebServer {
       });
     }
 
-    for (const mw of this.options.router.getGlobalMiddlewares()) {
-      this.app.use('*', this.middlewareAdapter.application(mw));
-    }
-
-    const authWrapped = this.options.router
-      .getAuthMiddlewares()
-      .map((m) => this.middlewareAdapter.router(m));
-
     for (const route of this.options.router.getRoutes()) {
-      this.registerRoute(route, authWrapped);
+      this.registerRoute(route);
     }
   }
 
@@ -85,14 +74,10 @@ export class HonoServer implements WebServer {
     this.options.logger?.info('HTTP server closed');
   }
 
-  private registerRoute(
-    route: NormalizedRoute,
-    authWrapped: readonly ((c: Context, next: Next) => Promise<void>)[],
-  ): void {
+  private registerRoute(route: NormalizedRoute): void {
     const stack: Array<(c: Context, next: Next) => Promise<void>> = [];
-    if (!route.public) stack.push(...authWrapped);
-    for (const mw of route.middlewares) {
-      stack.push(this.middlewareAdapter.router(mw));
+    for (const mw of route.middlewareChain) {
+      stack.push(this.middlewareAdapter.wrap(mw));
     }
     const handler = this.requestAdapter.controller(route.handler);
     const method = route.httpMethod.toLowerCase() as 'get' | 'post' | 'put' | 'patch' | 'delete';

@@ -8,12 +8,9 @@
   "include": ["src/**/*"],
   "exclude": ["src/**/*.test.ts", "dist"],
   "references": [
-    { "path": "../ddd" },
+    { "path": "../errors" },
     { "path": "../execution-context" },
     { "path": "../observability" },
-    { "path": "../http" },
-    { "path": "../persistence" },
-    { "path": "../messaging" },
-    { "path": "../runtime" }
+    { "path": "../http" }
   ]
 }

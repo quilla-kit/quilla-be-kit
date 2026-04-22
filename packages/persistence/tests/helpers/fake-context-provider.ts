@@ -1,7 +1,19 @@
-import type { ExecutionContext, ExecutionContextProvider } from '@quilla-kit/execution-context';
+import {
+  type ExecutionContext,
+  type ExecutionContextFactory,
+  type ExecutionContextProvider,
+  executionContextFactory,
+} from '@quilla-kit/execution-context';
 
 export class FakeExecutionContextProvider implements ExecutionContextProvider {
-  constructor(private context: ExecutionContext) {}
+  readonly factory: ExecutionContextFactory;
+
+  constructor(
+    private context: ExecutionContext,
+    factory: ExecutionContextFactory = executionContextFactory,
+  ) {
+    this.factory = factory;
+  }
 
   setContext(context: ExecutionContext): void {
     this.context = context;

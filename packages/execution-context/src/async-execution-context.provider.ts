@@ -1,6 +1,14 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
+import {
+  type ExecutionContextFactory,
+  executionContextFactory,
+} from './execution-context.factory.js';
 import type { ExecutionContextProvider } from './execution-context.provider.js';
 import type { ExecutionContext } from './execution-context.type.js';
+
+export type AsyncExecutionContextProviderOptions = {
+  readonly factory?: ExecutionContextFactory;
+};
 
 /**
  * Node-native `ExecutionContextProvider` backed by an `AsyncLocalStorage`
@@ -9,6 +17,11 @@ import type { ExecutionContext } from './execution-context.type.js';
  */
 export class AsyncExecutionContextProvider implements ExecutionContextProvider {
   private readonly storage = new AsyncLocalStorage<ExecutionContext>();
+  readonly factory: ExecutionContextFactory;
+
+  constructor(options?: AsyncExecutionContextProviderOptions) {
+    this.factory = options?.factory ?? executionContextFactory;
+  }
 
   getContext(): ExecutionContext {
     const ctx = this.storage.getStore();

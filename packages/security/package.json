@@ -1,7 +1,7 @@
 {
   "name": "@quilla-kit/security",
   "version": "0.1.0",
-  "description": "Security primitives: JWT, password hashing, authorization decorators, identity → IExecutionContext materialization.",
+  "description": "Security primitives: Token/TokenService, PasswordHasher, SessionStore interfaces, and auth middlewares (Bearer-token verification + authenticated-session enrichment) that plug into @quilla-kit/http's Router.",
   "license": "MIT",
   "author": "Max Martinez",
   "homepage": "https://github.com/quilla-kit/quilla-kit/tree/main/packages/security",
@@ -18,8 +18,10 @@
     "authentication",
     "authorization",
     "jwt",
+    "token",
+    "session",
     "password",
-    "identity",
+    "bearer",
     "typescript"
   ],
   "type": "module",
@@ -42,16 +44,14 @@
   },
   "scripts": {
     "build": "tsc -b",
+    "typecheck": "tsc -p tsconfig.test.json",
     "test": "vitest run --passWithNoTests",
     "clean": "rm -rf dist *.tsbuildinfo"
   },
   "dependencies": {
-    "@quilla-kit/ddd": "workspace:^",
+    "@quilla-kit/errors": "workspace:^",
     "@quilla-kit/execution-context": "workspace:^",
-    "@quilla-kit/observability": "workspace:^",
     "@quilla-kit/http": "workspace:^",
-    "@quilla-kit/persistence": "workspace:^",
-    "@quilla-kit/messaging": "workspace:^",
-    "@quilla-kit/runtime": "workspace:^"
+    "@quilla-kit/observability": "workspace:^"
   }
 }
