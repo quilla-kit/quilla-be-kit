@@ -7,5 +7,10 @@
   },
   "include": ["src/**/*"],
   "exclude": ["src/**/*.test.ts", "dist"],
-  "references": [{ "path": "../execution-context" }, { "path": "../observability" }]
+  "references": [
+    { "path": "../errors" },
+    { "path": "../execution-context" },
+    { "path": "../observability" },
+    { "path": "../runtime" }
+  ]
 }

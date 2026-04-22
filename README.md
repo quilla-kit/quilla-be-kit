@@ -23,15 +23,16 @@ ESM-only, and target Node 22+.
 | [`@quilla-kit/ddd`](packages/ddd) | DDD tactical primitives — `AggregateRoot`, `Entity`, `DomainEvent`, `IntegrationEvent`, `EventMetadata`, `ActorType` |
 | [`@quilla-kit/observability`](packages/observability) | `Logger`, `StructuredLogger`, `NoopLogger`, formatters, enrichers |
 | [`@quilla-kit/execution-context`](packages/execution-context) | `ExecutionContext`, `ExecutionContextProvider`, AsyncLocalStorage storage |
-| [`@quilla-kit/http`](packages/http) | `HttpRequest`, `WebServer`, `@Controller`, `@Route`, `@Authorize`, `@ValidateRequest` |
+| [`@quilla-kit/http`](packages/http) | `HttpRequest`, `WebServer`, `@Controller`, `@Get`/`@Post`/..., `@AuthorizeScope`, `@ValidateRequest`, framework-agnostic `Router`, Hono adapter sub-path |
 | [`@quilla-kit/persistence`](packages/persistence) | `UnitOfWork`, base DAOs, base repositories, outbox pattern |
 | [`@quilla-kit/messaging`](packages/messaging) | Messaging infrastructure — `EventBus`, `EventConsumer`, `LocalOutbox`, `OutboxForwarder` |
 | [`@quilla-kit/runtime`](packages/runtime) | `ShutdownManager`, `Runtime` (OS signal / uncaught-error bridge), `ComponentRegistry` |
 | [`@quilla-kit/security`](packages/security) | JWT, password hashing, authorization decorators, identity materialization — primitives, not a drop-in auth module. Also the toolkit's rule-of-three validation harness |
 
-Transport and storage adapters (Hono, Postgres, etc.) are intentionally **not**
-in this repo. The toolkit ships agnostic abstractions; adapters live in
-consumer projects until their shape has stabilized here.
+Mature transport and storage adapters (Postgres, Hono) ship as sub-paths of their
+interface packages (`@quilla-kit/persistence/postgres`, `@quilla-kit/messaging/postgres`,
+`@quilla-kit/http/adapter/hono`) with optional peer deps. The interface packages
+stay agnostic; consumers opt into concrete adapters by importing from the sub-path.
 
 ## Architectural invariants
 

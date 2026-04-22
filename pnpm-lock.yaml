@@ -54,12 +54,25 @@ importers:
 
   packages/http:
     dependencies:
+      '@quilla-kit/errors':
+        specifier: workspace:^
+        version: link:../errors
       '@quilla-kit/execution-context':
         specifier: workspace:^
         version: link:../execution-context
       '@quilla-kit/observability':
         specifier: workspace:^
         version: link:../observability
+      '@quilla-kit/runtime':
+        specifier: workspace:^
+        version: link:../runtime
+    devDependencies:
+      hono:
+        specifier: ^4.12.0
+        version: 4.12.14
+      vitest:
+        specifier: ^2.1.3
+        version: 2.1.9(@types/node@22.19.17)
 
   packages/messaging:
     dependencies:
@@ -750,6 +763,10 @@ packages:
 
   graceful-fs@4.2.11:
     resolution: {integrity: sha512-RbJ5/jmFcNNCcDV5o9eTnBLJ/HszWV0P73bc+Ff4nS/rJj+YaS6IGyiOL0VoBYX+l1Wrl3k63h/KrH+nhJ0XvQ==}
+
+  hono@4.12.14:
+    resolution: {integrity: sha512-am5zfg3yu6sqn5yjKBNqhnTX7Cv+m00ox+7jbaKkrLMRJ4rAdldd1xPd/JzbBWspqaQv6RSTrgFN95EsfhC+7w==}
+    engines: {node: '>=16.9.0'}
 
   human-id@4.1.3:
     resolution: {integrity: sha512-tsYlhAYpjCKa//8rXZ9DqKEawhPoSytweBC2eNvcaDK+57RZLHGqNs3PZTQO6yekLFSuvA6AlnAfrw1uBvtb+Q==}
@@ -1725,6 +1742,8 @@ snapshots:
       slash: 3.0.0
 
   graceful-fs@4.2.11: {}
+
+  hono@4.12.14: {}
 
   human-id@4.1.3: {}
 
