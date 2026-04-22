@@ -27,6 +27,7 @@ ESM-only, and target Node 22+.
 | [`@quilla-kit/persistence`](packages/persistence) | `UnitOfWork`, base DAOs, base repositories, outbox pattern |
 | [`@quilla-kit/messaging`](packages/messaging) | Messaging infrastructure — `EventBus`, `EventConsumer`, `LocalOutbox`, `OutboxForwarder` |
 | [`@quilla-kit/runtime`](packages/runtime) | `ShutdownManager`, `Runtime` (OS signal / uncaught-error bridge), `ComponentRegistry` |
+| [`@quilla-kit/jobs`](packages/jobs) | `BackgroundJob`, `JobRunner`, `InProcessJobRunner` — scheduled jobs with per-tick system `ExecutionContext` and `Disposable` shutdown |
 | [`@quilla-kit/security`](packages/security) | JWT, password hashing, authorization decorators, identity materialization — primitives, not a drop-in auth module. Also the toolkit's rule-of-three validation harness |
 
 Mature transport and storage adapters (Postgres, Hono) ship as sub-paths of their

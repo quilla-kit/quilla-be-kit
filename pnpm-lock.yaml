@@ -74,6 +74,18 @@ importers:
         specifier: ^2.1.3
         version: 2.1.9(@types/node@22.19.17)
 
+  packages/jobs:
+    dependencies:
+      '@quilla-kit/execution-context':
+        specifier: workspace:^
+        version: link:../execution-context
+      '@quilla-kit/observability':
+        specifier: workspace:^
+        version: link:../observability
+      '@quilla-kit/runtime':
+        specifier: workspace:^
+        version: link:../runtime
+
   packages/messaging:
     dependencies:
       '@quilla-kit/execution-context':
