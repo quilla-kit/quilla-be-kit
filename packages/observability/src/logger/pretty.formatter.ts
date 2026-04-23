@@ -16,7 +16,7 @@ const LEVEL_COLORS: Record<LogLevel, string> = {
  * Human-readable, ANSI-colored output for local development.
  *
  * Format:
- *   TIMESTAMP [LEVEL] [module::location] message
+ *   TIMESTAMP [LEVEL] [service] [module::location] message
  *     ctx:   key=value pairs from LogContext (only fields that are present)
  *     data:  JSON-stringified PII bucket (if present)
  *     meta:  JSON-stringified operational bucket (if present)
@@ -27,12 +27,13 @@ export class PrettyFormatter implements LogFormatter {
   format(entry: LogEntry): string {
     const color = LEVEL_COLORS[entry.level];
     const levelLabel = `${color}${BOLD}${entry.level.toUpperCase().padEnd(5)}${RESET}`;
+    const serviceLabel = `${DIM}[${entry.service}]${RESET}`;
     const location =
       entry.location !== undefined ? `${entry.module}::${entry.location}` : entry.module;
     const source = `${DIM}[${location}]${RESET}`;
     const ts = `${DIM}${entry.timestamp}${RESET}`;
 
-    const lines: string[] = [`${ts} ${levelLabel} ${source} ${entry.message}`];
+    const lines: string[] = [`${ts} ${levelLabel} ${serviceLabel} ${source} ${entry.message}`];
 
     const ctxParts: string[] = [];
     if (entry.context.scopeId !== undefined) ctxParts.push(`scopeId=${entry.context.scopeId}`);

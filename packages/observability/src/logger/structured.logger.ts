@@ -17,6 +17,7 @@ export type StructuredLoggerConfig = {
 };
 
 export type StructuredLoggerDependencies = {
+  readonly service: string;
   readonly module: string;
   readonly config: StructuredLoggerConfig;
   readonly formatter: LogFormatter;
@@ -24,6 +25,7 @@ export type StructuredLoggerDependencies = {
   readonly observers: readonly LogObserver[];
   readonly obfuscator?: LogObfuscator;
   readonly location?: string;
+  readonly baseMeta?: Record<string, unknown>;
 };
 
 /**
@@ -35,6 +37,7 @@ export type StructuredLoggerDependencies = {
  * surface errors to the caller.
  */
 export class StructuredLogger implements Logger {
+  private readonly service: string;
   private readonly module: string;
   private readonly config: StructuredLoggerConfig;
   private readonly formatter: LogFormatter;
@@ -42,9 +45,11 @@ export class StructuredLogger implements Logger {
   private readonly observers: readonly LogObserver[];
   private readonly obfuscator: LogObfuscator | undefined;
   private readonly location: string | undefined;
+  private readonly baseMeta: Record<string, unknown> | undefined;
   private readonly inflight = new Set<Promise<void>>();
 
   constructor(deps: StructuredLoggerDependencies) {
+    this.service = deps.service;
     this.module = deps.module;
     this.config = deps.config;
     this.formatter = deps.formatter;
@@ -52,6 +57,7 @@ export class StructuredLogger implements Logger {
     this.observers = deps.observers;
     this.obfuscator = deps.obfuscator;
     this.location = deps.location;
+    this.baseMeta = deps.baseMeta;
   }
 
   debug(message: string, params?: LogParams): void {
@@ -71,14 +77,25 @@ export class StructuredLogger implements Logger {
   }
 
   forMethod(name: string): Logger {
+    return this.clone({ location: name });
+  }
+
+  withMeta(meta: Record<string, unknown>): Logger {
+    return this.clone({ baseMeta: { ...(this.baseMeta ?? {}), ...meta } });
+  }
+
+  private clone(override: Partial<StructuredLoggerDependencies>): StructuredLogger {
     return new StructuredLogger({
+      service: this.service,
       module: this.module,
       config: this.config,
       formatter: this.formatter,
       enrichers: this.enrichers,
       observers: this.observers,
       ...(this.obfuscator !== undefined ? { obfuscator: this.obfuscator } : {}),
-      location: name,
+      ...(this.location !== undefined ? { location: this.location } : {}),
+      ...(this.baseMeta !== undefined ? { baseMeta: this.baseMeta } : {}),
+      ...override,
     });
   }
 
@@ -107,7 +124,11 @@ export class StructuredLogger implements Logger {
     params: LogParams | undefined,
   ): Promise<void> {
     const rawData = params?.data;
-    const meta = params?.meta;
+    const callMeta = params?.meta;
+    const meta =
+      this.baseMeta !== undefined && callMeta !== undefined
+        ? { ...this.baseMeta, ...callMeta }
+        : (callMeta ?? this.baseMeta);
 
     let context: LogContext = {};
     let extra: Record<string, unknown> | undefined;
@@ -138,6 +159,7 @@ export class StructuredLogger implements Logger {
     const entry: LogEntry = {
       timestamp: new Date().toISOString(),
       level,
+      service: this.service,
       module: this.module,
       ...(this.location !== undefined ? { location: this.location } : {}),
       message,

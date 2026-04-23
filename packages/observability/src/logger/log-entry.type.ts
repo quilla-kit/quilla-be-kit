@@ -17,6 +17,7 @@ export type SerializedError = {
 export type LogEntry = {
   readonly timestamp: string;
   readonly level: LogLevel;
+  readonly service: string;
   readonly module: string;
   readonly location?: string;
   readonly message: string;

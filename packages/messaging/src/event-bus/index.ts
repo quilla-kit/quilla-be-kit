@@ -8,7 +8,8 @@ export {
   type EventHandler,
 } from './event.consumer.js';
 export { defineEvent, type EventDescriptor } from './event.descriptor.js';
-export type { EventSubscription } from './event-subscription.type.js';
+export type { EventSubscription } from './event-subscription.interface.js';
+export type { HandlerEntry } from './handler-entry.type.js';
 export type { StandardSchemaV1 } from './standard-schema.type.js';
 export {
   DEFAULT_RETRY_DELAYS_MS,

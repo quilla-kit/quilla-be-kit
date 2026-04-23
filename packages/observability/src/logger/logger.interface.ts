@@ -21,4 +21,12 @@ export interface Logger {
    * of code. The `location` is rendered on every entry emitted through it.
    */
   forMethod(name: string): Logger;
+  /**
+   * Returns a child logger that merges `meta` into every emitted entry's
+   * `meta` bucket. Useful for per-handler or per-request annotation
+   * (event id, correlation id, subject id) without threading through every
+   * call site. Per-call `params.meta` wins over the baked-in meta on key
+   * collisions.
+   */
+  withMeta(meta: Record<string, unknown>): Logger;
 }

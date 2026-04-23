@@ -7,6 +7,7 @@ const formatter = new JsonFormatter();
 const baseEntry: LogEntry = {
   timestamp: '2026-04-20T10:00:00.000Z',
   level: 'info',
+  service: 'test-service',
   module: 'TestModule',
   message: 'hello',
   context: {},

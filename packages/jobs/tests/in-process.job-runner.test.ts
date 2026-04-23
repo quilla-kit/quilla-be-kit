@@ -1,10 +1,9 @@
 import { AsyncExecutionContextProvider } from '@quilla-kit/execution-context';
-import type { Logger } from '@quilla-kit/observability';
+import { type Logger, NoopLogger } from '@quilla-kit/observability';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BackgroundJob } from '../src/background-job.interface.js';
 import { InProcessJobRunner } from '../src/in-process.job-runner.js';
 import { JobScheduleType } from '../src/job-schedule.type.js';
-import { createFakeLogger } from './helpers/fake-logger.js';
 
 function makeJob(overrides: Partial<BackgroundJob> = {}): BackgroundJob {
   return {
@@ -23,7 +22,7 @@ describe('InProcessJobRunner', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     provider = new AsyncExecutionContextProvider();
-    logger = createFakeLogger();
+    logger = new NoopLogger();
     runner = new InProcessJobRunner(provider, logger);
   });
 

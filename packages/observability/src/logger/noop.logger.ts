@@ -9,4 +9,7 @@ export class NoopLogger implements Logger {
   forMethod(_name: string): Logger {
     return this;
   }
+  withMeta(_meta: Record<string, unknown>): Logger {
+    return this;
+  }
 }

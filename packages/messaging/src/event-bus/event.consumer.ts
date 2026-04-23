@@ -15,17 +15,12 @@ import {
 } from './defaults.js';
 import type { EventBusConsumer } from './event-bus-consumer.interface.js';
 import type { EventBusEntry } from './event-bus-entry.type.js';
-import type { EventSubscription } from './event-subscription.type.js';
+import type { EventSubscription } from './event-subscription.interface.js';
 import type { EventDescriptor } from './event.descriptor.js';
+import type { HandlerEntry } from './handler-entry.type.js';
 import type { StandardSchemaV1 } from './standard-schema.type.js';
 
-export type EventHandler<TPayload = unknown> = (entry: {
-  readonly payload: TPayload;
-  readonly eventType: string;
-  readonly eventVersion: number;
-  readonly aggregateId?: string | undefined;
-  readonly correlationId?: string | undefined;
-}) => Promise<void>;
+export type EventHandler<TPayload = unknown> = (entry: HandlerEntry<TPayload>) => Promise<void>;
 
 export type EventConsumerOptions = {
   readonly bus: EventBusConsumer;
@@ -107,7 +102,7 @@ export class EventConsumer implements Disposable {
     this.bus = options.bus;
     this.consumerName = options.consumerName;
     this.sourceService = options.sourceService;
-    this.logger = options.logger.forMethod(`EventConsumer:${options.consumerName}`);
+    this.logger = options.logger.withMeta({ consumerName: options.consumerName });
     this.pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     this.batchSize = options.batchSize ?? DEFAULT_BATCH_SIZE;
     this.retryDelaysMs = options.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS;
@@ -144,7 +139,8 @@ export class EventConsumer implements Disposable {
 
   subscribe(subscriptions: ReadonlyArray<EventSubscription<unknown>>): this {
     for (const sub of subscriptions) {
-      this.on(sub.descriptor, sub.handle);
+      // Arrow preserves `this` for class-based subscriptions — a bare method ref detaches.
+      this.on(sub.descriptor, (entry) => sub.handle(entry));
     }
     return this;
   }

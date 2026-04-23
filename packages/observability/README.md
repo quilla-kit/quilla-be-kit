@@ -12,8 +12,10 @@ Every `@quilla-kit/*` service-side package needs a logger with a consistent
 shape so logs can be queried and correlated across packages. This package
 ships:
 
-- A `Logger` interface with `debug/info/warn/error` and `forMethod(name)`
-  for method-scoped child loggers.
+- A `Logger` interface with `debug/info/warn/error`, `forMethod(name)` for
+  method-scoped child loggers, and `withMeta(meta)` for child loggers that
+  bake persistent meta (event id, correlation id, subject id) into every
+  emitted entry.
 - Two built-in `LogFormatter`s — `JsonFormatter` (production aggregators)
   and `PrettyFormatter` (ANSI-colored dev output).
 - `LogObserver` plugin hooks for shipping entries to Datadog / Splunk / Loki /
@@ -41,11 +43,37 @@ pnpm add @quilla-kit/observability
 import { createLoggerFactory } from '@quilla-kit/observability';
 
 const factory = createLoggerFactory({
-  config: { level: 'info', mode: process.env.NODE_ENV === 'production' ? 'json' : 'pretty' },
+  config: {
+    service: 'my-backend',
+    level: 'info',
+    mode: process.env.NODE_ENV === 'production' ? 'json' : 'pretty',
+  },
 });
 
 const logger = factory.create('UserService');
 logger.info('user created', { meta: { durationMs: 42 }, data: { email: 'a@b.c' } });
+```
+
+`service` is the emitting process identity (microservice, backend, worker).
+It surfaces as a first-class field on every log entry so aggregators can
+filter by emitter — `[service] [module::location] message` in pretty
+output, and a top-level `service` key in JSON.
+
+Three levels of identification compose:
+
+| Level    | Field      | Set by                       | Example           |
+| -------- | ---------- | ---------------------------- | ----------------- |
+| service  | `service`  | `LoggerConfig.service`       | `my-backend`      |
+| module   | `module`   | `factory.create(name)`       | `UserService`     |
+| location | `location` | `logger.forMethod(name)`     | `createUser`      |
+
+Add per-call or per-scope metadata with `withMeta`:
+
+```ts
+const scoped = logger.forMethod('createUser').withMeta({ requestId: 'r-1' });
+scoped.info('ok');
+// Every entry emitted through `scoped` carries { requestId: 'r-1' } in meta.
+// Per-call meta wins on key collisions; child withMeta accumulates on top of parent.
 ```
 
 ## With obfuscation (PII protection)
@@ -59,7 +87,7 @@ const obfuscator = await createRecursiveObfuscator({
 });
 
 const factory = createLoggerFactory({
-  config: { level: 'info', mode: 'json' },
+  config: { service: 'my-backend', level: 'info', mode: 'json' },
   obfuscator,
 });
 

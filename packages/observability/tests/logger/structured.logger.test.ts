@@ -7,6 +7,7 @@ import type { LogObfuscator } from '../../src/logger/obfuscation/log.obfuscator.
 import { StructuredLogger } from '../../src/logger/structured.logger.js';
 
 const baseDeps = {
+  service: 'test-service',
   module: 'TestModule',
   config: { level: 'debug' as const },
   formatter: new JsonFormatter(),
@@ -160,6 +161,51 @@ describe('StructuredLogger', () => {
     await (child as StructuredLogger).flush();
 
     expect(captured[0]?.location).toBe('handle');
+  });
+
+  it('withMeta bakes meta into every entry emitted through the child', async () => {
+    const captured: LogEntry[] = [];
+    const observer: LogObserver = { onEntry: (e) => captured.push(e) };
+    const logger = new StructuredLogger({ ...baseDeps, observers: [observer] });
+    const scoped = logger.withMeta({ subjectUserId: 'u-1', subjectScopeId: 's-1' });
+    scoped.info('hi');
+    await (scoped as StructuredLogger).flush();
+
+    expect(captured[0]?.meta).toEqual({ subjectUserId: 'u-1', subjectScopeId: 's-1' });
+  });
+
+  it('withMeta merges with per-call meta; per-call wins on key collisions', async () => {
+    const captured: LogEntry[] = [];
+    const observer: LogObserver = { onEntry: (e) => captured.push(e) };
+    const logger = new StructuredLogger({ ...baseDeps, observers: [observer] });
+    const scoped = logger.withMeta({ subjectUserId: 'u-1', tier: 'base' });
+    scoped.info('hi', { meta: { tier: 'override', extra: 1 } });
+    await (scoped as StructuredLogger).flush();
+
+    expect(captured[0]?.meta).toEqual({ subjectUserId: 'u-1', tier: 'override', extra: 1 });
+  });
+
+  it('withMeta is composable: chained children accumulate meta', async () => {
+    const captured: LogEntry[] = [];
+    const observer: LogObserver = { onEntry: (e) => captured.push(e) };
+    const logger = new StructuredLogger({ ...baseDeps, observers: [observer] });
+    const child = logger.withMeta({ a: 1 }).withMeta({ b: 2 });
+    child.info('hi');
+    await (child as StructuredLogger).flush();
+
+    expect(captured[0]?.meta).toEqual({ a: 1, b: 2 });
+  });
+
+  it('withMeta and forMethod compose orthogonally', async () => {
+    const captured: LogEntry[] = [];
+    const observer: LogObserver = { onEntry: (e) => captured.push(e) };
+    const logger = new StructuredLogger({ ...baseDeps, observers: [observer] });
+    const child = logger.forMethod('handle').withMeta({ requestId: 'r-1' });
+    child.info('hi');
+    await (child as StructuredLogger).flush();
+
+    expect(captured[0]?.location).toBe('handle');
+    expect(captured[0]?.meta).toEqual({ requestId: 'r-1' });
   });
 
   it('serializes Error instances with name, message, and stack', async () => {

@@ -1,7 +1,7 @@
+import { NoopLogger } from '@quilla-kit/observability';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { OutboxForwarder } from '../../src/local-outbox/outbox.forwarder.js';
 import { FakeEventBusPublisher } from '../helpers/fake-bus.js';
-import { createFakeLogger } from '../helpers/fake-logger.js';
 import { FakeLocalOutboxReader, makeOutboxEntry } from '../helpers/fake-outbox.js';
 
 describe('OutboxForwarder', () => {
@@ -24,7 +24,7 @@ describe('OutboxForwarder', () => {
       reader,
       publisher,
       sourceService: 'svc-a',
-      logger: createFakeLogger(),
+      logger: new NoopLogger(),
       instanceId: 'replica-1',
     });
 
@@ -47,7 +47,7 @@ describe('OutboxForwarder', () => {
       reader,
       publisher,
       sourceService: 'svc-a',
-      logger: createFakeLogger(),
+      logger: new NoopLogger(),
     });
 
     fwd.start();
@@ -63,7 +63,7 @@ describe('OutboxForwarder', () => {
       reader,
       publisher,
       sourceService: 'svc-a',
-      logger: createFakeLogger(),
+      logger: new NoopLogger(),
     });
 
     fwd.start();
@@ -81,7 +81,7 @@ describe('OutboxForwarder', () => {
       reader,
       publisher,
       sourceService: 'svc-a',
-      logger: createFakeLogger(),
+      logger: new NoopLogger(),
       staleClaimAfterMs: 60_000,
     });
 
@@ -109,7 +109,7 @@ describe('OutboxForwarder', () => {
       reader,
       publisher,
       sourceService: 'svc-a',
-      logger: createFakeLogger(),
+      logger: new NoopLogger(),
     });
 
     fwd.start();

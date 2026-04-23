@@ -1,11 +1,12 @@
+import { NoopLogger } from '@quilla-kit/observability';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import type { EventBusEntry } from '../../src/event-bus/event-bus-entry.type.js';
-import type { EventSubscription } from '../../src/event-bus/event-subscription.type.js';
+import type { EventSubscription } from '../../src/event-bus/event-subscription.interface.js';
 import { EventConsumer, SchemaValidationError } from '../../src/event-bus/event.consumer.js';
 import { defineEvent } from '../../src/event-bus/event.descriptor.js';
+import type { HandlerEntry } from '../../src/event-bus/handler-entry.type.js';
 import { FakeEventBusConsumer } from '../helpers/fake-bus.js';
-import { createFakeLogger } from '../helpers/fake-logger.js';
 
 function makeBusEntry(overrides: Partial<EventBusEntry> = {}): EventBusEntry {
   return {
@@ -41,7 +42,7 @@ describe('EventConsumer', () => {
       bus,
       consumerName: 'test',
       sourceService: 'svc-a',
-      logger: createFakeLogger(),
+      logger: new NoopLogger(),
     });
     consumer.on('test.happened', handler);
     bus.enqueueBatch([makeBusEntry()]);
@@ -61,7 +62,7 @@ describe('EventConsumer', () => {
       bus,
       consumerName: 'test',
       sourceService: 'svc-a',
-      logger: createFakeLogger(),
+      logger: new NoopLogger(),
     });
     consumer.on('test.happened', handler);
     bus.enqueueBatch([
@@ -84,7 +85,7 @@ describe('EventConsumer', () => {
       bus,
       consumerName: 'test',
       sourceService: 'svc-a',
-      logger: createFakeLogger(),
+      logger: new NoopLogger(),
     });
     consumer.on(OrderPlaced, handler);
     bus.enqueueBatch([makeBusEntry({ eventType: 'order.placed', payload: { orderId: 'o-1' } })]);
@@ -106,7 +107,7 @@ describe('EventConsumer', () => {
       bus,
       consumerName: 'test',
       sourceService: 'svc-a',
-      logger: createFakeLogger(),
+      logger: new NoopLogger(),
     });
     bus.enqueueBatch([makeBusEntry({ eventType: 'unhandled.type' })]);
 
@@ -124,7 +125,7 @@ describe('EventConsumer', () => {
       bus,
       consumerName: 'test',
       sourceService: 'svc-a',
-      logger: createFakeLogger(),
+      logger: new NoopLogger(),
       skipOwnEventKinds: ['integration'],
     });
     consumer.on('test.happened', handler);
@@ -148,7 +149,7 @@ describe('EventConsumer', () => {
       bus,
       consumerName: 'test',
       sourceService: 'svc-a',
-      logger: createFakeLogger(),
+      logger: new NoopLogger(),
       retryDelaysMs: [10, 20],
     });
     consumer.on('test.happened', handler);
@@ -172,7 +173,7 @@ describe('EventConsumer', () => {
       bus,
       consumerName: 'test',
       sourceService: 'svc-a',
-      logger: createFakeLogger(),
+      logger: new NoopLogger(),
       retryDelaysMs: [1, 1],
     });
     consumer.on('test.happened', handler);
@@ -194,7 +195,7 @@ describe('EventConsumer', () => {
       bus,
       consumerName: 'test',
       sourceService: 'svc-a',
-      logger: createFakeLogger(),
+      logger: new NoopLogger(),
       onProcessed,
       retryDelaysMs: [],
     });
@@ -223,7 +224,7 @@ describe('EventConsumer', () => {
       bus,
       consumerName: 'test',
       sourceService: 'svc-a',
-      logger: createFakeLogger(),
+      logger: new NoopLogger(),
       instanceId: 'replica-7',
     });
 
@@ -245,7 +246,7 @@ describe('EventConsumer', () => {
       bus,
       consumerName: 'test',
       sourceService: 'svc-a',
-      logger: createFakeLogger(),
+      logger: new NoopLogger(),
       retryDelaysMs: [1000, 1000],
     });
     consumer.on(OrderPlaced, handler);
@@ -271,7 +272,7 @@ describe('EventConsumer', () => {
       bus,
       consumerName: 'test',
       sourceService: 'svc-a',
-      logger: createFakeLogger(),
+      logger: new NoopLogger(),
     });
     consumer.on(OrderPlaced, handler);
     bus.enqueueBatch([
@@ -298,7 +299,7 @@ describe('EventConsumer', () => {
       bus,
       consumerName: 'test',
       sourceService: 'svc-a',
-      logger: createFakeLogger(),
+      logger: new NoopLogger(),
       retryDelaysMs: [1, 1, 1],
     });
     consumer.on(OrderPlaced, handler);
@@ -336,7 +337,7 @@ describe('EventConsumer', () => {
       bus,
       consumerName: 'test',
       sourceService: 'svc-a',
-      logger: createFakeLogger(),
+      logger: new NoopLogger(),
       subscriptions,
     });
     bus.enqueueBatch([
@@ -353,6 +354,39 @@ describe('EventConsumer', () => {
     expect(bus.marksDone).toEqual(['o-1', 'u-1']);
   });
 
+  it('preserves `this` when a subscription is a class instance', async () => {
+    const OrderPlaced = defineEvent<{ orderId: string }>('order.placed');
+    const seen: string[] = [];
+
+    class OrderPlacedSubscription implements EventSubscription<{ orderId: string }> {
+      readonly descriptor = OrderPlaced;
+      private readonly tag = 'class-bound';
+
+      async handle(entry: HandlerEntry<{ orderId: string }>): Promise<void> {
+        seen.push(`${this.tag}:${entry.payload.orderId}`);
+      }
+    }
+
+    const consumer = new EventConsumer({
+      bus,
+      consumerName: 'test',
+      sourceService: 'svc-a',
+      logger: new NoopLogger(),
+      subscriptions: [new OrderPlacedSubscription()],
+    });
+    bus.enqueueBatch([
+      makeBusEntry({ id: 'o-1', eventType: 'order.placed', payload: { orderId: 'o-1' } }),
+    ]);
+
+    consumer.start();
+    await vi.advanceTimersByTimeAsync(1000);
+    await consumer.dispose();
+
+    expect(seen).toEqual(['class-bound:o-1']);
+    expect(bus.marksDone).toEqual(['o-1']);
+    expect(bus.marksFailed).toHaveLength(0);
+  });
+
   it('subscribe() adds heterogeneous subscriptions post-construction', async () => {
     const OrderPlaced = defineEvent<{ orderId: string }>('order.placed');
     const UserCreated = defineEvent<{ userId: string }>('user.created');
@@ -363,7 +397,7 @@ describe('EventConsumer', () => {
       bus,
       consumerName: 'test',
       sourceService: 'svc-a',
-      logger: createFakeLogger(),
+      logger: new NoopLogger(),
     });
     consumer.subscribe([
       { descriptor: OrderPlaced, handle: onOrder },
@@ -394,7 +428,7 @@ describe('EventConsumer', () => {
       bus,
       consumerName: 'test',
       sourceService: 'svc-a',
-      logger: createFakeLogger(),
+      logger: new NoopLogger(),
     });
     consumer.on('test.happened', handler);
     bus.enqueueBatch([makeBusEntry()]);

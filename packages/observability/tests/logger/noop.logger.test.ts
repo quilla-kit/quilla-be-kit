@@ -15,4 +15,10 @@ describe('NoopLogger', () => {
     const child = logger.forMethod('anyMethod');
     expect(() => child.info('x')).not.toThrow();
   });
+
+  it('withMeta returns a Logger that stays silent', () => {
+    const logger = new NoopLogger();
+    const child = logger.withMeta({ foo: 1 });
+    expect(() => child.info('x')).not.toThrow();
+  });
 });

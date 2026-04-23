@@ -11,6 +11,12 @@ import { StructuredLogger } from './structured.logger.js';
 export type LogOutputMode = 'json' | 'pretty';
 
 export type LoggerConfig = {
+  /**
+   * Name of the emitting service (microservice, backend, worker, etc.).
+   * Surfaces on every log entry as a top-level `service` field so logs can
+   * be filtered by emitter in the aggregator.
+   */
+  readonly service: string;
   /** Minimum level to emit. Entries below this level are dropped. */
   readonly level: LogLevel;
   /** `json` for production aggregators; `pretty` for local development. */
@@ -46,6 +52,7 @@ export function createLoggerFactory(opts: LoggerFactoryOptions): LoggerFactory {
   return {
     create(module: string): Logger {
       return new StructuredLogger({
+        service: opts.config.service,
         module,
         config: { level: opts.config.level },
         formatter,

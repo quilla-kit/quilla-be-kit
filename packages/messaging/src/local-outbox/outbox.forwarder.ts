@@ -39,7 +39,7 @@ export class OutboxForwarder implements Disposable {
     this.reader = options.reader;
     this.publisher = options.publisher;
     this.sourceService = options.sourceService;
-    this.logger = options.logger.forMethod('OutboxForwarder');
+    this.logger = options.logger;
     this.pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     this.batchSize = options.batchSize ?? DEFAULT_BATCH_SIZE;
     this.staleClaimAfterMs = options.staleClaimAfterMs ?? DEFAULT_STALE_CLAIM_MS;

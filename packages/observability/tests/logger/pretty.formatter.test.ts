@@ -7,6 +7,7 @@ const formatter = new PrettyFormatter();
 const baseEntry: LogEntry = {
   timestamp: '2026-04-20T10:00:00.000Z',
   level: 'info',
+  service: 'test-service',
   module: 'TestModule',
   message: 'hello',
   context: {},
@@ -17,13 +18,17 @@ const ANSI_RE = new RegExp(`${String.fromCharCode(0x1b)}\\[\\d+m`, 'g');
 const strip = (s: string): string => s.replace(ANSI_RE, '');
 
 describe('PrettyFormatter', () => {
-  it('renders timestamp, level, module, and message on the first line', () => {
+  it('renders timestamp, level, service, module, and message on the first line', () => {
     const out = strip(formatter.format(baseEntry));
     const [first] = out.split('\n');
     expect(first).toContain('2026-04-20T10:00:00.000Z');
     expect(first).toContain('INFO');
+    expect(first).toContain('[test-service]');
     expect(first).toContain('[TestModule]');
     expect(first).toContain('hello');
+    expect(first?.indexOf('[test-service]') ?? -1).toBeLessThan(
+      first?.indexOf('[TestModule]') ?? -1,
+    );
   });
 
   it('renders context fields that are present', () => {
