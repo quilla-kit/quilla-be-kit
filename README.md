@@ -1,6 +1,6 @@
 # quilla-kit
 
-**A TypeScript SDK for building production backend services with explicit domain logic, principled persistence and messaging, and zero framework lock-in.**
+**A TypeScript toolkit for building production backend services with explicit domain logic, principled persistence and messaging, and zero framework lock-in.**
 
 *Quilla* is Spanish for *keel* — the structural backbone a ship is built around. Every other timber attaches to it. That's the role this toolkit plays in a service: the load-bearing spine the rest of the code is fastened to.
 
