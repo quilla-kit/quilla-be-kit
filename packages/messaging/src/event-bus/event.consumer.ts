@@ -120,6 +120,10 @@ export class EventConsumer implements Disposable {
     return `EventConsumer:${this.consumerName}`;
   }
 
+  get registeredEventTypes(): readonly string[] {
+    return [...this.handlers.keys()];
+  }
+
   on<TPayload>(descriptor: EventDescriptor<TPayload>, handler: EventHandler<TPayload>): this;
   on(eventType: string, handler: EventHandler): this;
   on(eventTypeOrDescriptor: string | EventDescriptor<unknown>, handler: EventHandler): this {
@@ -152,9 +156,12 @@ export class EventConsumer implements Disposable {
       meta: {
         pollIntervalMs: this.pollIntervalMs,
         batchSize: this.batchSize,
-        registeredTypes: [...this.handlers.keys()],
+        registeredTypeCount: this.handlers.size,
         instanceId: this.instanceId,
       },
+    });
+    this.logger.debug('registered event types', {
+      meta: { registeredTypes: this.registeredEventTypes },
     });
     this.intervalHandle = setInterval(() => {
       if (this.stopping || this.inflightTick) return;

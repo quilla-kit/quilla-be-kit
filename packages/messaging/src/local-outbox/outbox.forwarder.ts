@@ -83,7 +83,7 @@ export class OutboxForwarder implements Disposable {
       const entries = await this.reader.claim(this.instanceId, this.batchSize);
       if (entries.length === 0) return;
 
-      this.logger.info(`forwarding ${entries.length} event(s)`);
+      this.logger.debug(`forwarding ${entries.length} event(s)`);
 
       for (const entry of entries) {
         if (this.stopping) break;

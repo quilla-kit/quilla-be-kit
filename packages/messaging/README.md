@@ -518,6 +518,41 @@ shutdown.registerPhase('forwarders', [forwarder]);
 
 ---
 
+## Observability
+
+`OutboxForwarder` and `EventConsumer` follow a consistent log-level
+convention so production aggregators aren't flooded with routine
+processing chatter:
+
+| Level | When it fires |
+| --- | --- |
+| `info` | Lifecycle transitions: `starting`, `stopped`. One-shot per component per replica. |
+| `debug` | Per-tick / per-batch processing: `forwarding N event(s)`, `registered event types`. High frequency. |
+| `warn` | Recoverable anomalies: handler retry, stale-claim sweep hits, transient handler failures. |
+| `error` | Terminal failures: handler exhausted retries, schema validation failed, tick crashed. |
+
+`EventConsumer` splits its startup log to avoid unbounded `meta`
+payloads in the info stream: the info entry carries
+`registeredTypeCount` (a scalar); the full list is emitted separately at
+debug. Programmatic callers can inspect registrations via the
+`consumer.registeredEventTypes` accessor instead of log scraping:
+
+```ts
+const consumer = new EventConsumer({ bus, consumerName, sourceService, logger });
+consumer.subscribe([
+  ...userSubscriptions(),
+  ...orderSubscriptions(),
+]);
+// Health check / test assertion:
+expect(consumer.registeredEventTypes).toContain('user.created');
+```
+
+In production, set the logger level to `info` (default in most
+deployments). For debugging event flow, bump a specific replica to
+`debug` to see per-tick detail without changing code.
+
+---
+
 ## Writing a custom broker adapter
 
 Implement `EventBusPublisher` + `EventBusConsumer`:

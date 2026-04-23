@@ -448,4 +448,23 @@ describe('EventConsumer', () => {
     expect(handler).toHaveBeenCalledTimes(1);
     expect(bus.marksDone).toEqual(['evt-1']);
   });
+
+  it('registeredEventTypes reflects every registration from on() and subscribe()', () => {
+    const OrderPlaced = defineEvent<{ orderId: string }>('order.placed');
+    const UserCreated = defineEvent<{ userId: string }>('user.created');
+    const consumer = new EventConsumer({
+      bus,
+      consumerName: 'test',
+      sourceService: 'svc-a',
+      logger: new NoopLogger(),
+    });
+
+    expect(consumer.registeredEventTypes).toEqual([]);
+
+    consumer.on('plain.type', async () => {});
+    consumer.on(OrderPlaced, async () => {});
+    consumer.subscribe([{ descriptor: UserCreated, handle: async () => {} }]);
+
+    expect(consumer.registeredEventTypes).toEqual(['plain.type', 'order.placed', 'user.created']);
+  });
 });
