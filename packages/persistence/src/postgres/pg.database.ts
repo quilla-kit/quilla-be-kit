@@ -5,17 +5,27 @@ import type { DatabaseTransaction } from '../database/database-transaction.inter
 import type { Database } from '../database/database.interface.js';
 import { PgTransaction } from './pg.transaction.js';
 
+export type PgDatabaseOptions = PoolConfig | { readonly pool: Pool };
+
 /**
- * Postgres implementation of `Database`. Owns a `pg.Pool` — pass a
- * `PoolConfig` at construction; the adapter creates and manages the pool.
- * Register `disconnect()` on a `ShutdownManager` from
- * `@quilla-kit/runtime` to drain the pool gracefully.
+ * Postgres implementation of `Database`. Accepts either a `PoolConfig` (the
+ * adapter creates and owns the pool) or `{ pool }` (the caller owns it —
+ * useful for sharing one `pg.Pool` with `PgLocalOutbox` / `PgEventBus` /
+ * other Postgres adapters). When the pool is caller-owned, `disconnect()`
+ * is a no-op; register `pool.end()` yourself on a `ShutdownManager`.
  */
 export class PgDatabase implements Database {
   private readonly pool: Pool;
+  private readonly ownsPool: boolean;
 
-  constructor(config: PoolConfig) {
-    this.pool = new Pool(config);
+  constructor(options: PgDatabaseOptions) {
+    if ('pool' in options) {
+      this.pool = options.pool;
+      this.ownsPool = false;
+    } else {
+      this.pool = new Pool(options);
+      this.ownsPool = true;
+    }
   }
 
   async query(
@@ -39,7 +49,9 @@ export class PgDatabase implements Database {
   }
 
   async disconnect(): Promise<void> {
-    await this.pool.end();
+    if (this.ownsPool) {
+      await this.pool.end();
+    }
   }
 
   async healthCheck(): Promise<DatabaseHealth> {

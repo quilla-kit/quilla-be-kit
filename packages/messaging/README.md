@@ -112,9 +112,10 @@ Or pipe the string into drizzle-kit / knex / your migration tool.
 import { UnitOfWork } from '@quilla-kit/persistence';
 import { PgDatabase } from '@quilla-kit/persistence/postgres';
 import { PgLocalOutbox } from '@quilla-kit/messaging/postgres';
+import { Pool } from 'pg';
 
-const db = new PgDatabase({ connectionString: process.env.DATABASE_URL });
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+const db = new PgDatabase({ pool });
 const outbox = new PgLocalOutbox({ pool });
 
 const uow = new UnitOfWork({
@@ -167,9 +168,15 @@ configuration.
 ### 4. Consume events
 
 ```ts
+import { z } from 'zod';
 import { EventConsumer, defineEvent } from '@quilla-kit/messaging';
 
-const OrderPlaced = defineEvent<{ orderId: string; total: number }>('order.placed');
+const OrderPlacedSchema = z.object({
+  orderId: z.string().uuid(),
+  total: z.number().positive(),
+});
+const OrderPlaced = defineEvent('order.placed', OrderPlacedSchema);
+// payload is inferred as z.infer<typeof OrderPlacedSchema>
 
 const consumer = new EventConsumer({
   bus,
@@ -180,7 +187,7 @@ const consumer = new EventConsumer({
 });
 
 consumer.on(OrderPlaced, async ({ payload, correlationId }) => {
-  // payload is typed as { orderId: string; total: number }
+  // payload is already validated by OrderPlacedSchema before this line runs
   await sendReceiptEmail(payload.orderId);
 });
 
@@ -188,6 +195,13 @@ consumer.start();
 
 // On shutdown:
 await consumer.dispose();
+```
+
+Schema-less descriptors still work when you don't need runtime validation:
+
+```ts
+const OrderPlaced = defineEvent<{ orderId: string; total: number }>('order.placed');
+// payload is typed but not validated
 ```
 
 Same story: deploy multiple consumer replicas, each claims disjoint
@@ -263,6 +277,81 @@ consumer.on(OrderPlaced, async ({ payload }) => {
 
 A `{ name, schema? }` shape with a phantom payload type. Use at module
 scope to keep event identity and payload type in one declaration.
+
+When you pass a [Standard Schema v1][standard-schema] instance as the
+second argument, the payload type is inferred from the schema and
+`EventConsumer` validates it before dispatch (see below):
+
+```ts
+import { z } from 'zod';
+const OrderPlaced = defineEvent('order.placed', z.object({ orderId: z.string() }));
+// payload is inferred — no generic needed
+```
+
+[standard-schema]: https://standardschema.dev/
+
+### `EventSubscription` — `(descriptor, handle)` pairs for composition
+
+Module factories can return an array of subscriptions instead of wiring
+handlers themselves. The composition root passes the combined array to
+`EventConsumer`:
+
+```ts
+import type { EventSubscription } from '@quilla-kit/messaging';
+
+// orders/subscriptions.ts
+export const orderSubscriptions = (): EventSubscription[] => [
+  { descriptor: OrderPlaced, handle: onOrderPlaced },
+  { descriptor: OrderCancelled, handle: onOrderCancelled },
+];
+
+// composition-root.ts
+const consumer = new EventConsumer({
+  bus,
+  consumerName: 'notifications',
+  sourceService: 'notifications',
+  logger,
+  subscriptions: [
+    ...userSubscriptions(),
+    ...orderSubscriptions(),
+  ],
+});
+```
+
+`consumer.subscribe(subscriptions)` does the same thing post-construction,
+for DI containers that resolve handlers after the consumer is built.
+`consumer.on(descriptor, handler)` remains for ad-hoc wiring.
+
+### Automatic payload validation (Standard Schema v1)
+
+When an `EventDescriptor` carries a schema, `EventConsumer.on` wraps the
+handler so `entry.payload` is validated before dispatch. Any Standard
+Schema v1 vendor works — Zod (≥ 4), Valibot, ArkType — without a hard
+dependency in `@quilla-kit/messaging`:
+
+```ts
+import { z } from 'zod';
+import { defineEvent, SchemaValidationError } from '@quilla-kit/messaging';
+
+const UserCreated = defineEvent(
+  'user.created',
+  z.object({
+    userId: z.string().uuid(),
+    email: z.string().email(),
+  }),
+);
+
+consumer.on(UserCreated, async ({ payload }) => {
+  // payload has already been validated
+  await sendWelcomeEmail(payload.email);
+});
+```
+
+Validation failures are **not** retried — the schema result is
+deterministic. The event is marked `FAILED` directly, with the issue
+summary in the row's `last_error` column. Log/metrics pipelines can
+`instanceof`-check the exported `SchemaValidationError` to alert on
+contract drift between producer and consumer.
 
 ---
 

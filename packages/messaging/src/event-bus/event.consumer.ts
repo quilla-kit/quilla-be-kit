@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { ValidationError } from '@quilla-kit/errors';
 import type {
   ExecutionContext,
   ExecutionContextFactory,
@@ -14,7 +15,9 @@ import {
 } from './defaults.js';
 import type { EventBusConsumer } from './event-bus-consumer.interface.js';
 import type { EventBusEntry } from './event-bus-entry.type.js';
+import type { EventSubscription } from './event-subscription.type.js';
 import type { EventDescriptor } from './event.descriptor.js';
+import type { StandardSchemaV1 } from './standard-schema.type.js';
 
 export type EventHandler<TPayload = unknown> = (entry: {
   readonly payload: TPayload;
@@ -40,7 +43,47 @@ export type EventConsumerOptions = {
     readonly provider: ExecutionContextProvider;
   };
   readonly onProcessed?: (entry: EventBusEntry) => void;
+  readonly subscriptions?: ReadonlyArray<EventSubscription<unknown>>;
 };
+
+export class SchemaValidationError extends ValidationError {
+  readonly eventType: string;
+  readonly issues: ReadonlyArray<StandardSchemaV1.Issue>;
+
+  constructor(eventType: string, issues: ReadonlyArray<StandardSchemaV1.Issue>) {
+    const summary = issues.map((i) => `${formatIssuePath(i.path)}${i.message}`).join('; ');
+    super({
+      message: `schema validation failed for ${eventType}: ${summary}`,
+      context: { eventType, issues },
+    });
+    this.eventType = eventType;
+    this.issues = issues;
+  }
+}
+
+function formatIssuePath(
+  path: ReadonlyArray<PropertyKey | StandardSchemaV1.PathSegment> | undefined,
+): string {
+  if (!path || path.length === 0) return '';
+  const parts = path.map((seg) =>
+    typeof seg === 'object' && seg !== null && 'key' in seg ? String(seg.key) : String(seg),
+  );
+  return `${parts.join('.')}: `;
+}
+
+function wrapWithSchema(
+  eventType: string,
+  schema: StandardSchemaV1,
+  handler: EventHandler,
+): EventHandler {
+  return async (entry) => {
+    const result = await schema['~standard'].validate(entry.payload);
+    if (result.issues !== undefined) {
+      throw new SchemaValidationError(eventType, result.issues);
+    }
+    return handler({ ...entry, payload: result.value });
+  };
+}
 
 export class EventConsumer implements Disposable {
   private readonly bus: EventBusConsumer;
@@ -74,6 +117,9 @@ export class EventConsumer implements Disposable {
     this.instanceId = options.instanceId ?? randomUUID();
     this.executionContext = options.executionContext;
     this.onProcessed = options.onProcessed;
+    if (options.subscriptions) {
+      this.subscribe(options.subscriptions);
+    }
   }
 
   get name(): string {
@@ -87,9 +133,20 @@ export class EventConsumer implements Disposable {
       typeof eventTypeOrDescriptor === 'string'
         ? eventTypeOrDescriptor
         : eventTypeOrDescriptor.name;
+    const schema =
+      typeof eventTypeOrDescriptor === 'string' ? undefined : eventTypeOrDescriptor.schema;
+    const registered: EventHandler =
+      schema !== undefined ? wrapWithSchema(eventType, schema, handler) : handler;
     const existing = this.handlers.get(eventType) ?? [];
-    existing.push(handler as EventHandler);
+    existing.push(registered);
     this.handlers.set(eventType, existing);
+    return this;
+  }
+
+  subscribe(subscriptions: ReadonlyArray<EventSubscription<unknown>>): this {
+    for (const sub of subscriptions) {
+      this.on(sub.descriptor, sub.handle);
+    }
     return this;
   }
 
@@ -209,6 +266,12 @@ export class EventConsumer implements Disposable {
         return undefined;
       } catch (err) {
         lastError = err instanceof Error ? err.message : String(err);
+        if (err instanceof SchemaValidationError) {
+          this.logger.error('schema validation failed; marking FAILED (no retries)', err, {
+            meta: { eventId: event.id, eventType: event.eventType, issues: err.issues },
+          });
+          return lastError;
+        }
         const delayMs = this.retryDelaysMs[attempt - 1];
         if (attempt >= maxAttempts || delayMs === undefined) {
           this.logger.error(`handler failed after ${attempt} attempt(s)`, err, {

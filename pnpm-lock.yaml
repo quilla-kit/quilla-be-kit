@@ -88,6 +88,9 @@ importers:
 
   packages/messaging:
     dependencies:
+      '@quilla-kit/errors':
+        specifier: workspace:^
+        version: link:../errors
       '@quilla-kit/execution-context':
         specifier: workspace:^
         version: link:../execution-context
@@ -104,6 +107,9 @@ importers:
       pg:
         specifier: ^8.13.0
         version: 8.20.0
+      zod:
+        specifier: ^4.0.0
+        version: 4.3.6
 
   packages/observability:
     devDependencies:
@@ -1163,6 +1169,9 @@ packages:
     resolution: {integrity: sha512-LKYU1iAXJXUgAXn9URjiu+MWhyUXHsvfp7mcuYm9dSUKK0/CjtrUwFAxD82/mCWbtLsGjFIad0wIsod4zrTAEQ==}
     engines: {node: '>=0.4'}
 
+  zod@4.3.6:
+    resolution: {integrity: sha512-rftlrkhHZOcjDwkGlnUtZZkvaPHCsDATp4pGpuOOMDaTdDDXF91wuVDJoWoPsKX/3YPQ5fHuF3STjcYyKr+Qhg==}
+
 snapshots:
 
   '@babel/runtime@7.29.2': {}
@@ -2091,3 +2100,5 @@ snapshots:
       stackback: 0.0.2
 
   xtend@4.0.2: {}
+
+  zod@4.3.6: {}

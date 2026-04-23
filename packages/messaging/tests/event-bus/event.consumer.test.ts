@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 import type { EventBusEntry } from '../../src/event-bus/event-bus-entry.type.js';
-import { EventConsumer } from '../../src/event-bus/event.consumer.js';
+import type { EventSubscription } from '../../src/event-bus/event-subscription.type.js';
+import { EventConsumer, SchemaValidationError } from '../../src/event-bus/event.consumer.js';
 import { defineEvent } from '../../src/event-bus/event.descriptor.js';
 import { FakeEventBusConsumer } from '../helpers/fake-bus.js';
 import { createFakeLogger } from '../helpers/fake-logger.js';
@@ -233,6 +235,151 @@ describe('EventConsumer', () => {
     for (const call of bus.claimed) {
       expect(call.instanceId).toBe('replica-7');
     }
+  });
+
+  it('validates payload against the descriptor schema before dispatch and markFailed on failure', async () => {
+    const schema = z.object({ orderId: z.string(), total: z.number() });
+    const OrderPlaced = defineEvent('order.placed', schema);
+    const handler = vi.fn(async () => {});
+    const consumer = new EventConsumer({
+      bus,
+      consumerName: 'test',
+      sourceService: 'svc-a',
+      logger: createFakeLogger(),
+      retryDelaysMs: [1000, 1000],
+    });
+    consumer.on(OrderPlaced, handler);
+    bus.enqueueBatch([
+      makeBusEntry({ eventType: 'order.placed', payload: { orderId: 'o-1', total: 'bad' } }),
+    ]);
+
+    consumer.start();
+    await vi.advanceTimersByTimeAsync(1000);
+    await consumer.dispose();
+
+    expect(handler).not.toHaveBeenCalled();
+    expect(bus.marksDone).toHaveLength(0);
+    expect(bus.marksFailed).toHaveLength(1);
+    expect(bus.marksFailed[0]?.reason).toMatch(/schema validation failed/);
+  });
+
+  it('passes the schema-validated payload to the handler on success', async () => {
+    const schema = z.object({ orderId: z.string(), total: z.number() });
+    const OrderPlaced = defineEvent('order.placed', schema);
+    const handler = vi.fn(async () => {});
+    const consumer = new EventConsumer({
+      bus,
+      consumerName: 'test',
+      sourceService: 'svc-a',
+      logger: createFakeLogger(),
+    });
+    consumer.on(OrderPlaced, handler);
+    bus.enqueueBatch([
+      makeBusEntry({ eventType: 'order.placed', payload: { orderId: 'o-1', total: 42 } }),
+    ]);
+
+    consumer.start();
+    await vi.advanceTimersByTimeAsync(1000);
+    await consumer.dispose();
+
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({ payload: { orderId: 'o-1', total: 42 } }),
+    );
+    expect(bus.marksDone).toEqual(['evt-1']);
+    expect(bus.marksFailed).toHaveLength(0);
+  });
+
+  it('does not retry schema-validation failures', async () => {
+    const schema = z.object({ orderId: z.string() });
+    const OrderPlaced = defineEvent('order.placed', schema);
+    const validateSpy = vi.spyOn(schema['~standard'], 'validate');
+    const handler = vi.fn(async () => {});
+    const consumer = new EventConsumer({
+      bus,
+      consumerName: 'test',
+      sourceService: 'svc-a',
+      logger: createFakeLogger(),
+      retryDelaysMs: [1, 1, 1],
+    });
+    consumer.on(OrderPlaced, handler);
+    bus.enqueueBatch([makeBusEntry({ eventType: 'order.placed', payload: { orderId: 123 } })]);
+
+    consumer.start();
+    await vi.advanceTimersByTimeAsync(1000);
+    await vi.advanceTimersByTimeAsync(100);
+    await consumer.dispose();
+
+    expect(handler).not.toHaveBeenCalled();
+    expect(validateSpy).toHaveBeenCalledTimes(1);
+    expect(bus.marksFailed).toHaveLength(1);
+  });
+
+  it('SchemaValidationError carries eventType + issues', () => {
+    const err = new SchemaValidationError('order.placed', [{ message: 'boom', path: ['total'] }]);
+    expect(err.eventType).toBe('order.placed');
+    expect(err.issues).toHaveLength(1);
+    expect(err.message).toMatch(/order\.placed/);
+    expect(err.message).toMatch(/total: boom/);
+  });
+
+  it('wires subscriptions from options', async () => {
+    const OrderPlaced = defineEvent<{ orderId: string }>('order.placed');
+    const UserCreated = defineEvent<{ userId: string }>('user.created');
+    const onOrder = vi.fn(async () => {});
+    const onUser = vi.fn(async () => {});
+    const subscriptions: EventSubscription[] = [
+      { descriptor: OrderPlaced, handle: onOrder },
+      { descriptor: UserCreated, handle: onUser },
+    ];
+
+    const consumer = new EventConsumer({
+      bus,
+      consumerName: 'test',
+      sourceService: 'svc-a',
+      logger: createFakeLogger(),
+      subscriptions,
+    });
+    bus.enqueueBatch([
+      makeBusEntry({ id: 'o-1', eventType: 'order.placed', payload: { orderId: 'o-1' } }),
+      makeBusEntry({ id: 'u-1', eventType: 'user.created', payload: { userId: 'u-1' } }),
+    ]);
+
+    consumer.start();
+    await vi.advanceTimersByTimeAsync(1000);
+    await consumer.dispose();
+
+    expect(onOrder).toHaveBeenCalledTimes(1);
+    expect(onUser).toHaveBeenCalledTimes(1);
+    expect(bus.marksDone).toEqual(['o-1', 'u-1']);
+  });
+
+  it('subscribe() adds heterogeneous subscriptions post-construction', async () => {
+    const OrderPlaced = defineEvent<{ orderId: string }>('order.placed');
+    const UserCreated = defineEvent<{ userId: string }>('user.created');
+    const onOrder = vi.fn(async () => {});
+    const onUser = vi.fn(async () => {});
+
+    const consumer = new EventConsumer({
+      bus,
+      consumerName: 'test',
+      sourceService: 'svc-a',
+      logger: createFakeLogger(),
+    });
+    consumer.subscribe([
+      { descriptor: OrderPlaced, handle: onOrder },
+      { descriptor: UserCreated, handle: onUser },
+    ]);
+    bus.enqueueBatch([
+      makeBusEntry({ id: 'o-1', eventType: 'order.placed', payload: { orderId: 'o-1' } }),
+      makeBusEntry({ id: 'u-1', eventType: 'user.created', payload: { userId: 'u-1' } }),
+    ]);
+
+    consumer.start();
+    await vi.advanceTimersByTimeAsync(1000);
+    await consumer.dispose();
+
+    expect(onOrder).toHaveBeenCalledTimes(1);
+    expect(onUser).toHaveBeenCalledTimes(1);
   });
 
   it('dispose() awaits in-flight tick before resolving (graceful drain)', async () => {

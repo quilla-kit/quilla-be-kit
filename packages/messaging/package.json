@@ -43,6 +43,7 @@
     "clean": "rm -rf dist *.tsbuildinfo"
   },
   "dependencies": {
+    "@quilla-kit/errors": "workspace:^",
     "@quilla-kit/execution-context": "workspace:^",
     "@quilla-kit/observability": "workspace:^",
     "@quilla-kit/runtime": "workspace:^"
@@ -57,6 +58,7 @@
   },
   "devDependencies": {
     "@types/pg": "^8.15.5",
-    "pg": "^8.13.0"
+    "pg": "^8.13.0",
+    "zod": "^4.0.0"
   }
 }

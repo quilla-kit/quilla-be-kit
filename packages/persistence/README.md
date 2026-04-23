@@ -88,6 +88,7 @@ class UserRepository extends BaseScopedAggregateRepository<User, UserRow> {}
 
 // 4. Wire at composition root:
 const db = new PgDatabase({ host, database, user, password });
+// Or, to share the pool with PgLocalOutbox / PgEventBus — see "Sharing a Pool" below.
 const writeAdapter = new PgWriteDbAdapter(db);
 const readAdapter  = new PgReadDbAdapter(db);
 const uow = new UnitOfWork({ db, outboxWriter });
@@ -117,6 +118,35 @@ await uow.transaction(async (ctx) => {
 shutdown.addPhase({
   name: 'database',
   participants: [{ name: 'PgDatabase', dispose: () => db.disconnect() }],
+});
+```
+
+### Sharing a Pool
+
+`PgDatabase` accepts either a `PoolConfig` (the adapter creates and owns
+the pool) or `{ pool }` (the caller owns it — use this when the same
+physical Postgres connection pool needs to back other adapters like
+`PgLocalOutbox` / `PgEventBus` from `@quilla-kit/messaging`):
+
+```ts
+import { Pool } from 'pg';
+import { PgDatabase } from '@quilla-kit/persistence/postgres';
+import { PgLocalOutbox, PgEventBus } from '@quilla-kit/messaging/postgres';
+
+// Adapter-owned pool — disconnect() ends it:
+const db = new PgDatabase({ connectionString: process.env.DATABASE_URL });
+
+// Caller-owned pool — shared with the messaging adapters:
+const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+const db = new PgDatabase({ pool });
+const outbox = new PgLocalOutbox({ pool });
+const bus = new PgEventBus({ pool });
+
+// When the pool is caller-owned, db.disconnect() is a no-op.
+// Register pool.end() on your ShutdownManager yourself:
+shutdown.addPhase({
+  name: 'database',
+  participants: [{ name: 'pg.Pool', dispose: () => pool.end() }],
 });
 ```
 
