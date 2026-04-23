@@ -10,7 +10,7 @@
 
 ## Why quilla-kit
 
-- **Extracted from real production code**, not invented at a framework-design whiteboard. Every primitive earned its seat by repeatedly appearing across services in a live monolith ([emigraly](https://github.com/emigraly)) before being lifted into reusable packages.
+- **Extracted from real production code**, not invented at a framework-design whiteboard. Every primitive earned its seat by repeatedly appearing across production services before being lifted into reusable packages.
 - **Interface/adapter split is non-negotiable.** Interface packages have zero external runtime deps. Concrete drivers (Postgres, Hono) live under sub-path exports and opt-in as peer deps. You own your persistence, your HTTP transport, your auth.
 - **Scope isolation is first-class.** Multi-tenancy, workspaces, orgs — the toolkit carries `scopeId` through repositories, event metadata, and execution context without ever renaming it. Consumers decide what "scope" means in their domain.
 - **DDD vocabulary without framework ceremony.** `AggregateRoot`, `UnitOfWork`, `DomainEvent`, `EventMetadata` — minimal, strict, and composable. No decorators to learn that aren't load-bearing.
