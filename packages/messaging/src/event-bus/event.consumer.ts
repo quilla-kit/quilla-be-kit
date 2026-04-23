@@ -39,7 +39,6 @@ export type EventConsumerOptions = {
   readonly staleClaimAfterMs?: number;
   readonly instanceId?: string;
   readonly executionContext?: {
-    readonly factory: ExecutionContextFactory;
     readonly provider: ExecutionContextProvider;
   };
   readonly onProcessed?: (entry: EventBusEntry) => void;
@@ -303,7 +302,7 @@ export class EventConsumer implements Disposable {
 
   private buildExecutionContext(event: EventBusEntry): ExecutionContext | undefined {
     if (!this.executionContext) return undefined;
-    const { factory } = this.executionContext;
+    const { factory } = this.executionContext.provider;
     const outer = event.payload as { metadata?: unknown } | null | undefined;
     const meta = outer && typeof outer === 'object' ? outer.metadata : undefined;
     if (meta) {

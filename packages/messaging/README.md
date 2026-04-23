@@ -414,7 +414,7 @@ new EventConsumer({
   skipOwnEventKinds: ['integration'],
   staleClaimAfterMs: 5 * 60_000,
   instanceId: 'replica-<id>',
-  executionContext: { factory, provider }, // optional: reconstruct + scope per handler
+  executionContext: { provider }, // optional: reconstruct + scope per handler (factory is reached via provider.factory)
   onProcessed: (entry) => bumpMetric(entry),
 });
 ```
