@@ -12,11 +12,15 @@ graph; imported by `execution-context`, `persistence`, `messaging`, and
 
 ### Identity
 
-- **`Entity<TProps>`** — props-based base class. Lazy UUID; equals by id;
-  exposes `createdAt` / `updatedAt` / `insertedBy` / `updatedBy` from props.
+- **`Entity<TProps>`** — props-based base class. Lazy UUID; `equals(other)`
+  compares by id (not structural equality); exposes `createdAt` / `updatedAt`
+  / `insertedBy` / `updatedBy` from props.
 - **`AggregateRoot<TProps>`** — `Entity` + a private domain-event buffer.
-  `drainDomainEvents()` returns and clears the buffer. Override it to chain
-  in child aggregates' events.
+  Call the protected `addDomainEvent(event)` from within the aggregate to
+  stage events during state changes; the public `drainDomainEvents()`
+  returns and clears the buffer (typically called by `UnitOfWork` before
+  commit). Override `drainDomainEvents` to chain in child aggregates'
+  events.
 - **`EntityId`**, **`BaseEntityProps`** — supporting types.
 
 ### Events
@@ -27,7 +31,10 @@ graph; imported by `execution-context`, `persistence`, `messaging`, and
 - **`IntegrationEvent<TPayload>`** — id, `occurredAt`, payload, and the same
   `name` + `toJSON` shape. No `aggregateId` — integration events cross
   aggregate boundaries.
-- **`EnvelopedEvent<TEvent>`** — binds an event to its `EventMetadata`.
+- **`EnvelopedEvent<TEvent>`** — a `{ event, metadata }` pair, produced when
+  `UnitOfWork` drains aggregate events and stamps each with a shared
+  `EventMetadata` (correlation id, actor, scope) before handing them to the
+  outbox. Consumers rarely construct these directly.
 - **`AnyEvent`** — `DomainEvent | IntegrationEvent`.
 
 ### Metadata and actor

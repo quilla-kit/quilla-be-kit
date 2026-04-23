@@ -63,6 +63,22 @@ await runner.dispose(); // stops timers + awaits in-flight ticks
 can register it directly with your `Runtime` and it will be drained as part
 of normal shutdown.
 
+### `stop()` / `drain()` / `dispose()`
+
+The `JobRunner` contract exposes three distinct lifecycle hooks:
+
+- **`stop()`** — idempotent; stops accepting new ticks. Does **not** wait
+  for in-flight executions. Returns synchronously.
+- **`drain()`** — async; awaits every in-flight tick to complete. Safe to
+  call after `stop()`; a no-op if nothing is running.
+- **`dispose()`** — the shutdown-phase convenience: calls `stop()` then
+  `drain()` and returns when everything has settled. This is what you
+  register with `Runtime` / `ShutdownManager`.
+
+Split `stop()` + `drain()` when you need to stop accepting work *before*
+initiating the wait (e.g., drain from multiple runners in parallel with
+one combined `Promise.all(runners.map(r => r.drain()))`).
+
 ---
 
 ## Execution context

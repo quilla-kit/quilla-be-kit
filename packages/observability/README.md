@@ -131,9 +131,34 @@ values (strings, numbers, booleans) are replaced with their HMAC or ciphertext.
 
 ## Graceful shutdown
 
-`StructuredLogger.emit()` is async so obfuscation can run without blocking the
-caller. The public methods (`debug`/`info`/`warn`/`error`) are fire-and-forget.
-Before process exit, call `logger.flush()` to await any in-flight emissions.
+Emission is internally async (so obfuscation and enrichment can run without
+blocking the caller). The public `debug`/`info`/`warn`/`error` methods are
+fire-and-forget. Before process exit, call `flush()` to await any in-flight
+emissions:
+
+```ts
+import { StructuredLogger } from '@quilla-kit/observability';
+
+// flush() lives on StructuredLogger, not the Logger interface —
+// the interface is deliberately minimal. Narrow the type when you need it:
+await (logger as StructuredLogger).flush();
+```
+
+Or register it with `@quilla-kit/runtime`'s `ShutdownManager` so it runs
+automatically in the shutdown phase.
+
+## Testing
+
+`NoopLogger` is a silent implementation of `Logger` — use it in tests and
+in code paths that opt out of logging without threading `| undefined`
+through every call site:
+
+```ts
+import { NoopLogger } from '@quilla-kit/observability';
+
+const logger = new NoopLogger();
+// logger.info(...) etc. are no-ops; forMethod/withMeta return the same instance.
+```
 
 ## Design notes
 

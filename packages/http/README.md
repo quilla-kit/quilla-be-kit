@@ -239,15 +239,19 @@ const router = new Router({
 
   // Optional — when provided, Router installs a system execution-context
   // bootstrap before any consumer middleware. Every route (public and
-  // non-public) gets a baseline anonymous context with a correlation id from
-  // the `x-correlation-id` header (or a generated UUID).
+  // non-public) gets a baseline anonymous context with a correlation id
+  // read from `correlationIdHeader` (default `'x-correlation-id'`) or a
+  // generated UUID if absent.
   // **Required iff `authMiddlewares` is set** — Router throws at construction
   // otherwise. Skip it for pure-public services that never call
   // `request.getExecutionContext()`. The provider carries its own factory
   // (default `executionContextFactory`); pass a custom factory via
   // `new AsyncExecutionContextProvider({ factory })` if you've extended the
   // ExecutionContext shape.
-  executionContext: { provider },
+  executionContext: {
+    provider,
+    correlationIdHeader: 'x-request-id', // optional, defaults to 'x-correlation-id'
+  },
 
   globalMiddlewares: [...],               // custom — run on every route after system bootstrap
   authMiddlewares: { tokenVerification, sessionLoad? },  // typed stack — non-public routes only

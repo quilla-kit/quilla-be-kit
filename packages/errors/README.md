@@ -48,6 +48,35 @@ class CrossScopeAccessError extends NotFoundError {
 }
 ```
 
+### Why `code` is immutable
+
+Each concrete class assigns a `readonly code` at class level and subclasses
+override it. The category+code pair is what the classification pattern
+below keys on — runtime mutation would break `instanceof` guarantees and
+the serialized `toJSON()` shape. Always use `override readonly code = '...'`
+for domain-specific leaves.
+
+### Chaining causes (ES2022)
+
+Use the native `cause` property to preserve the underlying failure when
+wrapping low-level errors into a domain category:
+
+```ts
+try {
+  await dependency.call();
+} catch (err) {
+  throw new ExternalError({
+    message: 'Payment provider unreachable',
+    context: { providerId },
+    cause: err,  // serialized into toJSON().cause as a string
+  });
+}
+```
+
+`cause` flows through to `toJSON()` for structured logs. Log aggregators
+see the wrapped category (with the user-safe message) *and* the underlying
+cause string in one record.
+
 ## Classification
 
 Use `QuillaError.is(e)` as the cross-realm-safe boundary check, then

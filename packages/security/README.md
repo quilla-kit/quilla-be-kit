@@ -130,6 +130,46 @@ On a **`*Public` route**, the entire `authMiddlewares` stack is skipped. The sys
 
 The typed `AuthMiddlewareStack` shape (from `@quilla-kit/http`) enforces phase ordering at the type level — `tokenVerification` runs before `sessionLoad` regardless of how keys are declared.
 
+## Middleware options
+
+Both middlewares take a single minimal options bag:
+
+```ts
+type BearerTokenMiddlewareOptions = {
+  readonly tokenService: TokenService;
+};
+
+type AuthenticatedSessionMiddlewareOptions = {
+  readonly sessionStore: SessionStore;
+  readonly executionContextProvider: ExecutionContextProvider;
+};
+```
+
+No header override, no timeout, no key prefix — all of those are
+implementation choices inside your `TokenService` / `SessionStore`
+adapters (where they belong). If you need a different token header or
+scheme, swap the whole middleware — see "Custom token schemes" below.
+
+## Where implementations live
+
+The interfaces (`TokenService`, `SessionStore`, `PasswordHasher`) belong
+in **your consumer project**, not in `@quilla-kit/security`. Typical
+placement:
+
+```
+src/
+├── security/
+│   ├── jwt-token-service.ts        // implements TokenService (jose / jsonwebtoken)
+│   ├── redis-session-store.ts      // implements SessionStore (ioredis / upstash)
+│   └── argon2-password-hasher.ts   // implements PasswordHasher (@node-rs/argon2)
+└── composition-root.ts             // wires middlewares with the implementations above
+```
+
+The composition root is where you inject your concrete adapters into
+`bearerTokenMiddleware({ tokenService })` and
+`authenticatedSessionMiddleware({ sessionStore, executionContextProvider })`,
+then pass the pair to `new Router({ authMiddlewares: { ... } })`.
+
 ## Custom token schemes
 
 Replace `bearerTokenMiddleware` with your own `tokenVerification` middleware to support a different authentication mechanism (API key header, mTLS client cert, OAuth introspection):

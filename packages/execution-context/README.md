@@ -56,14 +56,21 @@ await provider.runWithContext(ctx, async () => {
   `correlationId`).
 
 ### Interfaces
-- `ExecutionContextProvider` — `getContext()` + `runWithContext(ctx, fn)`.
+- `ExecutionContextProvider` — `getContext()` + `runWithContext(ctx, fn)` +
+  readonly `factory` (the paired `ExecutionContextFactory`).
   `getContext()` **throws** if called outside a `runWithContext` scope.
+  **`runWithContext(fn)` is async-only** — synchronous code cannot establish a
+  scope; wrap it in `async () => {...}` at the boundary.
 - `ExecutionContextFactory` — `createSystemContext`, `createBaselineContext`,
-  `createFromEventMetadata`.
+  `createFromEventMetadata`. Reach it via `provider.factory` so consumers
+  take only one injectable (the provider) and stay internally consistent.
 
 ### Classes
 - `AsyncExecutionContextProvider` — Node-native `AsyncLocalStorage`-backed
-  provider. Owns its own storage instance; intended one-per-process.
+  provider. Owns its own storage instance; intended one-per-process. Takes
+  an optional `{ factory }` in its constructor — defaults to
+  `executionContextFactory` if omitted. Pass a custom factory when you've
+  extended `ExecutionContext` with new fields.
 - `ExecutionContextEnricher` — `LogEntryEnricher` that reads from a provider
   and returns the current context's fields as a log contribution. Returns an
   empty contribution when the provider is outside a scope (bootstrap logs,

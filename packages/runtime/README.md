@@ -113,6 +113,25 @@ onEvent: (e) => {
 
 Errors thrown inside `onEvent` are swallowed — the observer cannot break the runtime.
 
+Event payload shapes (all readonly):
+
+| `type` | Payload |
+| --- | --- |
+| `startup-start` | — |
+| `startup-complete` | `durationMs: number` |
+| `startup-error` | `error: unknown` |
+| `signal-received` | `signal: RuntimeSignal` (`'SIGINT' \| 'SIGTERM' \| 'SIGHUP'`) |
+| `uncaught-exception` | `error: unknown` |
+| `unhandled-rejection` | `reason: unknown` |
+| `shutdown-triggered` | `cause: ShutdownCause` (tagged: `signal` / `uncaught` / `startup-error` / `programmatic`) |
+| `shutdown-complete` | `result: ShutdownResult`, `exitCode: number` |
+
+`RuntimeSignals` is a named constant map — `RuntimeSignals.SIGINT`,
+`.SIGTERM`, `.SIGHUP` — and `RuntimeSignal` is the union type. Pass an
+array of signals to `runtime` options to narrow the trap set (e.g. only
+`[RuntimeSignals.SIGTERM]` inside a container where `SIGINT` is owned by
+the orchestrator).
+
 ## ShutdownManager
 
 Orchestrates phased teardown. Phases run sequentially in insertion order; participants inside a phase run concurrently.

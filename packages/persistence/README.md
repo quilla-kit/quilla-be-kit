@@ -114,6 +114,14 @@ await uow.transaction(async (ctx) => {
   await userRepo.create(newUser, ctx);
 });
 
+// Read-side projections — BaseReadDao runs against the PgReadDbAdapter and
+// never accepts a `trx` parameter (CQRS isolation enforced at the type level):
+class UserReadDao extends BaseReadDao<UserListRow> {
+  protected readonly tableName = 'user_list_view';
+}
+const userReadDao = new UserReadDao(readAdapter);
+const rows = await userReadDao.findMany({ scopeId }); // no ctx, no trx
+
 // Pool lifecycle: register with @quilla-kit/runtime:
 shutdown.addPhase({
   name: 'database',
@@ -148,6 +156,30 @@ shutdown.addPhase({
   name: 'database',
   participants: [{ name: 'pg.Pool', dispose: () => pool.end() }],
 });
+```
+
+### Handling optimistic lock conflicts
+
+When an update includes `updated_at` in the input row, the DAO asserts
+`rowCount === 1` and throws `OptimisticLockError` (extends `ConflictError`
+from `@quilla-kit/errors`) on a mismatch. Catch it at the command handler
+boundary and retry or surface a 409 to the client:
+
+```ts
+import { OptimisticLockError } from '@quilla-kit/persistence';
+
+try {
+  await uow.transaction(async (ctx) => {
+    const user = await userRepo.loadForUpdateByIdOrFail(userId, ctx);
+    user.changeName(newName);
+    await userRepo.update(user, ctx);
+  });
+} catch (err) {
+  if (err instanceof OptimisticLockError) {
+    // someone else updated this row — retry, or surface 409 CONFLICT
+  }
+  throw err;
+}
 ```
 
 ## Mappers — row ↔ aggregate conversion
