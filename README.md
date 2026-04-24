@@ -93,6 +93,52 @@ These are the contracts quilla-kit guarantees to code built on it:
 4. **No governance leakage.** The toolkit does not encode AI-containment rules, modulith topology, projection policies, or domain-specific invariants. Those belong in consumer projects.
 5. **Interface vs. adapter split is non-negotiable.** Interface packages have zero external runtime dependencies. Platform built-ins (`node:crypto`) are fine; transport/storage drivers belong in consumer projects or sub-path exports.
 
+## Adopting the toolkit: build a shell
+
+quilla-kit is deliberately naming-agnostic. `scopeId` is the generic axis; your app decides whether it's a tenant, workspace, organization, or project. To keep the generic vocabulary from leaking through your domain code, wrap the toolkit at a single **shell layer** — typically `src/infrastructure/shell/`, app-owned, one file per concern, usually a few dozen lines total.
+
+A shell does four small jobs:
+
+**1. Brand the scope.** Define a nominal type so the compiler rejects raw strings at the boundary:
+
+```ts
+declare const TenantIdBrand: unique symbol;
+export type TenantId = string & { readonly [TenantIdBrand]: true };
+
+export const TenantId = {
+  from(value: string): TenantId {
+    if (value.length === 0) throw new Error('TenantId cannot be empty');
+    return value as TenantId;
+  },
+};
+```
+
+**2. Rename the verbs.** Extend the toolkit's scoped repository base and re-expose its methods under your domain vocabulary. Pure pass-through — no new logic:
+
+```ts
+export abstract class BaseTenantScopedRepository<
+  TAggregate extends AggregateRoot<object> & { id: string },
+  TRow extends { id: string; scope_id: string },
+> extends BaseScopedAggregateRepository<TAggregate, TRow> {
+  async loadByIdAndTenantOrFail(id: string, tenantId: TenantId): Promise<TAggregate> {
+    try {
+      return await this.loadByIdAndScopeOrFail(id, tenantId);
+    } catch (err) {
+      if (err instanceof CrossScopeAccessError) throw CrossTenantAccessError.fromScopeError(err);
+      throw err;
+    }
+  }
+}
+```
+
+**3. Rewrap errors at the boundary.** Translate `CrossScopeAccessError` into your domain-shaped error (same `NotFoundError` parent, domain `code` and `context`) inside the shell base — so application code never imports toolkit error types directly.
+
+**4. Fix the column map once.** In your shell mapper, inject `{ tenantId: 'scope_id' }` as a shared override so aggregate mappers don't repeat it per-class.
+
+After this, domain code imports `TenantId`, `BaseTenantScopedRepository`, `CrossTenantAccessError` — and nothing from `@quilla-kit/persistence` directly. When the toolkit evolves its generic vocabulary, only the shell moves.
+
+The same pattern applies outside persistence: rename middleware helpers in your HTTP shell, alias `EventSubscription` verbs in your messaging shell, wrap `Logger` factories to bake in your service identity. The shell is cross-package discipline, not a persistence-only idea.
+
 ## Install
 
 All packages are published under `@quilla-kit/*` on npm, MIT-licensed, ESM-only, Node 22+.
