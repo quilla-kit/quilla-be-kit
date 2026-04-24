@@ -64,6 +64,11 @@ await provider.runWithContext(ctx, async () => {
 - `ExecutionContextFactory` — `createSystemContext`, `createBaselineContext`,
   `createFromEventMetadata`. Reach it via `provider.factory` so consumers
   take only one injectable (the provider) and stay internally consistent.
+  `createSystemContext` and `createBaselineContext` auto-generate
+  `correlationId` via `node:crypto.randomUUID()` when not supplied — so a
+  context established at process boot or at a background-job tick carries
+  a traceable id without the caller minting one. Pass an explicit
+  `correlationId` to propagate one inbound from HTTP/events.
 
 ### Classes
 - `AsyncExecutionContextProvider` — Node-native `AsyncLocalStorage`-backed

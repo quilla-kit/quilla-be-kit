@@ -12,9 +12,12 @@ graph; imported by `execution-context`, `persistence`, `messaging`, and
 
 ### Identity
 
-- **`Entity<TProps>`** — props-based base class. Lazy UUID; `equals(other)`
-  compares by id (not structural equality); exposes `createdAt` / `updatedAt`
-  / `insertedBy` / `updatedBy` from props.
+- **`Entity<TProps>`** — props-based base class. `id` auto-generates via
+  `node:crypto.randomUUID()` when not supplied to the constructor — so
+  `new User({ email })` yields an entity with a valid id without the
+  caller minting one. `equals(other)` compares by id (not structural
+  equality); `createdAt` / `updatedAt` / `insertedBy` / `updatedBy` are
+  exposed from props.
 - **`AggregateRoot<TProps>`** — `Entity` + a private domain-event buffer.
   Call the protected `addDomainEvent(event)` from within the aggregate to
   stage events during state changes; the public `drainDomainEvents()`
@@ -26,11 +29,14 @@ graph; imported by `execution-context`, `persistence`, `messaging`, and
 ### Events
 
 - **`DomainEvent<TPayload>`** — id, `aggregateId`, `occurredAt`, payload, and
-  a `name` getter defaulting to `constructor.name`. `toJSON()` for outbox
-  persistence.
+  a `name` getter defaulting to `constructor.name`. `id` auto-generates via
+  `randomUUID()` and `occurredAt` defaults to `new Date()` when not supplied,
+  so aggregates emit events with just `{ aggregateId, payload }`. `toJSON()`
+  for outbox persistence.
 - **`IntegrationEvent<TPayload>`** — id, `occurredAt`, payload, and the same
-  `name` + `toJSON` shape. No `aggregateId` — integration events cross
-  aggregate boundaries.
+  `name` + `toJSON` shape. Same auto-defaults for `id` and `occurredAt` as
+  `DomainEvent`. No `aggregateId` — integration events cross aggregate
+  boundaries.
 - **`EnvelopedEvent<TEvent>`** — a `{ event, metadata }` pair, produced when
   `UnitOfWork` drains aggregate events and stamps each with a shared
   `EventMetadata` (correlation id, actor, scope) before handing them to the

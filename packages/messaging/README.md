@@ -353,6 +353,34 @@ summary in the row's `last_error` column. Log/metrics pipelines can
 `instanceof`-check the exported `SchemaValidationError` to alert on
 contract drift between producer and consumer.
 
+### Automatic ExecutionContext reconstruction
+
+When `EventConsumer` is wired with an `executionContext.provider`, each
+handler dispatch is wrapped in `provider.runWithContext(...)` using a
+context **reconstructed from the event's `EventMetadata`** — same
+`correlationId`, `actorType`, `scopeId`, `userId` as the operation that
+produced the event. The same `correlationId` that flowed through the
+originating HTTP request surfaces on log lines emitted by the handler,
+and `ExecutionContextProvider.getContext()` returns a valid context
+inside handler code without the consumer wiring any middleware.
+
+```ts
+new EventConsumer({
+  bus,
+  consumerName: 'notifications',
+  sourceService: 'notifications',
+  logger,
+  executionContext: { provider }, // reconstruct per-handler context from event metadata
+});
+```
+
+Reconstruction uses `provider.factory.createFromEventMetadata(...)`;
+override the provider's factory to reconstruct into an extended context
+shape (see
+[`@quilla-kit/execution-context` extension pattern](../execution-context/README.md#extension-pattern)).
+Without an `executionContext` option, handlers still run — they just
+don't have a context scope, and `getContext()` will throw if called.
+
 ---
 
 ## Customization
