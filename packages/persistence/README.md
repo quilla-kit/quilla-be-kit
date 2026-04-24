@@ -227,6 +227,14 @@ callers use intention-revealing methods (`tenant.changeName('NewName')`)
 that internally assign `this.name = 'NewName'`, which routes through the
 private setter.
 
+Setters are also where **structural invariants** live (non-empty strings,
+non-null required fields) — guards that must hold after rehydration from
+the DB, not just after a command. See
+[mutation patterns in `@quilla-kit/ddd`](../ddd/README.md#mutation-patterns)
+for the full command-side idiom (`updateFromInput`, `changeX`, domain
+methods) and how structural vs. business invariants split between setters
+and mutation methods.
+
 ### Mapper — minimum boilerplate case (pure snake_case)
 
 When every domain property name maps cleanly to its snake_case column
@@ -246,6 +254,12 @@ That's it. The base iterates every `get`+`set` accessor pair on `Tenant`'s
 prototype chain (including inherited `createdAt` / `updatedAt` /
 `insertedBy` / `updatedBy` from `Entity`), converts each name to
 snake_case, and reads values via the getter.
+
+`createDomain` calls `Tenant.reconstitute(props, id)` — the rehydration
+factory that skips validation and emits no domain events (contrasted
+with `Tenant.create(...)`, the new-aggregate factory). See
+[construction patterns in `@quilla-kit/ddd`](../ddd/README.md#construction-patterns)
+for why these are two separate factories and what each is responsible for.
 
 ### Mapper — with overrides + value-object serialization (User)
 
