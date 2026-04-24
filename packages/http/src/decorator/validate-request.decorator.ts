@@ -43,9 +43,22 @@ export function ValidateRequest(schema: unknown, sources: readonly RequestSource
         Object.assign(raw, SOURCE_READERS[source](request));
       }
 
-      const ctx = request.getExecutionContext();
-      if (ctx.scopeId !== undefined) raw.scopeId = ctx.scopeId;
-      if (ctx.userId !== undefined) raw.userId = ctx.userId;
+      // Auth-derived fields (`scopeId`, `userId`) are injected only when the
+      // schema declares them — keeps the decorator from writing surprise
+      // fields into schemas that don't ask for them (which breaks strict
+      // validation and muddies the intent). Requires the `RequestValidator`
+      // to implement `describeSchema`; validators without it get fail-safe
+      // no-injection.
+      const description = validator.describeSchema?.(schema);
+      if (description) {
+        const ctx = request.getExecutionContext();
+        if (description.keys.includes('scopeId') && ctx.scopeId !== undefined) {
+          raw.scopeId = ctx.scopeId;
+        }
+        if (description.keys.includes('userId') && ctx.userId !== undefined) {
+          raw.userId = ctx.userId;
+        }
+      }
 
       const result = validator.validate(schema, raw);
       if (!result.success) {

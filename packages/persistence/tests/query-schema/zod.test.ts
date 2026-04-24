@@ -129,3 +129,43 @@ describe('createQueryParametersSchema — strict mode', () => {
     expect(result.pagination).toEqual({ page: 2, pageSize: 50 });
   });
 });
+
+describe('createQueryParametersSchema — extraFields', () => {
+  const withAuth = createQueryParametersSchema<Filters, { scopeId: string; userId: string }>(
+    filterShape,
+    {
+      strict: true,
+      extraFields: z.object({
+        scopeId: z.string().optional(),
+        userId: z.string().optional(),
+      }),
+    },
+  );
+
+  it('accepts the declared extra fields at the top level (not nested in filters)', () => {
+    const result = withAuth.parse({ scopeId: 't1', userId: 'u1', name: 'Ada' });
+    expect((result as { scopeId?: string }).scopeId).toBe('t1');
+    expect((result as { userId?: string }).userId).toBe('u1');
+    expect(result.filters).toEqual({ name: 'Ada' });
+  });
+
+  it('does not expand extra fields into the suffix DSL', () => {
+    // scopeId__in is NOT a valid key even though scopeId is declared — extras
+    // are not run through the operator expansion.
+    expect(() => withAuth.parse({ scopeId__in: 't1,t2' })).toThrow();
+  });
+
+  it('passes validation when the extra fields are omitted', () => {
+    const result = withAuth.parse({ name: 'Ada' });
+    expect(result.filters).toEqual({ name: 'Ada' });
+    expect((result as { scopeId?: string }).scopeId).toBeUndefined();
+  });
+
+  it('throws at schema-build time if an extraField collides with a reserved name', () => {
+    expect(() =>
+      createQueryParametersSchema<Filters, { page: string }>(filterShape, {
+        extraFields: z.object({ page: z.string() }),
+      }),
+    ).toThrow(/collides with a reserved name/);
+  });
+});

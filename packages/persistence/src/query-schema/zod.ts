@@ -7,7 +7,9 @@ import { fieldDescriptorsFromZod } from './field-descriptor-from-zod.js';
 const DEFAULT_PAGE = 1;
 const DEFAULT_PAGE_SIZE = 20;
 
-export type CreateQueryParametersSchemaOptions = {
+export type CreateQueryParametersSchemaOptions<
+  TExtra extends Record<string, unknown> = Record<string, never>,
+> = {
   readonly defaultPageSize?: number;
   readonly maxPageSize?: number;
   /**
@@ -30,6 +32,25 @@ export type CreateQueryParametersSchemaOptions = {
    * malformed input).
    */
   readonly strict?: boolean;
+  /**
+   * Extra top-level fields woven into the generated schema alongside
+   * `filters` / `sort` / `pagination`. Use this for fields that belong on
+   * the query envelope but aren't client-narrowable filters — typically
+   * auth-derived identifiers the server populates post-validation, like
+   * `scopeId` / `userId`. The keys:
+   *
+   * - Are declared at the top level of the generated schema (so strict
+   *   mode accepts them and doesn't reject as unknown).
+   * - Are **not** expanded by the suffix-operator DSL (no `scopeId__in`,
+   *   no `userId__contains` exposed to clients).
+   * - Pass through to the transform output at the top level — **not**
+   *   nested under `filters`.
+   *
+   * Declare them as optional: `z.object({ scopeId: z.string().optional() })`.
+   * The server (via `@ValidateRequest`'s auth-injection) populates them;
+   * the generator only reserves the names.
+   */
+  readonly extraFields?: z.ZodObject<z.ZodRawShape>;
 };
 
 /**
@@ -56,10 +77,13 @@ export type CreateQueryParametersSchemaOptions = {
  * Equality is the bare key (`name=Ada`). Invalid input is silently tolerated
  * by default; opt into strict validation via `{ strict: true }`.
  */
-export function createQueryParametersSchema<TFilters extends Record<string, unknown>>(
+export function createQueryParametersSchema<
+  TFilters extends Record<string, unknown>,
+  TExtra extends Record<string, unknown> = Record<string, never>,
+>(
   filterShape: z.ZodObject<{ [K in keyof TFilters]: z.ZodType<TFilters[K]> }>,
-  options: CreateQueryParametersSchemaOptions = {},
-): z.ZodType<StandardListQuery<Partial<TFilters> & Record<string, unknown>>> {
+  options: CreateQueryParametersSchemaOptions<TExtra> = {},
+): z.ZodType<StandardListQuery<Partial<TFilters> & Record<string, unknown>> & Partial<TExtra>> {
   const defaultPageSize = options.defaultPageSize ?? DEFAULT_PAGE_SIZE;
   const maxPageSize = options.maxPageSize ?? 200;
   const strict = options.strict ?? false;
@@ -85,26 +109,44 @@ export function createQueryParametersSchema<TFilters extends Record<string, unkn
     }
   }
 
+  const extraShape = (options.extraFields?.shape as Record<string, z.ZodType> | undefined) ?? {};
+  const extraKeys = new Set(Object.keys(extraShape));
+  for (const [key, schema] of Object.entries(extraShape)) {
+    if (key in rawShape) {
+      throw new Error(
+        `createQueryParametersSchema: extraFields key "${key}" collides with a reserved name (page, pageSize, sort) or a filter field already declared in the filter shape.`,
+      );
+    }
+    rawShape[key] = schema instanceof z.ZodOptional ? schema : schema.optional();
+  }
+
   const rawSchema = strict ? z.object(rawShape).strict() : z.object(rawShape).strip();
 
-  return rawSchema.transform((raw, ctx): StandardListQuery<Record<string, unknown>> => {
+  return rawSchema.transform((raw, ctx) => {
     const filters: Record<string, unknown> = {};
+    const extras: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(raw)) {
       if (value === undefined) continue;
       if (key === 'page' || key === 'pageSize' || key === 'sort') continue;
-      filters[key] = value;
+      if (extraKeys.has(key)) {
+        extras[key] = value;
+      } else {
+        filters[key] = value;
+      }
     }
 
     const pagination = parsePagination(raw, defaultPageSize, maxPageSize, strict, ctx);
     const sort = parseSort(raw.sort, sortableKeys, strict, ctx);
 
-    const result: StandardListQuery<Record<string, unknown>> = {
+    return {
+      ...extras,
       filters,
       ...(sort.length > 0 ? { sort } : {}),
       ...(pagination ? { pagination } : {}),
     };
-    return result;
-  }) as unknown as z.ZodType<StandardListQuery<Partial<TFilters> & Record<string, unknown>>>;
+  }) as unknown as z.ZodType<
+    StandardListQuery<Partial<TFilters> & Record<string, unknown>> & Partial<TExtra>
+  >;
 }
 
 function schemaForOperator(kind: string, operator: string): z.ZodType {

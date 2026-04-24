@@ -564,9 +564,10 @@ export class RolesController {
 
   @Get('/')
   @ValidateRequest(ListRolesRequestDto, ['query'])
-  async list(req: HttpRequest, scopeId: string): Promise<HttpResponse> {
+  async list(req: HttpRequest): Promise<HttpResponse> {
     const query = req.getValidatedInput<ListRolesQuery>();
-    const result = await this.roleRead.listPage(query, scopeId);
+    const ctx = req.getExecutionContext();
+    const result = await this.roleRead.listPage(query, ctx.scopeId!);
     return HttpResponse.ok(result);
   }
 }
@@ -610,7 +611,44 @@ export const ListRolesRequestDto = createQueryParametersSchema<ListRolesFilters>
 
 In strict mode a request like `?unknown=x&sort=foo:sideways&page=-1` produces a single `ZodError` with one issue per problem: unknown key, unknown sort field, invalid sort direction, invalid page. `maxPageSize` stays a **clamp** even in strict mode — a client asking for more data than you're willing to serve isn't malformed input, just bounded.
 
-The generator is Zod-bound (extracts field kinds by walking the `ZodObject` schema) but the output — `StandardListQuery<TFilters>` — is validator-agnostic. A Valibot or ArkType consumer can implement their own generator against the same output contract. Field descriptors are available via `fieldDescriptorsFromZod` for building alternative generators on top of Zod.
+#### Extra top-level fields (auth-derived identifiers, correlation ids, etc.)
+
+Some queries need fields that belong on the **query envelope** but aren't client-narrowable filters — typically auth-derived identifiers the server populates post-validation (`scopeId`, `userId`, etc.). Putting those inside the filter shape would be wrong — the generator would auto-expand them into suffix operators (`scopeId__in`, `scopeId__contains`) and expose scope-crossing filters to the client.
+
+Use the `extraFields` option to declare them at the top level of the generated schema instead. The generator:
+
+- Declares them at the top level (so strict mode accepts them and doesn't reject as unknown).
+- **Skips** suffix-operator expansion for their names.
+- Passes them through to the transform output at the top level, alongside `filters` / `sort` / `pagination` — **not** nested under `filters`.
+
+```ts
+import { z } from 'zod';
+import { createQueryParametersSchema } from '@quilla-kit/persistence/query-schema';
+
+export const ListRolesRequestDto = createQueryParametersSchema<
+  ListRolesFilters,
+  { scopeId: string; userId: string }
+>(filters, {
+  strict: true,
+  extraFields: z.object({
+    scopeId: z.string().optional(),
+    userId: z.string().optional(),
+  }),
+});
+```
+
+`@ValidateRequest` then populates `scopeId` / `userId` from the active `ExecutionContext` because the schema declares them — see [conditional auth-injection in `@quilla-kit/http`](../http/README.md#validaterequestschema-sources). Your consumer-side query type composes via intersection:
+
+```ts
+export type ListRolesQuery = StandardListQuery<ListRolesFilters> & {
+  scopeId?: string;
+  userId?: string;
+};
+```
+
+Handler reads `query.scopeId` directly — no separate arg, no explicit stitch at the controller. The toolkit stays naming-agnostic: `scopeId` / `userId` are your choice (some apps call the boundary `tenantId`, `workspaceId`, etc.), and any field can flow through `extraFields`, not just auth identifiers.
+
+The generator is Zod-bound (extracts field kinds by walking the `ZodObject` schema) but the output — `StandardListQuery<TFilters> & Partial<TExtra>` — is validator-agnostic. A Valibot or ArkType consumer can implement their own generator against the same output contract. Field descriptors are available via `fieldDescriptorsFromZod` for building alternative generators on top of Zod.
 
 ### Safety discipline
 

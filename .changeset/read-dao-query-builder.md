@@ -44,7 +44,7 @@ number of tables.
 
 **New — query-schema (`@quilla-kit/persistence/query-schema`):**
 
-- `createQueryParametersSchema(filterShape, { defaultPageSize?, maxPageSize?, strict? })`
+- `createQueryParametersSchema(filterShape, { defaultPageSize?, maxPageSize?, strict?, extraFields? })`
   — Zod helper that takes a base filter shape and returns a full
   validation + transform schema producing `StandardListQuery<TFilters>`.
   Auto-expands the suffix DSL based on Zod field kinds; parses
@@ -54,6 +54,14 @@ number of tables.
   pass `{ strict: true }` to surface unknown keys, unknown sort fields,
   bad sort directions, and invalid page/pageSize as `ZodError` issues.
   `maxPageSize` stays a clamp in both modes.
+  Pass `extraFields` (a Zod object) to weave additional top-level fields
+  into the generated schema — for auth-derived identifiers (`scopeId`,
+  `userId`, etc.) or any other envelope-level data. Extra fields are
+  declared at the top level (accepted by strict mode), skipped by the
+  suffix-operator expansion (no scope-crossing filters exposed to
+  clients), and passed through to the transform output alongside
+  `filters` / `sort` / `pagination`. `StandardListQuery` itself stays
+  minimal — consumers compose their query shape via intersection.
 - `fieldDescriptorsFromZod(schema)` exposed for consumers building
   alternative validator adapters (Valibot, ArkType) against the same
   `FieldDescriptorMap` contract.

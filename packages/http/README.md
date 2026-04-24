@@ -182,7 +182,9 @@ Throws `ForbiddenError` on missing token or mismatch. An auth middleware (from `
 
 ### `@ValidateRequest(schema, sources)`
 
-Merges data from the configured sources (`'body'`, `'params'`, `'query'`), automatically injects `scopeId` and `userId` from the active `ExecutionContext`, validates against `schema` using the server's `RequestValidator`, and attaches the validated value to the request. Retrieve with `request.getValidatedInput<T>()`.
+Merges data from the configured sources (`'body'`, `'params'`, `'query'`), injects `scopeId` and `userId` from the active `ExecutionContext` **only when the schema declares those keys**, validates against `schema` using the server's `RequestValidator`, and attaches the validated value to the request. Retrieve with `request.getValidatedInput<T>()`.
+
+Conditional auth-injection requires the `RequestValidator` to implement the optional `describeSchema(schema)` method (see [`RequestValidator` adapter](#requestvalidator-adapter) below). Without it, auth-injection is skipped entirely — a fail-safe default that keeps surprise fields out of schemas that didn't ask for them.
 
 ```ts
 @Post('/')
@@ -197,21 +199,32 @@ On validation failure, throws `ValidationError` with `context.issues` containing
 
 ## `RequestValidator` adapter
 
-The http package ships only the interface — you wire your validator of choice in ~5 lines:
+### Zod — use the out-of-the-box helper
+
+The toolkit ships a ready-made Zod 4 adapter under `@quilla-kit/http/validator/zod`. It implements both `validate` and the optional `describeSchema` — the latter unwraps `ZodPipe` (produced by `.transform(...)`) so schemas from `@quilla-kit/persistence/query-schema` interoperate without any extra wiring.
 
 ```ts
-// Zod
-import type { ZodType } from 'zod';
+import { createZodRequestValidator } from '@quilla-kit/http/validator/zod';
 
-const zodRequestValidator: RequestValidator = {
-  validate: (schema, input) => {
-    const result = (schema as ZodType).safeParse(input);
-    return result.success
-      ? { success: true, data: result.data }
-      : { success: false, error: result.error.issues };
-  },
-};
+const server = new HonoServer({
+  requestValidator: createZodRequestValidator(),
+  // ...
+});
 ```
+
+Accepts an `extractIssues(error)` hook if you want to reshape Zod's raw issue array before it lands in `ValidationError.context.issues`:
+
+```ts
+createZodRequestValidator({
+  extractIssues: (err) => err.issues.map((i) => ({ path: i.path, message: i.message })),
+});
+```
+
+`zod` is an **optional** peer dep of `@quilla-kit/http` — required only when importing from this sub-path.
+
+### Other validators — ~5 lines
+
+If you use Joi, Valibot, ArkType, or anything else, implement `RequestValidator` directly:
 
 ```ts
 // Joi
@@ -224,6 +237,9 @@ const joiRequestValidator: RequestValidator = {
       ? { success: false, error: result.error.details }
       : { success: true, data: result.value };
   },
+  // Optional: implement describeSchema to enable conditional auth-injection
+  // in @ValidateRequest. Return { keys } for schemas whose top-level keys
+  // are enumerable, null otherwise.
 };
 ```
 
