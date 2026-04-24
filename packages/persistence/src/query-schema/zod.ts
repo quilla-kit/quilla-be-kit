@@ -10,6 +10,26 @@ const DEFAULT_PAGE_SIZE = 20;
 export type CreateQueryParametersSchemaOptions = {
   readonly defaultPageSize?: number;
   readonly maxPageSize?: number;
+  /**
+   * Strictness for client-supplied input that doesn't match the declared shape.
+   *
+   * - `false` (default) — tolerant. Unknown query keys are stripped; sort
+   *   entries pointing at unknown fields or bad directions are dropped;
+   *   non-positive / NaN page and pageSize values fall back to defaults.
+   *   Appropriate for HTTP boundaries where you'd rather serve a valid
+   *   response with sensible defaults than reject the request.
+   * - `true` — strict. Unknown query keys, unknown sort fields, bad sort
+   *   directions, and invalid page / pageSize values surface as Zod
+   *   validation errors (single `ZodError` with all issues). Appropriate
+   *   when the caller is trusted code (internal RPC, background jobs) or
+   *   when you want to surface client bugs loudly.
+   *
+   * `maxPageSize` is always enforced via clamping — strict mode does not
+   * reject oversized page requests (bounds enforcement ≠ validation; a
+   * client asking for more data than you're willing to serve isn't
+   * malformed input).
+   */
+  readonly strict?: boolean;
 };
 
 /**
@@ -33,7 +53,8 @@ export type CreateQueryParametersSchemaOptions = {
  * - date:    __gt, __gte, __lt, __lte, __in, __notIn, __isNull, __isNotNull
  * - boolean: __isNull, __isNotNull
  *
- * Equality is the bare key (`name=Ada`). Unknown keys are stripped.
+ * Equality is the bare key (`name=Ada`). Invalid input is silently tolerated
+ * by default; opt into strict validation via `{ strict: true }`.
  */
 export function createQueryParametersSchema<TFilters extends Record<string, unknown>>(
   filterShape: z.ZodObject<{ [K in keyof TFilters]: z.ZodType<TFilters[K]> }>,
@@ -41,6 +62,7 @@ export function createQueryParametersSchema<TFilters extends Record<string, unkn
 ): z.ZodType<StandardListQuery<Partial<TFilters> & Record<string, unknown>>> {
   const defaultPageSize = options.defaultPageSize ?? DEFAULT_PAGE_SIZE;
   const maxPageSize = options.maxPageSize ?? 200;
+  const strict = options.strict ?? false;
 
   const descriptors = fieldDescriptorsFromZod(filterShape as unknown as z.ZodObject<z.ZodRawShape>);
   const rawShape: Record<string, z.ZodType> = {
@@ -63,9 +85,9 @@ export function createQueryParametersSchema<TFilters extends Record<string, unkn
     }
   }
 
-  const rawSchema = z.object(rawShape).strip();
+  const rawSchema = strict ? z.object(rawShape).strict() : z.object(rawShape).strip();
 
-  return rawSchema.transform((raw): StandardListQuery<Record<string, unknown>> => {
+  return rawSchema.transform((raw, ctx): StandardListQuery<Record<string, unknown>> => {
     const filters: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(raw)) {
       if (value === undefined) continue;
@@ -73,8 +95,8 @@ export function createQueryParametersSchema<TFilters extends Record<string, unkn
       filters[key] = value;
     }
 
-    const pagination = parsePagination(raw, defaultPageSize, maxPageSize);
-    const sort = parseSort(raw.sort, sortableKeys);
+    const pagination = parsePagination(raw, defaultPageSize, maxPageSize, strict, ctx);
+    const sort = parseSort(raw.sort, sortableKeys, strict, ctx);
 
     const result: StandardListQuery<Record<string, unknown>> = {
       filters,
@@ -136,6 +158,8 @@ function parsePagination(
   raw: Record<string, unknown>,
   defaultPageSize: number,
   maxPageSize: number,
+  strict: boolean,
+  ctx: z.RefinementCtx,
 ): PaginationOptions | null {
   const hasPage = raw.page !== undefined;
   const hasPageSize = raw.pageSize !== undefined;
@@ -144,15 +168,35 @@ function parsePagination(
   const parsedPage = hasPage ? Number.parseInt(String(raw.page), 10) : DEFAULT_PAGE;
   const parsedSize = hasPageSize ? Number.parseInt(String(raw.pageSize), 10) : defaultPageSize;
 
-  const page = Number.isFinite(parsedPage) && parsedPage > 0 ? parsedPage : DEFAULT_PAGE;
-  const pageSize =
-    Number.isFinite(parsedSize) && parsedSize > 0
-      ? Math.min(parsedSize, maxPageSize)
-      : defaultPageSize;
+  const pageValid = Number.isFinite(parsedPage) && parsedPage > 0;
+  const sizeValid = Number.isFinite(parsedSize) && parsedSize > 0;
+
+  if (strict && hasPage && !pageValid) {
+    ctx.addIssue({
+      code: 'custom',
+      message: `Invalid page "${String(raw.page)}"; expected a positive integer`,
+      path: ['page'],
+    });
+  }
+  if (strict && hasPageSize && !sizeValid) {
+    ctx.addIssue({
+      code: 'custom',
+      message: `Invalid pageSize "${String(raw.pageSize)}"; expected a positive integer`,
+      path: ['pageSize'],
+    });
+  }
+
+  const page = pageValid ? parsedPage : DEFAULT_PAGE;
+  const pageSize = sizeValid ? Math.min(parsedSize, maxPageSize) : defaultPageSize;
   return { page, pageSize };
 }
 
-function parseSort(value: unknown, sortableKeys: readonly string[]): SortOption[] {
+function parseSort(
+  value: unknown,
+  sortableKeys: readonly string[],
+  strict: boolean,
+  ctx: z.RefinementCtx,
+): SortOption[] {
   if (value === undefined) return [];
   const entries = Array.isArray(value)
     ? value.filter((v): v is string => typeof v === 'string')
@@ -165,9 +209,27 @@ function parseSort(value: unknown, sortableKeys: readonly string[]): SortOption[
   const result: SortOption[] = [];
   for (const entry of deduped) {
     const [field, direction] = entry.split(':');
-    if (!field || !allowed.has(field)) continue;
+    if (!field || !allowed.has(field)) {
+      if (strict) {
+        ctx.addIssue({
+          code: 'custom',
+          message: `Unknown sort field "${field ?? ''}"; allowed: ${sortableKeys.join(', ')}`,
+          path: ['sort'],
+        });
+      }
+      continue;
+    }
     const dir = direction?.toLowerCase();
-    if (dir !== 'asc' && dir !== 'desc') continue;
+    if (dir !== 'asc' && dir !== 'desc') {
+      if (strict) {
+        ctx.addIssue({
+          code: 'custom',
+          message: `Invalid sort direction "${direction ?? ''}" for field "${field}"; expected "asc" or "desc"`,
+          path: ['sort'],
+        });
+      }
+      continue;
+    }
     result.push({ [field]: dir });
   }
   return result;

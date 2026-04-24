@@ -82,3 +82,50 @@ describe('createQueryParametersSchema', () => {
     expect(result.filters).toEqual({ name: 'Ada' });
   });
 });
+
+describe('createQueryParametersSchema — strict mode', () => {
+  const strictSchema = createQueryParametersSchema<Filters>(filterShape, { strict: true });
+
+  it('rejects unknown query keys', () => {
+    expect(() => strictSchema.parse({ name: 'Ada', random: 'garbage' })).toThrow();
+  });
+
+  it('rejects unknown sort fields', () => {
+    expect(() => strictSchema.parse({ sort: 'unknown:asc' })).toThrow(/Unknown sort field/);
+  });
+
+  it('rejects bad sort directions', () => {
+    expect(() => strictSchema.parse({ sort: 'name:sideways' })).toThrow(/Invalid sort direction/);
+  });
+
+  it('rejects non-positive / non-numeric page', () => {
+    expect(() => strictSchema.parse({ page: '-1' })).toThrow(/Invalid page/);
+    expect(() => strictSchema.parse({ page: 'abc' })).toThrow(/Invalid page/);
+  });
+
+  it('rejects non-positive / non-numeric pageSize', () => {
+    expect(() => strictSchema.parse({ pageSize: '0' })).toThrow(/Invalid pageSize/);
+    expect(() => strictSchema.parse({ pageSize: 'xyz' })).toThrow(/Invalid pageSize/);
+  });
+
+  it('still clamps pageSize to maxPageSize without throwing (bounds, not validation)', () => {
+    const bounded = createQueryParametersSchema<Filters>(filterShape, {
+      strict: true,
+      maxPageSize: 100,
+    });
+    const result = bounded.parse({ page: '1', pageSize: '999' });
+    expect(result.pagination).toEqual({ page: 1, pageSize: 100 });
+  });
+
+  it('passes valid input through unchanged', () => {
+    const result = strictSchema.parse({
+      name: 'Ada',
+      sort: 'createdAt:desc',
+      page: '2',
+      pageSize: '50',
+    });
+    expect(result.filters).toEqual({ name: 'Ada' });
+    expect(result.sort).toEqual([{ createdAt: 'desc' }]);
+    expect(result.pagination).toEqual({ page: 2, pageSize: 50 });
+  });
+});

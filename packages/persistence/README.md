@@ -594,6 +594,22 @@ becomes, by the time the controller's handler sees it:
 
 The filter shape you declare drives the generated operator set automatically — string fields get `__contains` / `__in` / `__notIn` / `__isNull` / `__isNotNull`, numbers and dates add `__gt` / `__gte` / `__lt` / `__lte`, booleans get `__isNull` / `__isNotNull`. Unknown query keys are stripped. Sort directives pointing at unknown fields are dropped. `pageSize` is clamped to `maxPageSize`.
 
+#### Strict vs tolerant parsing
+
+By default the parser is **tolerant** — unknown keys, unknown sort fields, bad sort directions, and invalid `page` / `pageSize` values are silently normalized (dropped or replaced with defaults). That suits public HTTP endpoints where you'd rather serve a valid response with sensible defaults than 400 the caller for typos.
+
+Opt into **strict** mode for trusted callers (internal RPC, background jobs) or when you want client bugs to surface loudly:
+
+```ts
+export const ListRolesRequestDto = createQueryParametersSchema<ListRolesFilters>(filters, {
+  defaultPageSize: 20,
+  maxPageSize: 100,
+  strict: true,
+});
+```
+
+In strict mode a request like `?unknown=x&sort=foo:sideways&page=-1` produces a single `ZodError` with one issue per problem: unknown key, unknown sort field, invalid sort direction, invalid page. `maxPageSize` stays a **clamp** even in strict mode — a client asking for more data than you're willing to serve isn't malformed input, just bounded.
+
 The generator is Zod-bound (extracts field kinds by walking the `ZodObject` schema) but the output — `StandardListQuery<TFilters>` — is validator-agnostic. A Valibot or ArkType consumer can implement their own generator against the same output contract. Field descriptors are available via `fieldDescriptorsFromZod` for building alternative generators on top of Zod.
 
 ### Safety discipline
