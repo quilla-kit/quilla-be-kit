@@ -1,3 +1,4 @@
+import { camelToSnake, snakeToCamel } from '../query/case.js';
 import type { PersistenceMapper } from './mapper.interface.js';
 
 /**
@@ -131,12 +132,4 @@ function discoverPersistedKeys(instance: object): readonly string[] {
   const result: readonly string[] = [...keys];
   persistedKeysCache.set(proto, result);
   return result;
-}
-
-function camelToSnake(s: string): string {
-  return s.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase();
-}
-
-function snakeToCamel(s: string): string {
-  return s.replace(/_([a-z0-9])/g, (_, c: string) => c.toUpperCase());
 }

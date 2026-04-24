@@ -3,3 +3,4 @@ export { PgTransaction } from './pg.transaction.js';
 export { PgWriteDbAdapter } from './pg-write-db-adapter.js';
 export { PgReadDbAdapter } from './pg-read-db-adapter.js';
 export { PgColumnTypeCache } from './pg-sql.js';
+export { PgSqlQueryBuilder } from './pg-query-builder.js';

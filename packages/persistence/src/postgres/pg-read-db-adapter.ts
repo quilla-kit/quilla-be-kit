@@ -26,4 +26,9 @@ export class PgReadDbAdapter implements ReadDbAdapter {
     const result = await runSelect(this.db, opts, types, { forUpdate: false });
     return result.rows as readonly T[];
   }
+
+  async raw<T>(sql: string, params: readonly unknown[]): Promise<readonly T[]> {
+    const result = await this.db.query(sql, params);
+    return result.rows as readonly T[];
+  }
 }

@@ -114,13 +114,25 @@ await uow.transaction(async (ctx) => {
   await userRepo.create(newUser, ctx);
 });
 
-// Read-side projections — BaseReadDao runs against the PgReadDbAdapter and
-// never accepts a `trx` parameter (CQRS isolation enforced at the type level):
-class UserReadDao extends BaseReadDao<UserListRow> {
-  protected readonly tableName = 'user_list_view';
+// Read-side projections — one DAO exposes many query methods, each
+// building its own SQL via `this.qb<T>()`. See "Read-side queries" below
+// for the full flow (builder, column resolver, HTTP query schema).
+class UserReadDao extends BaseReadDao {
+  listActive(scopeId: string) {
+    const q = this.qb<UserListRow>()
+      .select(['id', 'name', 'createdAt'])
+      .from('users')
+      .filters({ scopeId, isActive: true })
+      .orderBy([{ createdAt: 'desc' }])
+      .build();
+    return this.findMany<UserListRow>(q);
+  }
 }
-const userReadDao = new UserReadDao(readAdapter);
-const rows = await userReadDao.findMany({ scopeId }); // no ctx, no trx
+const userReadDao = new UserReadDao({
+  adapter: readAdapter,
+  builderFactory: (r) => new PgSqlQueryBuilder(r),
+});
+const rows = await userReadDao.listActive(scopeId); // no ctx, no trx
 
 // Pool lifecycle: register with @quilla-kit/runtime:
 shutdown.addPhase({
@@ -299,6 +311,291 @@ class UserMapper extends BasePersistenceMapper<User, UserProps, UserRow> {
   minifying your class names. If that's your pipeline, implement
   `PersistenceMapper` directly instead of extending `BasePersistenceMapper`.
 
+## Read-side queries
+
+The read side is **projection-driven, not table-driven**. A single read DAO exposes as many query methods as the module needs, each building its own SQL — possibly over different tables, joins, aggregates, or views. There is no one-table-per-DAO rule.
+
+Three pieces cooperate:
+
+| Piece | Role |
+| --- | --- |
+| `SqlQueryBuilder<T>` | Fluent SQL builder. `.select / .from / .join / .groupBy / .where / .filters / .orderBy / .paginate / .build`. Immutable — each fluent call returns a new instance. |
+| `ColumnResolver` | Translates domain vocabulary (camelCase, `scopeId`) to DB columns (snake_case, `tenant_id`) at build time. |
+| `BaseReadDao` | Owns the resolver + builder factory. Exposes `qb<T>()`, `findOne<T>(q)`, `findMany<T>(q)`, `findPaginated<T>(q, page)`. |
+
+And one optional add-on for HTTP controllers:
+
+| Piece | Role |
+| --- | --- |
+| `createQueryParametersSchema` (`/query-schema`) | Zod-based: takes a base filter shape, generates a full validation + transform schema that parses `?name__contains=foo&createdAt__gte=...&sort=...&page=2` into a typed `StandardListQuery<TFilters>`. Opt-in sub-path with `zod` as optional peer. |
+
+### A read DAO with two query methods
+
+```ts
+import { BaseReadDao, type PaginatedResult, type StandardListQuery } from '@quilla-kit/persistence';
+import { PgSqlQueryBuilder } from '@quilla-kit/persistence/postgres';
+
+type RoleDetailsReadModel = {
+  id: string;
+  name: string;
+  description: string | null;
+  permissions: readonly string[];
+  isActive: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+type RoleListReadModel = Pick<RoleDetailsReadModel, 'id' | 'name' | 'isActive' | 'createdAt'>;
+
+type RoleListQuery = StandardListQuery<{
+  name?: string;
+  isActive?: boolean;
+  createdAt?: Date;
+}>;
+
+export class RoleReadDao extends BaseReadDao {
+  getDetails(id: string, scopeId: string): Promise<RoleDetailsReadModel | null> {
+    const q = this.qb<RoleDetailsReadModel>()
+      .select(['id', 'name', 'description', 'permissions', 'isActive', 'createdAt', 'updatedAt'])
+      .from('iam_roles')
+      .filters({ id, scopeId })
+      .build();
+    return this.findOne<RoleDetailsReadModel>(q);
+  }
+
+  listPage(query: RoleListQuery, scopeId: string): Promise<PaginatedResult<RoleListReadModel>> {
+    const page = query.pagination ?? { page: 1, pageSize: 20 };
+    const q = this.qb<RoleListReadModel>()
+      .select(['id', 'name', 'isActive', 'createdAt'])
+      .from('iam_roles')
+      .filters({ ...query.filters, scopeId })
+      .orderBy(query.sort, {
+        enforced: [{ scopeId: 'asc' }],
+        defaults: [{ createdAt: 'desc' }],
+      })
+      .paginate(page)
+      .build();
+    return this.findPaginated<RoleListReadModel>(q, page);
+  }
+}
+```
+
+Wire it at the composition root:
+
+```ts
+import { PgReadDbAdapter, PgSqlQueryBuilder } from '@quilla-kit/persistence/postgres';
+
+const roleReadDao = new RoleReadDao({
+  adapter: new PgReadDbAdapter(db),
+  builderFactory: (resolver) => new PgSqlQueryBuilder(resolver),
+});
+```
+
+### Domain vocabulary in, snake_case out
+
+You write columns in domain vocabulary (`createdAt`, `isActive`, `scopeId`). The builder resolves them through the `ColumnResolver` and emits the correct DB names **plus output aliases** so read models receive the domain shape straight back:
+
+```ts
+this.qb().select(['id', 'createdAt', 'isActive']).from('users').build();
+// -> SELECT id, created_at AS "createdAt", is_active AS "isActive" FROM users
+```
+
+The same resolver applies to `.filters()`, `.orderBy()`, and `.groupBy()`. `this.findOne` / `findMany` return rows with the camelCase keys the read model expects — no more hand-written `'created_at as "createdAt"'` lists.
+
+### The filter suffix DSL
+
+`.filters({ ... })` accepts a flat object keyed by `field` or `field__operator`. The delimiter is double-underscore (`__`) to avoid collisions with field names that contain underscores.
+
+| Operator | SQL | Available for |
+| --- | --- | --- |
+| `field` (bare) | `field = $n` (or `IS NULL` if value is `null`) | all kinds |
+| `field__contains` | `field ILIKE '%value%'` | string |
+| `field__in` | `field = ANY($n)` | string, number, date |
+| `field__notIn` | `field <> ALL($n) OR field IS NULL` | string, number, date |
+| `field__gt` / `__gte` / `__lt` / `__lte` | `field > $n` etc. | number, date |
+| `field__isNull` | `field IS NULL` (or `IS NOT NULL` if value is `false`) | all kinds |
+| `field__isNotNull` | `field IS NOT NULL` (inverse of above) | all kinds |
+
+`undefined` values are skipped, so `filters({ name: opts.name })` composes cleanly when `opts.name` is optional. Unknown operator suffixes throw at build time.
+
+### Raw WHERE fragments for dialect-specific operators
+
+When the suffix DSL isn't enough (JSONB containment, full-text search, custom functions), use `.where(sql, ...params)`. Positional `?` placeholders are rebased onto the builder's parameter sequence:
+
+```ts
+this.qb<TaskRow>()
+  .from('tasks')
+  .filters({ scopeId })
+  .where('tags @> ?::jsonb', JSON.stringify(['urgent']))
+  .where('assignees @> ?::jsonb', JSON.stringify([userId]))
+  .build();
+// -> WHERE tenant_id = $1 AND tags @> $2::jsonb AND assignees @> $3::jsonb
+```
+
+Each `.where()` call is ANDed with the rest. Never concatenate user input into the SQL string — pass it as a parameter.
+
+### Pagination
+
+`.paginate({ page, pageSize })` adds `LIMIT`/`OFFSET` and automatically emits a `countSql` alongside the data SQL. `findPaginated` runs both queries in parallel on the read pool and returns a `PaginatedResult<T>`:
+
+```ts
+const result = await dao.listPage(query, scopeId);
+// { rows: [...], total: 137, page: 2, pageSize: 20 }
+```
+
+`distinctOn` is supported for Postgres:
+
+```ts
+.paginate({ page: 1, pageSize: 50, distinctOn: ['customerId'] })
+// -> SELECT DISTINCT ON (customer_id) ... LIMIT 50 OFFSET 0
+```
+
+If the query uses `GROUP BY`, the count is computed over the grouped set via a subquery wrap — you don't need to do anything special.
+
+### Sorting with enforced + default directives
+
+`.orderBy(userSort, { enforced, defaults })` gives you three layers:
+
+- **User sort** — from an HTTP query, or the `sort` on a `StandardListQuery`.
+- **Enforced** — always applied, prepended to whatever user sort is there (use for scope-first stability, deterministic ordering across equal keys).
+- **Defaults** — applied only when `userSort` is empty or absent.
+
+```ts
+.orderBy(query.sort, {
+  enforced: [{ scopeId: 'asc' }],
+  defaults: [{ createdAt: 'desc' }, { id: 'asc' }],
+})
+```
+
+### `ColumnResolver` — mapping domain keys to your column names
+
+Every `BaseReadDao` carries a `ColumnResolver`. The default is `DefaultColumnResolver`, which does camelCase → snake_case plus any explicit overrides you pass:
+
+```ts
+import { DefaultColumnResolver } from '@quilla-kit/persistence';
+
+new DefaultColumnResolver({
+  overrides: {
+    scopeId: 'tenant_id',       // your column isn't called `scope_id`
+    password: 'password_hash',
+  },
+});
+```
+
+Pass it to the DAO constructor:
+
+```ts
+new RoleReadDao({
+  adapter: readAdapter,
+  builderFactory: (r) => new PgSqlQueryBuilder(r),
+  columnResolver: new DefaultColumnResolver({ overrides: { scopeId: 'tenant_id' } }),
+});
+```
+
+Or, more commonly, bake the overrides into a **shell base class** once and every read DAO in your project inherits them (see the "Adopting the toolkit: build a shell" section in the root [README](../../README.md)):
+
+```ts
+export abstract class RelmoBaseReadDao extends BaseReadDao {
+  constructor(adapter: ReadDbAdapter) {
+    super({
+      adapter,
+      builderFactory: (r) => new PgSqlQueryBuilder(r),
+      columnResolver: new DefaultColumnResolver({ overrides: { scopeId: 'tenant_id' } }),
+    });
+  }
+}
+```
+
+Then `extends RelmoBaseReadDao` everywhere and every query translates `scopeId` → `tenant_id` automatically.
+
+### HTTP query string → validated DTO → read DAO
+
+The `@quilla-kit/persistence/query-schema` sub-path provides `createQueryParametersSchema` — a Zod helper that generates the full validation + transform schema from a plain filter shape:
+
+```ts
+// application/queries/list-roles.query.ts
+import type { StandardListQuery } from '@quilla-kit/persistence';
+
+export type ListRolesFilters = {
+  name?: string;
+  isActive?: boolean;
+  createdAt?: Date;
+};
+export type ListRolesQuery = StandardListQuery<ListRolesFilters>;
+```
+
+```ts
+// presentation/dto/list-roles.request-dto.ts
+import { z } from 'zod';
+import { createQueryParametersSchema } from '@quilla-kit/persistence/query-schema';
+import type { ListRolesFilters } from '../../application/queries/list-roles.query.js';
+
+const filters = z.object({
+  name: z.string().optional(),
+  isActive: z.boolean().optional(),
+  createdAt: z.coerce.date().optional(),
+}) as z.ZodObject<{ [K in keyof ListRolesFilters]: z.ZodType<ListRolesFilters[K]> }>;
+
+export const ListRolesRequestDto = createQueryParametersSchema<ListRolesFilters>(filters, {
+  defaultPageSize: 20,
+  maxPageSize: 100,
+});
+```
+
+```ts
+// presentation/controllers/roles.controller.ts
+@Controller('/roles')
+export class RolesController {
+  constructor(private readonly roleRead: RoleReadDao) {}
+
+  @Get('/')
+  @ValidateRequest(ListRolesRequestDto, ['query'])
+  async list(req: HttpRequest, scopeId: string): Promise<HttpResponse> {
+    const query = req.getValidatedInput<ListRolesQuery>();
+    const result = await this.roleRead.listPage(query, scopeId);
+    return HttpResponse.ok(result);
+  }
+}
+```
+
+A request like:
+
+```
+GET /roles?name__contains=admin&isActive=true&createdAt__gte=2026-01-01&sort=createdAt:desc&page=2&pageSize=50
+```
+
+becomes, by the time the controller's handler sees it:
+
+```ts
+{
+  filters: {
+    name__contains: 'admin',
+    isActive: true,
+    createdAt__gte: new Date('2026-01-01'),
+  },
+  sort: [{ createdAt: 'desc' }],
+  pagination: { page: 2, pageSize: 50 },
+}
+```
+
+The filter shape you declare drives the generated operator set automatically — string fields get `__contains` / `__in` / `__notIn` / `__isNull` / `__isNotNull`, numbers and dates add `__gt` / `__gte` / `__lt` / `__lte`, booleans get `__isNull` / `__isNotNull`. Unknown query keys are stripped. Sort directives pointing at unknown fields are dropped. `pageSize` is clamped to `maxPageSize`.
+
+The generator is Zod-bound (extracts field kinds by walking the `ZodObject` schema) but the output — `StandardListQuery<TFilters>` — is validator-agnostic. A Valibot or ArkType consumer can implement their own generator against the same output contract. Field descriptors are available via `fieldDescriptorsFromZod` for building alternative generators on top of Zod.
+
+### Safety discipline
+
+`.select()`, `.from()`, `.join()`, `.groupBy()`, `.orderBy()`, and `.filters()` validate identifiers with a strict regex — user input must **never** reach those seams. When you need a runtime value in a condition, it flows through `.where(sql, ?)` or `.filters({...})`, both of which parameterise. Raw user text should never be interpolated into a SQL string.
+
+Consumer-facing consequences:
+
+- `.from('users; DROP TABLE users')` throws at build time.
+- `.select(['id', injectedFromUser])` throws if the user string isn't a plain identifier.
+- `.where('name = ' + userInput)` — still your own bug. Always use `.where('name = ?', userInput)`.
+
+### When to drop back to `ReadDbAdapter.select`
+
+The builder covers the common projection shapes. For one-off reads where the builder is overkill, `ReadDbAdapter` retains its original `select({ table, where, limit, orderBy })` API for structured single-table selects, and `raw<T>(sql, params)` for anything else. Both are available on `this.adapter` inside a DAO. The builder path is the recommended default; the raw paths stay as honest escape hatches.
+
 ## Files
 
 ```
@@ -306,8 +603,12 @@ src/
 ├── database/     Database / DatabaseTransaction / DatabaseResult / DatabaseHealth
 ├── db-adapter/   FilterQuery, Read/Write DbAdapter interfaces + options
 ├── dao/          BaseReadDao, BaseWriteDao
+├── query/        QueryProduct, PaginatedResult, StandardListQuery, FieldDescriptor,
+│                 ColumnResolver + DefaultColumnResolver, SqlQueryBuilder
+├── query-schema/ createQueryParametersSchema (Zod adapter — sub-path export)
 ├── repository/   BaseBasic/Aggregate/Scoped/Unscoped repositories + mapper
 ├── unit-of-work/ UnitOfWork, UnitOfWorkContext, OutboxWriter
 ├── errors/       CrossScopeAccessError, OptimisticLockError
-└── postgres/     PgDatabase, PgTransaction, PgWriteDbAdapter, PgReadDbAdapter
+└── postgres/     PgDatabase, PgTransaction, PgWriteDbAdapter, PgReadDbAdapter,
+                  PgSqlQueryBuilder
 ```

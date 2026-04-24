@@ -16,10 +16,17 @@ import type {
 export class FakeReadDbAdapter implements ReadDbAdapter {
   selectCalls: SelectOptions<unknown>[] = [];
   results: unknown[][] = [];
+  rawCalls: { sql: string; params: readonly unknown[] }[] = [];
+  rawResults: unknown[][] = [];
 
   select<T>(opts: SelectOptions<T>): Promise<readonly T[]> {
     this.selectCalls.push(opts as SelectOptions<unknown>);
     return Promise.resolve((this.results.shift() ?? []) as readonly T[]);
+  }
+
+  raw<T>(sql: string, params: readonly unknown[]): Promise<readonly T[]> {
+    this.rawCalls.push({ sql, params });
+    return Promise.resolve((this.rawResults.shift() ?? []) as readonly T[]);
   }
 }
 
