@@ -1,16 +1,23 @@
 import type { ActorType } from '@quilla-kit/ddd';
+import type { AuthSession } from './auth-session.type.js';
 
 /**
- * Per-operation execution context. Carries the actor, scope, user, and
- * correlation information for a single logical operation.
+ * Per-operation execution context. Carries the actor type, correlation
+ * id, and (when authenticated) the caller's `AuthSession`.
  *
- * Consumers that need session data, roles, permissions, or any other
- * product-shaped fields extend this type by intersection. See the
+ * `session` is present iff the operation ran inside an authenticated
+ * scope — anonymous/system/job contexts leave it undefined. Every
+ * toolkit surface that reads auth-derived identity (audit injection,
+ * `@ValidateRequest`, log enrichment) treats session presence as the
+ * single source of truth.
+ *
+ * Consumers that need richer session data, roles, permissions, or any
+ * other product-shaped fields extend `AuthSession` by intersection and
+ * narrow `ExecutionContext.session` to the extended shape. See the
  * package README's "Extension pattern" section.
  */
 export type ExecutionContext = {
-  readonly scopeId?: string;
   readonly actorType: ActorType;
-  readonly userId?: string;
   readonly correlationId: string;
+  readonly session?: AuthSession;
 };

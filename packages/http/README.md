@@ -182,9 +182,11 @@ Throws `ForbiddenError` on missing token or mismatch. An auth middleware (from `
 
 ### `@ValidateRequest(schema, sources)`
 
-Merges data from the configured sources (`'body'`, `'params'`, `'query'`), injects `scopeId` and `userId` from the active `ExecutionContext` **only when the schema declares those keys**, validates against `schema` using the server's `RequestValidator`, and attaches the validated value to the request. Retrieve with `request.getValidatedInput<T>()`.
+Merges data from the configured sources (`'body'`, `'params'`, `'query'`), injects `scopeId` and `userId` from `ExecutionContext.session` **only when the schema declares those keys and a session is active**, validates against `schema` using the server's `RequestValidator`, and attaches the validated value to the request. Retrieve with `request.getValidatedInput<T>()`.
 
-Conditional auth-injection requires the `RequestValidator` to implement the optional `describeSchema(schema)` method (see [`RequestValidator` adapter](#requestvalidator-adapter) below). Without it, auth-injection is skipped entirely — a fail-safe default that keeps surprise fields out of schemas that didn't ask for them.
+Auth-injection requires two things:
+- A live `session` on the request's `ExecutionContext` (i.e. the route ran through auth middleware that established one — anonymous and system contexts get no injection).
+- The `RequestValidator` implements the optional `describeSchema(schema)` method (see [`RequestValidator` adapter](#requestvalidator-adapter) below). Without it, auth-injection is skipped entirely — a fail-safe default that keeps surprise fields out of schemas that didn't ask for them.
 
 ```ts
 @Post('/')

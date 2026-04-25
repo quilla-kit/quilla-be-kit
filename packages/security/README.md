@@ -8,7 +8,7 @@ Interface-only security primitives + the two auth middlewares that plug into `@q
 - **`SessionData`** — record shape: `{ securityStamp, displayName, userType }`.
 - **`PasswordHasher`** — `hash` + `compare` interface. Consumer provides the implementation (argon2 / bcrypt / scrypt).
 - **`bearerTokenMiddleware({ tokenService })`** — reads `Authorization: Bearer ...`, calls `tokenService.verify`, populates `HttpAttributes.VERIFIED_TOKEN`. Throws `UnauthorizedError` on any failure.
-- **`authenticatedSessionMiddleware({ sessionStore, executionContextProvider })`** — loads session data, compares `securityStamp`, enriches `ExecutionContext` with `userId` / `scopeId` / `actorType: 'user'`. Throws `UnauthorizedError` on stamp mismatch or session miss.
+- **`authenticatedSessionMiddleware({ sessionStore, executionContextProvider })`** — loads session data, compares `securityStamp`, enriches `ExecutionContext` with `actorType: 'user'` and a populated `session: { scopeId, userId }` (the `AuthSession` from `@quilla-kit/execution-context`). Throws `UnauthorizedError` on stamp mismatch or session miss.
 
 Zero runtime dependencies on external libraries — JWT lib, cache driver, and hashing library are all consumer-owned. Node 22+.
 

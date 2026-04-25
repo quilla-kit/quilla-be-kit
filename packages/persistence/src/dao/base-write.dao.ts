@@ -66,7 +66,7 @@ export abstract class BaseWriteDao<TRow extends { id: string }> {
   }
 
   async create(row: TRow, trx?: DatabaseTransaction): Promise<void> {
-    const userId = this.contextProvider.getContext().userId;
+    const userId = this.contextProvider.getContext().session?.userId;
     await this.adapter.insert(
       { table: this.tableName, rows: [this.prepareInsertRow(row, userId)] },
       trx,
@@ -75,14 +75,14 @@ export abstract class BaseWriteDao<TRow extends { id: string }> {
 
   async createMany(rows: readonly TRow[], trx?: DatabaseTransaction): Promise<void> {
     if (rows.length === 0) return;
-    const userId = this.contextProvider.getContext().userId;
+    const userId = this.contextProvider.getContext().session?.userId;
     const prepared = rows.map((row) => this.prepareInsertRow(row, userId));
     await this.adapter.insert({ table: this.tableName, rows: prepared }, trx);
   }
 
   async update(row: TRow & { updated_at?: Date }, trx?: DatabaseTransaction): Promise<void> {
     const { id, updated_at } = row;
-    const userId = this.contextProvider.getContext().userId;
+    const userId = this.contextProvider.getContext().session?.userId;
     const result = await this.adapter.update<TRow>(
       {
         table: this.tableName,

@@ -30,8 +30,10 @@ pnpm add pg
   takes `scopeId` on every load and throws `CrossScopeAccessError` on miss
   or mismatch. DAOs never inject `scope_id` implicitly.
 - **Audit fields are DAO-layer implicit.** `inserted_by` and `updated_by`
-  resolve from `ExecutionContextProvider` on every write. Callers cannot
-  pass them; rows with audit fields in them get stripped.
+  resolve from `ExecutionContextProvider.getContext().session?.userId` on
+  every write. Callers cannot pass them; rows with audit fields in them
+  get stripped. Writes under system contexts (no session) persist
+  `null` audit.
 - **Optimistic locking is opt-in via `updated_at`.** Include `updated_at`
   in the row passed to `update()` and the DAO asserts `rowCount === 1` —
   mismatch throws `OptimisticLockError`. Omit to update unconditionally.

@@ -9,3 +9,4 @@ export {
 } from './execution-context.factory.js';
 export type { ExecutionContextProvider } from './execution-context.provider.js';
 export type { ExecutionContext } from './execution-context.type.js';
+export type { AuthSession } from './auth-session.type.js';

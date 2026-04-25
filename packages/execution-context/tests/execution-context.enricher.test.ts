@@ -8,7 +8,11 @@ describe('ExecutionContextEnricher', () => {
     const enricher = new ExecutionContextEnricher(provider);
 
     await provider.runWithContext(
-      { actorType: 'user', correlationId: 'corr-1', scopeId: 'scope-1', userId: 'user-1' },
+      {
+        actorType: 'user',
+        correlationId: 'corr-1',
+        session: { scopeId: 'scope-1', userId: 'user-1' },
+      },
       async () => {
         expect(enricher.enrich()).toEqual({
           context: {
@@ -22,7 +26,26 @@ describe('ExecutionContextEnricher', () => {
     );
   });
 
-  it('omits absent scopeId and userId', async () => {
+  it('flattens session into top-level scopeId / userId log fields', async () => {
+    // Log output stays flat even though the context groups — dashboards and
+    // log queries keep their field names.
+    const provider = new AsyncExecutionContextProvider();
+    const enricher = new ExecutionContextEnricher(provider);
+    await provider.runWithContext(
+      {
+        actorType: 'user',
+        correlationId: 'corr-1',
+        session: { scopeId: 'scope-1', userId: 'user-1' },
+      },
+      async () => {
+        const contribution = enricher.enrich();
+        expect(contribution.context).not.toHaveProperty('session');
+        expect(contribution.context).toMatchObject({ scopeId: 'scope-1', userId: 'user-1' });
+      },
+    );
+  });
+
+  it('omits scopeId / userId when there is no session', async () => {
     const provider = new AsyncExecutionContextProvider();
     const enricher = new ExecutionContextEnricher(provider);
 

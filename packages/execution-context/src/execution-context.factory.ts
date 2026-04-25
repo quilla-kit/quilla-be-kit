@@ -37,11 +37,20 @@ export const executionContextFactory: ExecutionContextFactory = {
   },
 
   createFromEventMetadata(metadata) {
+    // An event carries session data iff both scopeId and userId are
+    // present on the originating metadata. Half-populated metadata (only
+    // scopeId, only userId) comes from non-auth contexts (system jobs
+    // that scoped writes without a user) — those reconstitute as
+    // session-less contexts.
+    const session =
+      metadata.scopeId !== undefined && metadata.userId !== undefined
+        ? { scopeId: metadata.scopeId, userId: metadata.userId }
+        : undefined;
+
     return {
       actorType: metadata.actorType,
       correlationId: metadata.correlationId,
-      ...(metadata.scopeId !== undefined ? { scopeId: metadata.scopeId } : {}),
-      ...(metadata.userId !== undefined ? { userId: metadata.userId } : {}),
+      ...(session ? { session } : {}),
     };
   },
 };

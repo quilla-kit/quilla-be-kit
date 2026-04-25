@@ -38,8 +38,7 @@ export function authenticatedSessionMiddleware(
     const enriched = {
       ...baseline,
       actorType: 'user' as const,
-      userId: token.userId,
-      scopeId: token.scopeId,
+      session: { scopeId: token.scopeId, userId: token.userId },
     };
 
     await executionContextProvider.runWithContext(enriched, next);

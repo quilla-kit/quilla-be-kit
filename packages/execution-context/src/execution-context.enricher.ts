@@ -17,10 +17,12 @@ export class ExecutionContextEnricher implements LogEntryEnricher {
   enrich(): LogEnricherContribution {
     try {
       const ctx = this.provider.getContext();
+      // Session is flattened into top-level log fields so log queries and
+      // dashboards filter by scopeId/userId without navigating a nested
+      // object. The log shape stays flat even though the context groups.
       return {
         context: {
-          ...(ctx.scopeId !== undefined ? { scopeId: ctx.scopeId } : {}),
-          ...(ctx.userId !== undefined ? { userId: ctx.userId } : {}),
+          ...(ctx.session ? { scopeId: ctx.session.scopeId, userId: ctx.session.userId } : {}),
           actorType: ctx.actorType,
           correlationId: ctx.correlationId,
         },

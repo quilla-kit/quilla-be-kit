@@ -32,8 +32,16 @@ describe('AsyncExecutionContextProvider', () => {
 
   it('isolates context across concurrent runs', async () => {
     const provider = new AsyncExecutionContextProvider();
-    const a: ExecutionContext = { actorType: 'user', correlationId: 'a', userId: 'user-a' };
-    const b: ExecutionContext = { actorType: 'user', correlationId: 'b', userId: 'user-b' };
+    const a: ExecutionContext = {
+      actorType: 'user',
+      correlationId: 'a',
+      session: { scopeId: 's-a', userId: 'user-a' },
+    };
+    const b: ExecutionContext = {
+      actorType: 'user',
+      correlationId: 'b',
+      session: { scopeId: 's-b', userId: 'user-b' },
+    };
 
     await Promise.all([
       provider.runWithContext(a, async () => {
@@ -68,10 +76,14 @@ describe('AsyncExecutionContextProvider', () => {
     expect(provider.factory).toBe(custom);
   });
 
-  it('accepts a consumer-extended context shape structurally', async () => {
-    type ExtendedCtx = ExecutionContext & { readonly session: { readonly role: string } };
+  it('accepts a consumer-extended session shape structurally', async () => {
+    type ExtendedSession = { scopeId: string; userId: string; role: string };
+    type ExtendedCtx = ExecutionContext & { readonly session: ExtendedSession };
     const provider = new AsyncExecutionContextProvider();
-    const ctx: ExtendedCtx = { ...baseCtx, session: { role: 'admin' } };
+    const ctx: ExtendedCtx = {
+      ...baseCtx,
+      session: { scopeId: 's1', userId: 'u1', role: 'admin' },
+    };
     await provider.runWithContext(ctx, async () => {
       const read = provider.getContext() as ExtendedCtx;
       expect(read.session.role).toBe('admin');

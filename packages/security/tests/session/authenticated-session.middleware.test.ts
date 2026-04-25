@@ -36,8 +36,7 @@ describe('authenticatedSessionMiddleware', () => {
 
     expect(observed).toMatchObject({
       actorType: 'user',
-      userId: 'user-1',
-      scopeId: 'scope-1',
+      session: { scopeId: 'scope-1', userId: 'user-1' },
     });
   });
 
@@ -59,7 +58,10 @@ describe('authenticatedSessionMiddleware', () => {
       });
     });
 
-    expect(observed).toMatchObject({ correlationId: 'corr-42', userId: 'user-1' });
+    expect(observed).toMatchObject({
+      correlationId: 'corr-42',
+      session: { userId: 'user-1' },
+    });
   });
 
   it('throws UnauthorizedError when no verified token is on the request', async () => {

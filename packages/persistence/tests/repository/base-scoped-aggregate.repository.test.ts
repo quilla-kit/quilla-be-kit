@@ -46,8 +46,8 @@ describe('BaseScopedAggregateRepository', () => {
     adapter = new FakeWriteDbAdapter();
     ctxProvider = new FakeExecutionContextProvider({
       actorType: 'user',
-      userId: 'u1',
       correlationId: 'c1',
+      session: { scopeId: 's1', userId: 'u1' },
     });
     dao = new AggDao(adapter, ctxProvider);
     repo = new ScopedRepo(new TestMapper(), dao);

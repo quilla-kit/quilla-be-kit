@@ -51,12 +51,10 @@ export function ValidateRequest(schema: unknown, sources: readonly RequestSource
       // no-injection.
       const description = validator.describeSchema?.(schema);
       if (description) {
-        const ctx = request.getExecutionContext();
-        if (description.keys.includes('scopeId') && ctx.scopeId !== undefined) {
-          raw.scopeId = ctx.scopeId;
-        }
-        if (description.keys.includes('userId') && ctx.userId !== undefined) {
-          raw.userId = ctx.userId;
+        const session = request.getExecutionContext().session;
+        if (session) {
+          if (description.keys.includes('scopeId')) raw.scopeId = session.scopeId;
+          if (description.keys.includes('userId')) raw.userId = session.userId;
         }
       }
 

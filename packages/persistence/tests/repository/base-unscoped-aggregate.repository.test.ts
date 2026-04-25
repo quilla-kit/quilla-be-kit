@@ -36,8 +36,8 @@ describe('BaseUnscopedAggregateRepository', () => {
     adapter = new FakeWriteDbAdapter();
     const ctx = new FakeExecutionContextProvider({
       actorType: 'user',
-      userId: 'u1',
       correlationId: 'c1',
+      session: { scopeId: 's1', userId: 'u1' },
     });
     const dao = new AggDao(adapter, ctx);
     repo = new UnscopedRepo(new TestMapper(), dao);

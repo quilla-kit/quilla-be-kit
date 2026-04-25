@@ -28,8 +28,8 @@ describe('BaseWriteDao', () => {
     adapter = new FakeWriteDbAdapter();
     ctxProvider = new FakeExecutionContextProvider({
       actorType: 'user',
-      userId: 'user-42',
       correlationId: 'corr-1',
+      session: { scopeId: 'scope-1', userId: 'user-42' },
     });
     dao = new UserDao(adapter, ctxProvider);
     trx = new FakeDatabaseTransaction();

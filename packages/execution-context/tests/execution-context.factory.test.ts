@@ -17,10 +17,9 @@ describe('executionContextFactory.createSystemContext', () => {
     expect(executionContextFactory.createSystemContext('job').actorType).toBe('job');
   });
 
-  it('omits scopeId and userId', () => {
+  it('omits session — system contexts are never authenticated', () => {
     const ctx = executionContextFactory.createSystemContext('system');
-    expect(ctx.scopeId).toBeUndefined();
-    expect(ctx.userId).toBeUndefined();
+    expect(ctx.session).toBeUndefined();
   });
 });
 
@@ -43,7 +42,7 @@ describe('executionContextFactory.createBaselineContext', () => {
 });
 
 describe('executionContextFactory.createFromEventMetadata', () => {
-  it('copies actorType, correlationId, scopeId, and userId when present', () => {
+  it('reconstructs a session when both scopeId and userId are present', () => {
     const meta = EventMetadata.create({
       kind: EventKind.INTEGRATION,
       correlationId: 'corr-1',
@@ -54,21 +53,32 @@ describe('executionContextFactory.createFromEventMetadata', () => {
     expect(executionContextFactory.createFromEventMetadata(meta)).toEqual({
       actorType: 'user',
       correlationId: 'corr-1',
-      scopeId: 'scope-1',
-      userId: 'user-1',
+      session: { scopeId: 'scope-1', userId: 'user-1' },
     });
   });
 
-  it('omits scopeId and userId when absent on metadata', () => {
+  it('omits session when metadata has neither scopeId nor userId', () => {
     const meta = EventMetadata.create({
       kind: EventKind.DOMAIN,
       correlationId: 'corr-1',
       actorType: 'system',
     });
     const ctx = executionContextFactory.createFromEventMetadata(meta);
-    expect(ctx.scopeId).toBeUndefined();
-    expect(ctx.userId).toBeUndefined();
+    expect(ctx.session).toBeUndefined();
     expect(ctx.actorType).toBe('system');
     expect(ctx.correlationId).toBe('corr-1');
+  });
+
+  it('omits session when metadata has only one of scopeId / userId', () => {
+    // Half-populated metadata comes from non-auth contexts (e.g. system
+    // job scoped to a tenant without a user). Session is all-or-nothing.
+    const meta = EventMetadata.create({
+      kind: EventKind.DOMAIN,
+      correlationId: 'corr-1',
+      actorType: 'job',
+      scopeId: 'scope-1',
+    });
+    const ctx = executionContextFactory.createFromEventMetadata(meta);
+    expect(ctx.session).toBeUndefined();
   });
 });

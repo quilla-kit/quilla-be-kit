@@ -52,8 +52,13 @@ await provider.runWithContext(ctx, async () => {
 ## API
 
 ### Types
-- `ExecutionContext` — the base shape (`scopeId?`, `actorType`, `userId?`,
-  `correlationId`).
+- `ExecutionContext` — the base shape (`actorType`, `correlationId`,
+  and an optional `session` of type `AuthSession`). `session` is present
+  iff the operation ran inside an authenticated scope; anonymous, system,
+  and job contexts leave it undefined.
+- `AuthSession` — the authenticated-caller identity (`{ scopeId, userId }`).
+  Extensible by intersection for richer session data (roles, session id,
+  authenticatedAt, etc.).
 
 ### Interfaces
 - `ExecutionContextProvider` — `getContext()` + `runWithContext(ctx, fn)` +
@@ -86,32 +91,61 @@ await provider.runWithContext(ctx, async () => {
   Stateless; import and call its methods directly, or inject via the
   `ExecutionContextFactory` interface for testable composition.
 
+## Session presence is the auth signal
+
+The toolkit treats `ctx.session` as the single source of truth for "this
+operation is authenticated." Either session is present (authenticated) or
+it isn't (anonymous / system / job) — never half-populated. Every toolkit
+surface that reads auth-derived identity does this consistently:
+
+- `@ValidateRequest` injects `scopeId` / `userId` into validated payloads
+  only when `ctx.session` is defined and the schema declares those keys.
+- `BaseWriteDao` reads `ctx.session?.userId` for `inserted_by` /
+  `updated_by` audit columns; writes under system contexts land with
+  `undefined` audit.
+- `ExecutionContextEnricher` flattens `ctx.session` to `scopeId` /
+  `userId` fields on log entries — log shape stays flat even though the
+  context groups, so dashboards and log queries keep their field names.
+
+Consumer code applies the same discipline: check `ctx.session` once, then
+read `scopeId` / `userId` off it. Avoid reconstituting half-states
+(`ctx.session?.scopeId && !ctx.session?.userId`) — they can't happen by
+construction.
+
 ## Extension pattern
 
-The base `ExecutionContext` is deliberately minimal. If you need session
-data, roles, permissions, or any other product-shaped fields, **extend by
-intersection** in your consumer project:
+The base `AuthSession` is deliberately minimal (`scopeId` + `userId`). If
+you need roles, permissions, a session id, an authenticated-at timestamp,
+or any other product-shaped fields, **extend by intersection** in your
+consumer project:
 
 ```ts
-import type { ExecutionContext } from '@quilla-kit/execution-context';
+import type { AuthSession, ExecutionContext } from '@quilla-kit/execution-context';
 
 // Pick whatever session shape fits your project.
-type MySession = {
+type AppAuthSession = AuthSession & {
+  readonly sessionId: string;
   readonly displayName: string;
   readonly roles: readonly string[];
   readonly authenticatedAt: Date;
 };
 
-type MyExecutionContext = ExecutionContext & {
-  readonly session?: MySession;
+type AppExecutionContext = ExecutionContext & {
+  readonly session?: AppAuthSession;
 };
 
 // Auth middleware constructs the enriched context:
-const ctx: MyExecutionContext = {
+const ctx: AppExecutionContext = {
   ...executionContextFactory.createBaselineContext({ correlationId }),
   actorType: 'user',
-  userId: jwt.sub,
-  session: { displayName: jwt.name, roles: jwt.roles, authenticatedAt: new Date() },
+  session: {
+    scopeId: jwt.scope,
+    userId: jwt.sub,
+    sessionId: jwt.sid,
+    displayName: jwt.name,
+    roles: jwt.roles,
+    authenticatedAt: new Date(),
+  },
 };
 
 await provider.runWithContext(ctx, handler);
@@ -120,7 +154,7 @@ await provider.runWithContext(ctx, handler);
 Read sites cast once:
 
 ```ts
-const ctx = provider.getContext() as MyExecutionContext;
+const ctx = provider.getContext() as AppExecutionContext;
 if (ctx.session?.roles.includes('admin')) { /* ... */ }
 ```
 
@@ -128,18 +162,20 @@ If your project has many read sites, wrap the provider once:
 
 ```ts
 // Consumer-side helper
-export function getAppContext(): MyExecutionContext {
-  return provider.getContext() as MyExecutionContext;
+export function getAppContext(): AppExecutionContext {
+  return provider.getContext() as AppExecutionContext;
 }
 ```
 
 Then the rest of the codebase uses `getAppContext()` with full typing.
 
-**Why not ship an opinionated session type?** Because session shape varies too
-widely across services (displayName vs. email vs. userType vs. tenant-role vs.
-scope-based permissions, etc.). Picking a base nudges every consumer toward
-a shape most of them don't need. The toolkit stays neutral on authorization
-and session semantics; consumers own those.
+**Why not ship an opinionated full session type?** Because sessions beyond
+`scopeId` + `userId` vary too widely across services (displayName vs.
+email vs. userType vs. tenant-role vs. scope-based permissions, etc.).
+Picking a richer base nudges every consumer toward a shape most of them
+don't need. The toolkit ships the minimal `AuthSession` as a contract for
+its own surfaces (audit, validation, enrichment) and lets consumers own
+the rest.
 
 ## Design notes
 
