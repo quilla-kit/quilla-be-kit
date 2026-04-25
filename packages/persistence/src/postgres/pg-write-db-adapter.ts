@@ -7,6 +7,7 @@ import type {
   DeleteOptions,
   ExistsOptions,
   InsertOptions,
+  UpdateManyOptions,
   UpdateOptions,
   WriteDbAdapter,
 } from '../db-adapter/write-db-adapter.interface.js';
@@ -91,6 +92,43 @@ export class PgWriteDbAdapter implements WriteDbAdapter {
 
     const returning = buildReturning(opts.returning);
     const sql = `UPDATE ${opts.table} SET ${setClauses.join(', ')} WHERE ${whereSql}${returning}`;
+
+    return this.db.query(sql, values, trx);
+  }
+
+  async updateMany(opts: UpdateManyOptions, trx?: DatabaseTransaction): Promise<DatabaseResult> {
+    if (opts.rows.length === 0) {
+      return { rows: [], rowCount: 0 };
+    }
+
+    const types = await this.columnTypes.get(opts.table);
+    const firstRow = opts.rows[0] as Record<string, unknown>;
+    const allKeys = Object.keys(firstRow);
+    const setKeys = allKeys.filter((key) => key !== 'id');
+
+    if (setKeys.length === 0) {
+      return { rows: [], rowCount: 0 };
+    }
+
+    const values: unknown[] = [];
+    const rowPlaceholders: string[] = [];
+    for (const row of opts.rows) {
+      const rowData = row as Record<string, unknown>;
+      const setPlaceholders = setKeys.map((key) => {
+        values.push(serializeValue(types[key], rowData[key]));
+        return `$${values.length}::${mapPostgresType(types[key])}`;
+      });
+      values.push(rowData.id);
+      rowPlaceholders.push(
+        `(${setPlaceholders.join(', ')}, $${values.length}::${mapPostgresType(types.id)})`,
+      );
+    }
+
+    const setClauses = setKeys.map((key) => `${key} = data.${key}`);
+    setClauses.push(`updated_at = ${TIMESTAMP_LITERAL}`);
+
+    const dataColumns = [...setKeys, 'id'].join(', ');
+    const sql = `UPDATE ${opts.table} AS t SET ${setClauses.join(', ')} FROM (VALUES ${rowPlaceholders.join(', ')}) AS data(${dataColumns}) WHERE t.id = data.id`;
 
     return this.db.query(sql, values, trx);
   }

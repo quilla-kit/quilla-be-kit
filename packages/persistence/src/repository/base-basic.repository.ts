@@ -13,11 +13,23 @@ export abstract class BaseBasicRepository<TRow extends { id: string }> {
     await this.writeDao.create(row, trx);
   }
 
+  async createMany(rows: readonly TRow[], trx?: DatabaseTransaction): Promise<void> {
+    await this.writeDao.createMany(rows, trx);
+  }
+
   async update(row: TRow & { updated_at?: Date }, trx?: DatabaseTransaction): Promise<void> {
     await this.writeDao.update(row, trx);
   }
 
+  async updateMany(rows: readonly TRow[], trx: DatabaseTransaction): Promise<void> {
+    await this.writeDao.updateMany(rows, trx);
+  }
+
   async delete(id: string, trx?: DatabaseTransaction): Promise<void> {
     await this.writeDao.delete(id, trx);
+  }
+
+  async deleteMany(ids: readonly string[], trx?: DatabaseTransaction): Promise<void> {
+    await this.writeDao.deleteMany(ids, trx);
   }
 }

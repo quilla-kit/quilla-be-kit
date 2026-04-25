@@ -56,6 +56,94 @@ describe('BaseUnscopedAggregateRepository', () => {
     expect(agg?.id).toBe('a1');
   });
 
+  describe('createMany', () => {
+    it('no-ops on empty array', async () => {
+      const ctx = {
+        trx,
+        registerAggregate: () => {},
+        registerIntegrationEvent: () => {},
+      };
+
+      await repo.createMany([], ctx as Parameters<typeof repo.createMany>[1]);
+      expect(adapter.insertCalls).toHaveLength(0);
+    });
+
+    it('inserts all rows in one call and registers every aggregate', async () => {
+      const registered: unknown[] = [];
+      const ctx = {
+        trx,
+        registerAggregate: (...aggs: unknown[]) => registered.push(...aggs),
+        registerIntegrationEvent: () => {},
+      };
+
+      const a1 = TestAggregate.create('a1', 'one');
+      const a2 = TestAggregate.create('a2', 'two');
+
+      await repo.createMany([a1, a2], ctx as Parameters<typeof repo.createMany>[1]);
+
+      expect(adapter.insertCalls).toHaveLength(1);
+      expect(adapter.insertCalls[0]?.opts.rows).toHaveLength(2);
+      expect(registered).toEqual([a1, a2]);
+    });
+  });
+
+  describe('updateMany / deleteMany', () => {
+    it('updateMany delegates to dao.updateMany without re-registering', async () => {
+      const registered: unknown[] = [];
+      const ctx = {
+        trx,
+        registerAggregate: (...aggs: unknown[]) => registered.push(...aggs),
+        registerIntegrationEvent: () => {},
+      };
+
+      const a1 = TestAggregate.create('a1', 'one');
+      const a2 = TestAggregate.create('a2', 'two');
+
+      await repo.updateMany([a1, a2], ctx as Parameters<typeof repo.updateMany>[1]);
+
+      expect(adapter.updateManyCalls).toHaveLength(1);
+      expect(adapter.updateManyCalls[0]?.opts.rows).toHaveLength(2);
+      expect(registered).toEqual([]);
+    });
+
+    it('deleteMany passes ids to dao.deleteMany without re-registering', async () => {
+      const registered: unknown[] = [];
+      const ctx = {
+        trx,
+        registerAggregate: (...aggs: unknown[]) => registered.push(...aggs),
+        registerIntegrationEvent: () => {},
+      };
+
+      const a1 = TestAggregate.create('a1', 'one');
+      const a2 = TestAggregate.create('a2', 'two');
+
+      await repo.deleteMany([a1, a2], ctx as Parameters<typeof repo.deleteMany>[1]);
+
+      expect(adapter.deleteCalls[0]?.opts.where).toEqual({ id: ['a1', 'a2'] });
+      expect(registered).toEqual([]);
+    });
+
+    it('updateMany no-ops on empty', async () => {
+      const ctx = {
+        trx,
+        registerAggregate: () => {},
+        registerIntegrationEvent: () => {},
+      };
+      await repo.updateMany([], ctx as Parameters<typeof repo.updateMany>[1]);
+      expect(adapter.updateManyCalls).toHaveLength(0);
+    });
+
+    it('deleteMany no-ops on empty', async () => {
+      const ctx = {
+        trx,
+        registerAggregate: () => {},
+        registerIntegrationEvent: () => {},
+      };
+      await repo.deleteMany([], ctx as Parameters<typeof repo.deleteMany>[1]);
+      expect(adapter.deleteCalls).toHaveLength(0);
+    });
+  });
+
   it('registers aggregate in UoW context on loadForUpdateById', async () => {
     adapter.findForUpdateResults = [[{ id: 'a1', name: 'foo' }]];
 

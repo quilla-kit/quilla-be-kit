@@ -143,6 +143,63 @@ describe('BaseWriteDao', () => {
     });
   });
 
+  describe('updateMany', () => {
+    it('no-ops on empty array', async () => {
+      await dao.updateMany([], trx);
+      expect(adapter.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('issues a single adapter.updateMany call with all rows', async () => {
+      await dao.updateMany(
+        [
+          { id: 'u1', name: 'a' },
+          { id: 'u2', name: 'b' },
+        ],
+        trx,
+      );
+
+      expect(adapter.updateManyCalls).toHaveLength(1);
+      expect(adapter.updateManyCalls[0]?.opts.table).toBe('users');
+      expect(adapter.updateManyCalls[0]?.opts.rows).toHaveLength(2);
+      expect(adapter.updateManyCalls[0]?.trx).toBe(trx);
+    });
+
+    it('keeps id and injects updated_by per row', async () => {
+      await dao.updateMany(
+        [
+          { id: 'u1', name: 'a' },
+          { id: 'u2', name: 'b' },
+        ],
+        trx,
+      );
+
+      const rows = adapter.updateManyCalls[0]?.opts.rows;
+      expect(rows?.[0]).toEqual({ id: 'u1', name: 'a', updated_by: 'user-42' });
+      expect(rows?.[1]).toEqual({ id: 'u2', name: 'b', updated_by: 'user-42' });
+    });
+
+    it('strips immutable/audit keys from rows but keeps id', async () => {
+      await dao.updateMany(
+        [
+          {
+            id: 'u1',
+            name: 'a',
+            inserted_by: 'old',
+            created_at: new Date(),
+            updated_at: new Date(),
+          },
+        ],
+        trx,
+      );
+
+      const row = adapter.updateManyCalls[0]?.opts.rows[0];
+      expect(row).toHaveProperty('id', 'u1');
+      expect(row).not.toHaveProperty('inserted_by');
+      expect(row).not.toHaveProperty('created_at');
+      expect(row).not.toHaveProperty('updated_at');
+    });
+  });
+
   describe('delete', () => {
     it('passes id as where clause', async () => {
       await dao.delete('u1');

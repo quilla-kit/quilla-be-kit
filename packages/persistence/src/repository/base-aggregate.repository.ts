@@ -25,6 +25,13 @@ export abstract class BaseAggregateRepository<
     ctx.registerAggregate(aggregate);
   }
 
+  async createMany(aggregates: readonly TAggregate[], ctx: UnitOfWorkContext): Promise<void> {
+    if (aggregates.length === 0) return;
+    const rows = aggregates.map((a) => this.mapper.toPersistence(a));
+    await this.writeDao.createMany(rows, ctx.trx);
+    ctx.registerAggregate(...aggregates);
+  }
+
   async update(aggregate: TAggregate, ctx: UnitOfWorkContext): Promise<void> {
     await this.writeDao.update(
       this.mapper.toPersistence(aggregate) as TRow & { updated_at?: Date },
@@ -33,7 +40,24 @@ export abstract class BaseAggregateRepository<
     // Aggregate already registered in ctx via loadForUpdate*.
   }
 
+  async updateMany(aggregates: readonly TAggregate[], ctx: UnitOfWorkContext): Promise<void> {
+    if (aggregates.length === 0) return;
+    const rows = aggregates.map((a) => this.mapper.toPersistence(a));
+    await this.writeDao.updateMany(rows, ctx.trx);
+    // Aggregates already registered in ctx via loadForUpdate*.
+  }
+
   async delete(aggregate: TAggregate, ctx: UnitOfWorkContext): Promise<void> {
     await this.writeDao.delete(aggregate.id, ctx.trx);
+    // Aggregate already registered in ctx via loadForUpdate*.
+  }
+
+  async deleteMany(aggregates: readonly TAggregate[], ctx: UnitOfWorkContext): Promise<void> {
+    if (aggregates.length === 0) return;
+    await this.writeDao.deleteMany(
+      aggregates.map((a) => a.id),
+      ctx.trx,
+    );
+    // Aggregates already registered in ctx via loadForUpdate*.
   }
 }

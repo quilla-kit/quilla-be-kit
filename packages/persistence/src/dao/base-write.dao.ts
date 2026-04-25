@@ -16,6 +16,12 @@ import { AUDIT_COLUMNS, INSERT_EXCLUDED_KEYS, UPDATE_EXCLUDED_KEYS } from './aud
  * Unlocked reads (`findOne` / `findMany` / `existsBy`) accept optional
  * `trx` for pre-create uniqueness checks. Locked reads (`findOneForUpdate`
  * / `findManyForUpdate`) require `trx` — they're for read-before-update.
+ *
+ * `updateMany` issues a single `UPDATE ... FROM (VALUES ...)` statement
+ * via the adapter — no per-row optimistic lock. Callers needing
+ * concurrency control should `findManyForUpdate` first; the row-level
+ * locks held inside `trx` serialize concurrent writers for the duration
+ * of the unit of work. `trx` is required.
  */
 export abstract class BaseWriteDao<TRow extends { id: string }> {
   protected abstract readonly tableName: string;
@@ -100,6 +106,13 @@ export abstract class BaseWriteDao<TRow extends { id: string }> {
     }
   }
 
+  async updateMany(rows: readonly TRow[], trx: DatabaseTransaction): Promise<void> {
+    if (rows.length === 0) return;
+    const userId = this.contextProvider.getContext().session?.userId;
+    const prepared = rows.map((row) => this.prepareUpdateRowWithId(row, userId));
+    await this.adapter.updateMany({ table: this.tableName, rows: prepared }, trx);
+  }
+
   async delete(id: string, trx?: DatabaseTransaction): Promise<void> {
     await this.adapter.delete<TRow>(
       {
@@ -131,6 +144,14 @@ export abstract class BaseWriteDao<TRow extends { id: string }> {
 
   private prepareUpdateRow(row: TRow, userId: string | undefined): Record<string, unknown> {
     return {
+      ...this.stripKeys(row, UPDATE_EXCLUDED_KEYS),
+      [AUDIT_COLUMNS.updatedBy]: userId,
+    };
+  }
+
+  private prepareUpdateRowWithId(row: TRow, userId: string | undefined): Record<string, unknown> {
+    return {
+      id: row.id,
       ...this.stripKeys(row, UPDATE_EXCLUDED_KEYS),
       [AUDIT_COLUMNS.updatedBy]: userId,
     };

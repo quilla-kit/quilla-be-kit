@@ -22,6 +22,19 @@ export type UpdateOptions<T> = {
   readonly returning?: readonly string[];
 };
 
+/**
+ * Bulk update via a single `UPDATE ... FROM (VALUES ...)` statement. Each
+ * row in `rows` must include `id` (used as the join key) plus the same set
+ * of columns to update — heterogeneous keys across rows are unsupported
+ * (the VALUES table requires a fixed schema). No optimistic locking: bulk
+ * update is meant to follow `findManyForUpdate` so row-level locks held
+ * inside the transaction already serialize concurrent writers.
+ */
+export type UpdateManyOptions = {
+  readonly table: string;
+  readonly rows: readonly Record<string, unknown>[];
+};
+
 export type DeleteOptions<T> = {
   readonly table: string;
   readonly where: FilterQuery<T>;
@@ -47,6 +60,8 @@ export interface WriteDbAdapter {
   insert(opts: InsertOptions, trx?: DatabaseTransaction): Promise<DatabaseResult>;
 
   update<T>(opts: UpdateOptions<T>, trx?: DatabaseTransaction): Promise<DatabaseResult>;
+
+  updateMany(opts: UpdateManyOptions, trx?: DatabaseTransaction): Promise<DatabaseResult>;
 
   delete<T>(opts: DeleteOptions<T>, trx?: DatabaseTransaction): Promise<DatabaseResult>;
 

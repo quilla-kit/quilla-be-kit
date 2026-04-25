@@ -9,6 +9,7 @@ import type {
   DeleteOptions,
   ExistsOptions,
   InsertOptions,
+  UpdateManyOptions,
   UpdateOptions,
   WriteDbAdapter,
 } from '../../src/db-adapter/write-db-adapter.interface.js';
@@ -35,6 +36,7 @@ type Call<TOpts> = { opts: TOpts; trx: DatabaseTransaction | undefined };
 export class FakeWriteDbAdapter implements WriteDbAdapter {
   insertCalls: Call<InsertOptions>[] = [];
   updateCalls: Call<UpdateOptions<unknown>>[] = [];
+  updateManyCalls: Call<UpdateManyOptions>[] = [];
   deleteCalls: Call<DeleteOptions<unknown>>[] = [];
   findCalls: Call<SelectOptions<unknown>>[] = [];
   findForUpdateCalls: { opts: SelectOptions<unknown>; trx: DatabaseTransaction }[] = [];
@@ -42,6 +44,7 @@ export class FakeWriteDbAdapter implements WriteDbAdapter {
 
   insertResults: DatabaseResult[] = [];
   updateResults: DatabaseResult[] = [];
+  updateManyResults: DatabaseResult[] = [];
   deleteResults: DatabaseResult[] = [];
   findResults: unknown[][] = [];
   findForUpdateResults: unknown[][] = [];
@@ -58,6 +61,13 @@ export class FakeWriteDbAdapter implements WriteDbAdapter {
     async <T>(opts: UpdateOptions<T>, trx?: DatabaseTransaction): Promise<DatabaseResult> => {
       this.updateCalls.push({ opts: opts as UpdateOptions<unknown>, trx });
       return this.updateResults.shift() ?? { rows: [], rowCount: 1 };
+    },
+  );
+
+  updateMany = vi.fn(
+    async (opts: UpdateManyOptions, trx?: DatabaseTransaction): Promise<DatabaseResult> => {
+      this.updateManyCalls.push({ opts, trx });
+      return this.updateManyResults.shift() ?? { rows: [], rowCount: opts.rows.length };
     },
   );
 

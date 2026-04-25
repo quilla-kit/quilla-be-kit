@@ -166,6 +166,60 @@ describe('PgWriteDbAdapter', () => {
     });
   });
 
+  describe('updateMany', () => {
+    it('emits a single UPDATE ... FROM (VALUES ...) statement', async () => {
+      await adapter.updateMany({
+        table: 'users',
+        rows: [
+          { id: 'u1', name: 'Alice', age: 30 },
+          { id: 'u2', name: 'Bob', age: 31 },
+        ],
+      });
+
+      const call = db.calls[0];
+      expect(call?.sql).toBe(
+        'UPDATE users AS t SET name = data.name, age = data.age, updated_at = ' +
+          "date_trunc('milliseconds', CURRENT_TIMESTAMP) " +
+          'FROM (VALUES ($1::TEXT, $2::INTEGER, $3::UUID), ($4::TEXT, $5::INTEGER, $6::UUID)) ' +
+          'AS data(name, age, id) WHERE t.id = data.id',
+      );
+      expect(call?.params).toEqual(['Alice', 30, 'u1', 'Bob', 31, 'u2']);
+    });
+
+    it('serializes JSONB values per row', async () => {
+      await adapter.updateMany({
+        table: 'users',
+        rows: [
+          { id: 'u1', metadata: { foo: 'bar' } },
+          { id: 'u2', metadata: { baz: 'qux' } },
+        ],
+      });
+
+      expect(db.calls[0]?.params).toEqual(['{"foo":"bar"}', 'u1', '{"baz":"qux"}', 'u2']);
+    });
+
+    it('no-ops on empty rows', async () => {
+      const result = await adapter.updateMany({ table: 'users', rows: [] });
+      expect(db.calls).toHaveLength(0);
+      expect(result.rowCount).toBe(0);
+    });
+
+    it('no-ops when rows contain only id (nothing to set)', async () => {
+      const result = await adapter.updateMany({
+        table: 'users',
+        rows: [{ id: 'u1' }, { id: 'u2' }],
+      });
+      expect(db.calls).toHaveLength(0);
+      expect(result.rowCount).toBe(0);
+    });
+
+    it('passes trx through to Database.query', async () => {
+      const trx = {} as DatabaseTransaction;
+      await adapter.updateMany({ table: 'users', rows: [{ id: 'u1', name: 'a' }] }, trx);
+      expect(db.calls[0]?.trx).toBe(trx);
+    });
+  });
+
   describe('delete', () => {
     it('emits DELETE for single id', async () => {
       await adapter.delete({ table: 'users', where: { id: 'u1' } });
