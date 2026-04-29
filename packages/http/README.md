@@ -170,7 +170,7 @@ The `*Public` variants mark the route as public — **auth middlewares are skipp
 
 ### `@AuthorizeScope(scope, mode?)`
 
-Scope-based authorization. Reads an `AuthenticatedToken` from `request.getAttribute(HttpAttributes.VERIFIED_TOKEN)` and checks the token's `scope` against the required scope(s).
+Scope-based authorization. Reads an `AuthenticatedToken` from `request.getAttribute(HttpAttributes.VERIFIED_TOKEN)` and checks the token's `scopes` against the required scope(s).
 
 ```ts
 @AuthorizeScope('user:read')              // default: 'any' — passes if token has user:read

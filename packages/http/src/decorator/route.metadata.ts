@@ -18,7 +18,7 @@ export type RouteDefinition = {
   readonly httpMethod: HttpMethod;
   readonly path: string;
   readonly public: boolean;
-  readonly scope?: readonly string[];
+  readonly scopes?: readonly string[];
   readonly scopeMode?: 'any' | 'all';
   readonly validation?: {
     readonly schema: unknown;

@@ -1,3 +1,3 @@
 export interface AuthenticatedToken {
-  readonly scope?: readonly string[];
+  readonly scopes?: readonly string[];
 }

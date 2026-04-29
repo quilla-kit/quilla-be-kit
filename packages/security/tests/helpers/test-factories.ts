@@ -8,7 +8,7 @@ export function makeToken(overrides: Partial<Token> = {}): Token {
     userId: 'user-1',
     scopeId: 'scope-1',
     securityStamp: 'stamp-v1',
-    scope: ['user:read'],
+    scopes: ['user:read'],
     issuedAt: new Date('2026-01-01T00:00:00Z'),
     expiresAt: new Date('2099-01-01T00:00:00Z'),
     isExpired: () => false,

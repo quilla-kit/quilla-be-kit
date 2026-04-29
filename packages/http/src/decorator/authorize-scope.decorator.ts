@@ -7,7 +7,7 @@ import { updateLastRoute } from './route.metadata.js';
 
 type ControllerMethod = (this: unknown, request: HttpRequest) => Promise<HttpResponse>;
 
-export function AuthorizeScope(scope: string | readonly string[], mode: 'any' | 'all' = 'any') {
+export function AuthorizeScope(scopes: string | readonly string[], mode: 'any' | 'all' = 'any') {
   return (
     originalMethod: ControllerMethod,
     context: ClassMethodDecoratorContext,
@@ -16,10 +16,10 @@ export function AuthorizeScope(scope: string | readonly string[], mode: 'any' | 
       throw new Error('@AuthorizeScope can only be applied to methods');
     }
 
-    const required = Array.isArray(scope) ? scope : [scope as string];
+    const required = Array.isArray(scopes) ? scopes : [scopes as string];
 
     updateLastRoute(context.metadata as Record<string | symbol, unknown>, context.name as string, {
-      scope: required,
+      scopes: required,
       scopeMode: mode,
     });
 
@@ -29,7 +29,7 @@ export function AuthorizeScope(scope: string | readonly string[], mode: 'any' | 
         throw new ForbiddenError({ message: 'Authentication is required for this action.' });
       }
 
-      const granted = token.scope ?? [];
+      const granted = token.scopes ?? [];
       const hasScope =
         mode === 'all'
           ? required.every((s) => granted.includes(s))

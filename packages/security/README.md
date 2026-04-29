@@ -3,7 +3,7 @@
 Interface-only security primitives + the two auth middlewares that plug into `@quilla-kit/http`'s Router:
 
 - **`Token`** (extends `AuthenticatedToken` from http) — verified-credential contract with `userId`, `scopeId`, `securityStamp`, `issuedAt`, `expiresAt`, `isExpired()`.
-- **`TokenClaims`** — canonical short-key wire-format type for the JWT payload (`u`, `si`, `st`, `s?`). Implementers map between the readable `SignTokenPayload` / `Token` shapes and these compact claims at the encode/decode boundary. Tokens travel in every request header — short keys exist for payload size, not security.
+- **`TokenClaims`** — canonical short-key wire-format type for the JWT payload (`u`, `si`, `st`, `s?` for scopes). Implementers map between the readable `SignTokenPayload` / `Token` shapes and these compact claims at the encode/decode boundary. Tokens travel in every request header — short keys exist for payload size, not security.
 - **`TokenService`** — `sign(payload, { expiresIn })` + `verify(raw)` interface. Consumer provides the implementation (JWT via `jose`/`djwt`/`jsonwebtoken`, PASETO, opaque reference tokens — your choice).
 - **`SessionStore`** — keyed session record storage. Consumer picks the backend (Redis, Valkey, DynamoDB, Postgres).
 - **`SessionData`** — record shape: `{ securityStamp, displayName, userType }`.
@@ -53,14 +53,14 @@ const toClaims = (payload: SignTokenPayload): TokenClaims => ({
   u: payload.userId,
   si: payload.scopeId,
   st: payload.securityStamp,
-  ...(payload.scope ? { s: payload.scope } : {}),
+  ...(payload.scopes ? { s: payload.scopes } : {}),
 });
 
 const fromClaims = (claims: TokenClaims): SignTokenPayload => ({
   userId: claims.u,
   scopeId: claims.si,
   securityStamp: claims.st,
-  scope: claims.s,
+  scopes: claims.s,
 });
 
 const jwtTokenService: TokenService = {

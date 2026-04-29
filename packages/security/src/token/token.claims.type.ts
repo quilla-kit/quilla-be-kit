@@ -12,7 +12,7 @@
  * | `u`   | `userId`        |
  * | `si`  | `scopeId`       |
  * | `st`  | `securityStamp` |
- * | `s`   | `scope`         |
+ * | `s`   | `scopes`        |
  */
 export type TokenClaims = {
   readonly u: string;
