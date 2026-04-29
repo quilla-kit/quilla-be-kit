@@ -3,6 +3,7 @@
 Interface-only security primitives + the two auth middlewares that plug into `@quilla-kit/http`'s Router:
 
 - **`Token`** (extends `AuthenticatedToken` from http) — verified-credential contract with `userId`, `scopeId`, `securityStamp`, `issuedAt`, `expiresAt`, `isExpired()`.
+- **`TokenClaims`** — canonical short-key wire-format type for the JWT payload (`u`, `si`, `st`, `s?`). Implementers map between the readable `SignTokenPayload` / `Token` shapes and these compact claims at the encode/decode boundary. Tokens travel in every request header — short keys exist for payload size, not security.
 - **`TokenService`** — `sign(payload, { expiresIn })` + `verify(raw)` interface. Consumer provides the implementation (JWT via `jose`/`djwt`/`jsonwebtoken`, PASETO, opaque reference tokens — your choice).
 - **`SessionStore`** — keyed session record storage. Consumer picks the backend (Redis, Valkey, DynamoDB, Postgres).
 - **`SessionData`** — record shape: `{ securityStamp, displayName, userType }`.
@@ -39,22 +40,32 @@ import {
   type TokenService,
   type SessionStore,
   type Token,
+  type TokenClaims,
   type SignTokenPayload,
 } from '@quilla-kit/security';
 
 // --- Consumer-owned TokenService (example: jose) ---
-import { SignJWT, jwtVerify } from 'jose';
+import { SignJWT, jwtVerify, type JWTPayload } from 'jose';
 
 const secret = new TextEncoder().encode(process.env.JWT_SECRET!);
 
+const toClaims = (payload: SignTokenPayload): TokenClaims => ({
+  u: payload.userId,
+  si: payload.scopeId,
+  st: payload.securityStamp,
+  ...(payload.scope ? { s: payload.scope } : {}),
+});
+
+const fromClaims = (claims: TokenClaims): SignTokenPayload => ({
+  userId: claims.u,
+  scopeId: claims.si,
+  securityStamp: claims.st,
+  scope: claims.s,
+});
+
 const jwtTokenService: TokenService = {
   async sign(payload: SignTokenPayload, options: { expiresIn: number }): Promise<string> {
-    return new SignJWT({
-      u: payload.userId,
-      s: payload.scopeId,
-      st: payload.securityStamp,
-      ...(payload.scope ? { sc: payload.scope } : {}),
-    })
+    return new SignJWT({ ...toClaims(payload) })
       .setProtectedHeader({ alg: 'HS256', typ: 'JWT' })
       .setIssuedAt()
       .setExpirationTime(Math.floor(Date.now() / 1000) + options.expiresIn)
@@ -62,13 +73,11 @@ const jwtTokenService: TokenService = {
   },
   async verify(raw: string): Promise<Token> {
     const { payload } = await jwtVerify(raw, secret);
+    const decoded = fromClaims(payload as unknown as TokenClaims);
     const issuedAt = new Date((payload.iat as number) * 1000);
     const expiresAt = new Date((payload.exp as number) * 1000);
     return {
-      userId: String(payload.u),
-      scopeId: String(payload.s),
-      securityStamp: String(payload.st),
-      scope: (payload.sc as readonly string[] | undefined) ?? undefined,
+      ...decoded,
       issuedAt,
       expiresAt,
       isExpired(now = new Date()): boolean {
