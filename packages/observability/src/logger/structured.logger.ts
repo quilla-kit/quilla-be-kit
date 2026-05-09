@@ -1,5 +1,6 @@
 import type { LogEntryEnricher } from './log-entry.enricher.js';
 import type { LogContext, LogEntry, LogLevel, SerializedError } from './log-entry.type.js';
+import type { LogErrorSerializer } from './log-error-serializer.interface.js';
 import type { LogFormatter } from './log.formatter.js';
 import type { LogObserver } from './log.observer.js';
 import type { LogParams, Logger } from './logger.interface.js';
@@ -24,6 +25,7 @@ export type StructuredLoggerDependencies = {
   readonly enrichers: readonly LogEntryEnricher[];
   readonly observers: readonly LogObserver[];
   readonly obfuscator?: LogObfuscator;
+  readonly errorSerializer?: LogErrorSerializer;
   readonly location?: string;
   readonly baseMeta?: Record<string, unknown>;
 };
@@ -44,6 +46,7 @@ export class StructuredLogger implements Logger {
   private readonly enrichers: readonly LogEntryEnricher[];
   private readonly observers: readonly LogObserver[];
   private readonly obfuscator: LogObfuscator | undefined;
+  private readonly errorSerializer: LogErrorSerializer | undefined;
   private readonly location: string | undefined;
   private readonly baseMeta: Record<string, unknown> | undefined;
   private readonly inflight = new Set<Promise<void>>();
@@ -56,6 +59,7 @@ export class StructuredLogger implements Logger {
     this.enrichers = deps.enrichers;
     this.observers = deps.observers;
     this.obfuscator = deps.obfuscator;
+    this.errorSerializer = deps.errorSerializer;
     this.location = deps.location;
     this.baseMeta = deps.baseMeta;
   }
@@ -93,6 +97,7 @@ export class StructuredLogger implements Logger {
       enrichers: this.enrichers,
       observers: this.observers,
       ...(this.obfuscator !== undefined ? { obfuscator: this.obfuscator } : {}),
+      ...(this.errorSerializer !== undefined ? { errorSerializer: this.errorSerializer } : {}),
       ...(this.location !== undefined ? { location: this.location } : {}),
       ...(this.baseMeta !== undefined ? { baseMeta: this.baseMeta } : {}),
       ...override,
@@ -187,6 +192,10 @@ export class StructuredLogger implements Logger {
   }
 
   private serializeError(error: unknown): SerializedError {
+    if (this.errorSerializer !== undefined) {
+      const result = this.errorSerializer.serialize(error);
+      if (result !== undefined) return result;
+    }
     if (error instanceof Error) {
       return {
         name: error.name,

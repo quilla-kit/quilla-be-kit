@@ -12,6 +12,8 @@ export type SerializedError = {
   readonly message: string;
   readonly stack?: string;
   readonly cause?: string;
+  readonly code?: string;
+  readonly context?: Record<string, unknown>;
 };
 
 export type LogEntry = {

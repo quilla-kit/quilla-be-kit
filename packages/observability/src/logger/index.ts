@@ -1,4 +1,5 @@
 export type { LogEnricherContribution, LogEntryEnricher } from './log-entry.enricher.js';
+export type { LogErrorSerializer } from './log-error-serializer.interface.js';
 export type {
   LogContext,
   LogEntry,

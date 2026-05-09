@@ -60,7 +60,11 @@ export class PrettyFormatter implements LogFormatter {
     }
 
     if (entry.error !== undefined) {
-      lines.push(`  ${color}${BOLD}${entry.error.name}:${RESET} ${entry.error.message}`);
+      const codeLabel = entry.error.code !== undefined ? ` [${entry.error.code}]` : '';
+      lines.push(`  ${color}${BOLD}${entry.error.name}${codeLabel}:${RESET} ${entry.error.message}`);
+      if (entry.error.context !== undefined) {
+        lines.push(`  ${DIM}context:${RESET} ${JSON.stringify(entry.error.context)}`);
+      }
       if (entry.error.cause !== undefined) {
         lines.push(`  ${DIM}cause:${RESET} ${entry.error.cause}`);
       }

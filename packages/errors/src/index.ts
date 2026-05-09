@@ -3,6 +3,7 @@ export {
   type QuillaErrorOptions,
   type QuillaErrorJSON,
 } from './quilla.error.js';
+export { QuillaErrorSerializer } from './quilla-error.serializer.js';
 export { ValidationError } from './validation.error.js';
 export { NotFoundError } from './not-found.error.js';
 export { ConflictError } from './conflict.error.js';

@@ -111,3 +111,36 @@ err.toJSON();
 
 Safe for structured logging. `message` is the public, end-user-safe string;
 internal debug detail goes in `context`.
+
+## Logger integration
+
+`QuillaErrorSerializer` bridges `@quilla-kit/errors` into
+`@quilla-kit/observability`'s `LogErrorSerializer` contract. Wire it once at
+the factory level and every `logger.error(msg, err)` call will surface `code`
+and `context` in the log entry:
+
+```ts
+import { createLoggerFactory } from '@quilla-kit/observability';
+import { QuillaErrorSerializer } from '@quilla-kit/errors';
+
+const factory = createLoggerFactory({
+  config: { service: 'my-backend', level: 'info', mode: 'pretty' },
+  errorSerializer: new QuillaErrorSerializer(),
+});
+
+const logger = factory.create('OrderService');
+
+try {
+  await placeOrder(id);
+} catch (err) {
+  logger.error('Order placement failed', err);
+  // pretty output:
+  //   ConflictError [CONFLICT]: Order already exists
+  //   context: {"orderId":"ord-99"}
+  //     at OrderService.place (…)
+}
+```
+
+Non-`QuillaError` values (plain `Error`, strings, etc.) return `undefined`
+from `serialize()` so the logger falls back to its default serialization —
+nothing breaks if both error types coexist in the same process.

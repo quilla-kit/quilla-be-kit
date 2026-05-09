@@ -111,6 +111,7 @@ values (strings, numbers, booleans) are replaced with their HMAC or ciphertext.
 - `LogObserver` — `onEntry(entry)`
 - `LogEntryEnricher` — `enrich() => { context?, extra? }`
 - `LogObfuscator` — `obfuscate(data) => Promise<data>`
+- `LogErrorSerializer` — `serialize(error) => SerializedError | undefined`
 
 ### Types
 - `LogLevel`, `LogOutputMode`, `LogParams`, `LogContext`, `LogEntry`,
@@ -158,6 +159,55 @@ import { NoopLogger } from '@quilla-kit/observability';
 
 const logger = new NoopLogger();
 // logger.info(...) etc. are no-ops; forMethod/withMeta return the same instance.
+```
+
+## Error serialization
+
+By default `StructuredLogger` serializes errors using the standard `Error`
+properties (`name`, `message`, `stack`, `cause`). Pass a `LogErrorSerializer`
+to expose richer fields — for example the `code` and `context` carried by
+`@quilla-kit/errors`:
+
+```ts
+import { createLoggerFactory } from '@quilla-kit/observability';
+import { QuillaErrorSerializer } from '@quilla-kit/errors';
+
+const factory = createLoggerFactory({
+  config: { service: 'my-backend', level: 'info', mode: 'pretty' },
+  errorSerializer: new QuillaErrorSerializer(),
+});
+```
+
+With this in place, a `NotFoundError` logged via `logger.error('…', err)`
+produces:
+
+```
+  NotFoundError [NOT_FOUND]: User not found
+  context: {"id":"u-123"}
+    at ...
+```
+
+`serialize()` returns `undefined` for values the serializer does not handle;
+`StructuredLogger` falls back to its built-in logic in that case, so plain
+`Error` instances keep working without any extra wiring.
+
+Implement `LogErrorSerializer` to integrate any other error hierarchy:
+
+```ts
+import type { LogErrorSerializer, SerializedError } from '@quilla-kit/observability';
+
+class MyErrorSerializer implements LogErrorSerializer {
+  serialize(error: unknown): SerializedError | undefined {
+    if (!(error instanceof MyBaseError)) return undefined;
+    return {
+      name: error.name,
+      message: error.message,
+      code: error.code,
+      context: error.details,
+      ...(error.stack !== undefined ? { stack: error.stack } : {}),
+    };
+  }
+}
 ```
 
 ## Design notes

@@ -1,6 +1,7 @@
 import { JsonFormatter } from './json.formatter.js';
 import type { LogEntryEnricher } from './log-entry.enricher.js';
 import type { LogLevel } from './log-entry.type.js';
+import type { LogErrorSerializer } from './log-error-serializer.interface.js';
 import type { LogFormatter } from './log.formatter.js';
 import type { LogObserver } from './log.observer.js';
 import type { Logger } from './logger.interface.js';
@@ -36,6 +37,8 @@ export type LoggerFactoryOptions = {
   readonly observers?: readonly LogObserver[];
   /** When provided, the PII `data` bucket on every emitted entry is obfuscated. */
   readonly obfuscator?: LogObfuscator;
+  /** When provided, errors are serialized via this before falling back to the default. */
+  readonly errorSerializer?: LogErrorSerializer;
 };
 
 /**
@@ -59,6 +62,7 @@ export function createLoggerFactory(opts: LoggerFactoryOptions): LoggerFactory {
         enrichers,
         observers,
         ...(opts.obfuscator !== undefined ? { obfuscator: opts.obfuscator } : {}),
+        ...(opts.errorSerializer !== undefined ? { errorSerializer: opts.errorSerializer } : {}),
       });
     },
   };
