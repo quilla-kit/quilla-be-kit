@@ -36,3 +36,12 @@ jobs:
           commit: 'chore: version packages'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Dump npm debug logs on failure
+        if: failure()
+        run: |
+          for f in /home/runner/.npm/_logs/*.log; do
+            echo "==================== $f ===================="
+            cat "$f"
+            echo
+          done
