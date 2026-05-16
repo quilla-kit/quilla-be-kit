@@ -1,6 +1,6 @@
 {
   "name": "@quilla-be-kit/observability",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Observability primitives: ILogger, StructuredLogger, NoopLogger, formatters, and log enrichers.",
   "license": "MIT",
   "author": "Max Martinez",
@@ -13,7 +13,12 @@
   "bugs": {
     "url": "https://github.com/quilla-kit/quilla-be-kit/issues"
   },
-  "keywords": ["logger", "structured-logging", "observability", "typescript"],
+  "keywords": [
+    "logger",
+    "structured-logging",
+    "observability",
+    "typescript"
+  ],
   "type": "module",
   "engines": {
     "node": ">=22"
@@ -27,7 +32,11 @@
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "files": ["dist", "README.md", "LICENSE"],
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "publishConfig": {
     "access": "public",
     "provenance": true

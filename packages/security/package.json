@@ -1,6 +1,6 @@
 {
   "name": "@quilla-be-kit/security",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Security primitives: Token/TokenService, PasswordHasher, SessionStore interfaces, and auth middlewares (Bearer-token verification + authenticated-session enrichment) that plug into @quilla-be-kit/http's Router.",
   "license": "MIT",
   "author": "Max Martinez",
@@ -37,7 +37,11 @@
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "files": ["dist", "README.md", "LICENSE"],
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "publishConfig": {
     "access": "public",
     "provenance": true
