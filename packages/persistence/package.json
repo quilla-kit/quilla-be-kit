@@ -1,0 +1,69 @@
+{
+  "name": "@quilla-be-kit/persistence",
+  "version": "0.1.0",
+  "description": "Persistence primitives: Database, DAOs with audit injection and optimistic locking, aggregate repositories with scope isolation, UnitOfWork with pluggable outbox.",
+  "license": "MIT",
+  "author": "Max Martinez",
+  "homepage": "https://github.com/quilla-kit/quilla-be-kit/tree/main/packages/persistence",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/quilla-kit/quilla-be-kit.git",
+    "directory": "packages/persistence"
+  },
+  "bugs": {
+    "url": "https://github.com/quilla-kit/quilla-be-kit/issues"
+  },
+  "keywords": ["repository", "unit-of-work", "outbox", "dao", "ddd", "typescript"],
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./postgres": {
+      "types": "./dist/postgres/index.d.ts",
+      "import": "./dist/postgres/index.js"
+    },
+    "./query-schema": {
+      "types": "./dist/query-schema/index.d.ts",
+      "import": "./dist/query-schema/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": ["dist", "README.md", "LICENSE"],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -p tsconfig.test.json",
+    "test": "vitest run --passWithNoTests",
+    "clean": "rm -rf dist *.tsbuildinfo"
+  },
+  "peerDependencies": {
+    "@quilla-be-kit/ddd": "workspace:^",
+    "@quilla-be-kit/errors": "workspace:^",
+    "@quilla-be-kit/execution-context": "workspace:^",
+    "pg": ">=8.0",
+    "zod": ">=4.0.0"
+  },
+  "peerDependenciesMeta": {
+    "pg": { "optional": true },
+    "zod": { "optional": true }
+  },
+  "devDependencies": {
+    "@quilla-be-kit/ddd": "workspace:^",
+    "@quilla-be-kit/errors": "workspace:^",
+    "@quilla-be-kit/execution-context": "workspace:^",
+    "@types/pg": "^8.11",
+    "pg": "^8.20.0",
+    "vitest": "^2.1.3",
+    "zod": "^4.0.0"
+  }
+}

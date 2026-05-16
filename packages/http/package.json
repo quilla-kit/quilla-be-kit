@@ -1,0 +1,80 @@
+{
+  "name": "@quilla-be-kit/http",
+  "version": "0.1.0",
+  "description": "Framework-agnostic HTTP layer: decorators (@Controller/@Get/@Post/.../@AuthorizeScope/@ValidateRequest), framework-agnostic router, WebServer interface, and a Hono adapter sub-path.",
+  "license": "MIT",
+  "author": "Max Martinez",
+  "homepage": "https://github.com/quilla-kit/quilla-be-kit/tree/main/packages/http",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/quilla-kit/quilla-be-kit.git",
+    "directory": "packages/http"
+  },
+  "bugs": {
+    "url": "https://github.com/quilla-kit/quilla-be-kit/issues"
+  },
+  "keywords": [
+    "http",
+    "decorators",
+    "controller",
+    "routing",
+    "hono",
+    "framework-agnostic",
+    "typescript"
+  ],
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "sideEffects": ["./dist/decorator/route.metadata.js"],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./adapter/hono": {
+      "types": "./dist/adapter/hono/index.d.ts",
+      "import": "./dist/adapter/hono/index.js"
+    },
+    "./validator/zod": {
+      "types": "./dist/validator/zod.d.ts",
+      "import": "./dist/validator/zod.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": ["dist", "README.md", "LICENSE"],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -p tsconfig.test.json",
+    "test": "vitest run --passWithNoTests",
+    "clean": "rm -rf dist *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@quilla-be-kit/errors": "workspace:^",
+    "@quilla-be-kit/execution-context": "workspace:^",
+    "@quilla-be-kit/observability": "workspace:^",
+    "@quilla-be-kit/runtime": "workspace:^"
+  },
+  "peerDependencies": {
+    "hono": "4.x.x",
+    "zod": ">=4.0.0"
+  },
+  "peerDependenciesMeta": {
+    "hono": {
+      "optional": true
+    },
+    "zod": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "hono": "^4.12.0",
+    "vitest": "^2.1.3",
+    "zod": "^4.0.0"
+  }
+}

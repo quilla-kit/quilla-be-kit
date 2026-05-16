@@ -1,0 +1,44 @@
+{
+  "name": "@quilla-be-kit/errors",
+  "version": "0.1.0",
+  "description": "Transport-agnostic error primitives: QuillaError base with cross-realm-safe brand, and category classes (Validation, NotFound, Conflict, Unauthorized, Forbidden, Internal, External, Unknown).",
+  "license": "MIT",
+  "author": "Max Martinez",
+  "homepage": "https://github.com/quilla-kit/quilla-be-kit/tree/main/packages/errors",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/quilla-kit/quilla-be-kit.git",
+    "directory": "packages/errors"
+  },
+  "bugs": {
+    "url": "https://github.com/quilla-kit/quilla-be-kit/issues"
+  },
+  "keywords": ["errors", "error-handling", "typescript"],
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": ["dist", "README.md", "LICENSE"],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -p tsconfig.test.json",
+    "test": "vitest run --passWithNoTests",
+    "clean": "rm -rf dist *.tsbuildinfo"
+  },
+  "devDependencies": {
+    "vitest": "^2.1.3"
+  }
+}

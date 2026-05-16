@@ -1,0 +1,64 @@
+{
+  "name": "@quilla-be-kit/messaging",
+  "version": "0.1.0",
+  "description": "Broker-agnostic messaging: event-bus + consumer interfaces, local-outbox pattern, outbox forwarder, Postgres reference implementation.",
+  "license": "MIT",
+  "author": "Max Martinez",
+  "homepage": "https://github.com/quilla-kit/quilla-be-kit/tree/main/packages/messaging",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/quilla-kit/quilla-be-kit.git",
+    "directory": "packages/messaging"
+  },
+  "bugs": {
+    "url": "https://github.com/quilla-kit/quilla-be-kit/issues"
+  },
+  "keywords": ["messaging", "event-bus", "outbox", "integration-events", "typescript"],
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./postgres": {
+      "types": "./dist/postgres/index.d.ts",
+      "import": "./dist/postgres/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": ["dist", "README.md", "LICENSE"],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -p tsconfig.test.json",
+    "test": "vitest run --passWithNoTests",
+    "clean": "rm -rf dist *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@quilla-be-kit/errors": "workspace:^",
+    "@quilla-be-kit/execution-context": "workspace:^",
+    "@quilla-be-kit/observability": "workspace:^",
+    "@quilla-be-kit/runtime": "workspace:^"
+  },
+  "peerDependencies": {
+    "pg": ">=8.0"
+  },
+  "peerDependenciesMeta": {
+    "pg": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/pg": "^8.15.5",
+    "pg": "^8.13.0",
+    "zod": "^4.0.0"
+  }
+}

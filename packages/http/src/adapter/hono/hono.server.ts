@@ -1,0 +1,87 @@
+import type { Logger } from '@quilla-be-kit/observability';
+import { Hono } from 'hono';
+import type { Context, Next } from 'hono';
+import { resolveHttpError } from '../../error/resolve-http-error.js';
+import { HttpAttributes } from '../../request/http-attributes.js';
+import type { NormalizedRoute } from '../../router/normalized-route.type.js';
+import type { Router } from '../../router/router.js';
+import type { WebServer } from '../../server/web-server.interface.js';
+import type { RequestValidator } from '../../validator/request-validator.interface.js';
+import { getRequestAttributes } from './get-request-attributes.js';
+import { HonoMiddlewareAdapter } from './hono-middleware.adapter.js';
+import { HonoRequestAdapter } from './hono-request.adapter.js';
+
+export type HonoServeHandle = {
+  close(): Promise<void>;
+};
+
+export type HonoServeFn = (app: Hono, port: number) => HonoServeHandle;
+
+export type HonoServerOptions = {
+  readonly port: number;
+  readonly router: Router;
+  readonly serve: HonoServeFn;
+  readonly requestValidator?: RequestValidator;
+  readonly logger?: Logger;
+};
+
+export class HonoServer implements WebServer {
+  private readonly app = new Hono();
+  private readonly requestAdapter: HonoRequestAdapter;
+  private readonly middlewareAdapter: HonoMiddlewareAdapter;
+  private bootstrapped = false;
+  private handle: HonoServeHandle | undefined;
+
+  constructor(private readonly options: HonoServerOptions) {
+    this.requestAdapter = new HonoRequestAdapter(options.router.getExecutionContextProvider());
+    this.middlewareAdapter = new HonoMiddlewareAdapter(this.requestAdapter);
+  }
+
+  bootstrap(): void {
+    if (this.bootstrapped) return;
+    this.bootstrapped = true;
+
+    this.app.onError((err, c) => {
+      this.options.logger?.error('HTTP error', err instanceof Error ? err : undefined);
+      const { httpCode, body } = resolveHttpError(err);
+      return c.json(body, httpCode as never);
+    });
+
+    const validator = this.options.requestValidator;
+    if (validator) {
+      this.app.use('*', async (c, next) => {
+        const attributes = getRequestAttributes(c);
+        attributes.set(HttpAttributes.REQUEST_VALIDATOR, validator);
+        await next();
+      });
+    }
+
+    for (const route of this.options.router.getRoutes()) {
+      this.registerRoute(route);
+    }
+  }
+
+  async listen(): Promise<void> {
+    if (!this.bootstrapped) this.bootstrap();
+    this.handle = this.options.serve(this.app, this.options.port);
+    this.options.logger?.info('HTTP server listening', { meta: { port: this.options.port } });
+  }
+
+  async close(): Promise<void> {
+    if (!this.handle) return;
+    await this.handle.close();
+    this.handle = undefined;
+    this.options.logger?.info('HTTP server closed');
+  }
+
+  private registerRoute(route: NormalizedRoute): void {
+    const stack: Array<(c: Context, next: Next) => Promise<void>> = [];
+    for (const mw of route.middlewareChain) {
+      stack.push(this.middlewareAdapter.wrap(mw));
+    }
+    const handler = this.requestAdapter.controller(route.handler);
+    const method = route.httpMethod.toLowerCase() as 'get' | 'post' | 'put' | 'patch' | 'delete';
+    const register = this.app[method] as (path: string, ...handlers: unknown[]) => unknown;
+    register.call(this.app, route.fullPath, ...stack, handler);
+  }
+}
