@@ -1,5 +1,14 @@
 # @quilla-be-kit/execution-context
 
+## 0.2.1
+
+### Patch Changes
+
+- 30c8333: test: smoke-test CI release via Trusted Publishers (OIDC) across all packages
+- Updated dependencies [30c8333]
+  - @quilla-be-kit/ddd@0.2.1
+  - @quilla-be-kit/observability@0.2.1
+
 ## 0.2.0
 
 ### Minor Changes

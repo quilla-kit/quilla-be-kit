@@ -1,6 +1,6 @@
 {
   "name": "@quilla-be-kit/errors",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Transport-agnostic error primitives: QuillaError base with cross-realm-safe brand, and category classes (Validation, NotFound, Conflict, Unauthorized, Forbidden, Internal, External, Unknown).",
   "license": "MIT",
   "author": "Max Martinez",

@@ -1,6 +1,6 @@
 {
   "name": "@quilla-be-kit/execution-context",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Execution context: per-operation actor / scope / correlation, AsyncLocalStorage-backed provider, factory, and logger enricher.",
   "license": "MIT",
   "author": "Max Martinez",

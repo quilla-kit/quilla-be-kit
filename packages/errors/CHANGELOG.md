@@ -1,5 +1,11 @@
 # @quilla-be-kit/errors
 
+## 0.2.1
+
+### Patch Changes
+
+- 30c8333: test: smoke-test CI release via Trusted Publishers (OIDC) across all packages
+
 ## 0.2.0
 
 ### Minor Changes
