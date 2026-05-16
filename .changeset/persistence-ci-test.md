@@ -1,5 +1,5 @@
 ---
-"@quilla-be-kit/persistence-test-ci-github": minor
+"@quilla-be-kit/persistence-init": minor
 ---
 
 test: CI publish validation for persistence package
