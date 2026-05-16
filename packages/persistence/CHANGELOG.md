@@ -10,6 +10,12 @@
 
 ### Minor Changes
 
+- 37a50e7: test: CI publish validation for persistence package
+
+## 0.1.0
+
+### Minor Changes
+
 - 47a4e26: fix(persistence): replace workspace protocol in peerDependencies with explicit semver ranges
 
 ## 1.0.0
