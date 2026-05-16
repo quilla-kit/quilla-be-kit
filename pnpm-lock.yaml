@@ -41,10 +41,10 @@ importers:
 
   packages/execution-context:
     dependencies:
-      '@quilla-kit/ddd':
+      '@quilla-be-kit/ddd':
         specifier: workspace:^
         version: link:../ddd
-      '@quilla-kit/observability':
+      '@quilla-be-kit/observability':
         specifier: workspace:^
         version: link:../observability
     devDependencies:
@@ -54,16 +54,16 @@ importers:
 
   packages/http:
     dependencies:
-      '@quilla-kit/errors':
+      '@quilla-be-kit/errors':
         specifier: workspace:^
         version: link:../errors
-      '@quilla-kit/execution-context':
+      '@quilla-be-kit/execution-context':
         specifier: workspace:^
         version: link:../execution-context
-      '@quilla-kit/observability':
+      '@quilla-be-kit/observability':
         specifier: workspace:^
         version: link:../observability
-      '@quilla-kit/runtime':
+      '@quilla-be-kit/runtime':
         specifier: workspace:^
         version: link:../runtime
     devDependencies:
@@ -79,28 +79,28 @@ importers:
 
   packages/jobs:
     dependencies:
-      '@quilla-kit/execution-context':
+      '@quilla-be-kit/execution-context':
         specifier: workspace:^
         version: link:../execution-context
-      '@quilla-kit/observability':
+      '@quilla-be-kit/observability':
         specifier: workspace:^
         version: link:../observability
-      '@quilla-kit/runtime':
+      '@quilla-be-kit/runtime':
         specifier: workspace:^
         version: link:../runtime
 
   packages/messaging:
     dependencies:
-      '@quilla-kit/errors':
+      '@quilla-be-kit/errors':
         specifier: workspace:^
         version: link:../errors
-      '@quilla-kit/execution-context':
+      '@quilla-be-kit/execution-context':
         specifier: workspace:^
         version: link:../execution-context
-      '@quilla-kit/observability':
+      '@quilla-be-kit/observability':
         specifier: workspace:^
         version: link:../observability
-      '@quilla-kit/runtime':
+      '@quilla-be-kit/runtime':
         specifier: workspace:^
         version: link:../runtime
     devDependencies:
@@ -122,13 +122,13 @@ importers:
 
   packages/persistence:
     devDependencies:
-      '@quilla-kit/ddd':
+      '@quilla-be-kit/ddd':
         specifier: workspace:^
         version: link:../ddd
-      '@quilla-kit/errors':
+      '@quilla-be-kit/errors':
         specifier: workspace:^
         version: link:../errors
-      '@quilla-kit/execution-context':
+      '@quilla-be-kit/execution-context':
         specifier: workspace:^
         version: link:../execution-context
       '@types/pg':
@@ -152,16 +152,16 @@ importers:
 
   packages/security:
     dependencies:
-      '@quilla-kit/errors':
+      '@quilla-be-kit/errors':
         specifier: workspace:^
         version: link:../errors
-      '@quilla-kit/execution-context':
+      '@quilla-be-kit/execution-context':
         specifier: workspace:^
         version: link:../execution-context
-      '@quilla-kit/http':
+      '@quilla-be-kit/http':
         specifier: workspace:^
         version: link:../http
-      '@quilla-kit/observability':
+      '@quilla-be-kit/observability':
         specifier: workspace:^
         version: link:../observability
 
