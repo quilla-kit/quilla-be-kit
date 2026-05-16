@@ -1,6 +1,6 @@
 {
   "name": "@quilla-be-kit/ddd",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "DDD primitives: AggregateRoot, Entity, DomainEvent, IntegrationEvent, EventMetadata, ActorType.",
   "license": "MIT",
   "author": "Max Martinez",

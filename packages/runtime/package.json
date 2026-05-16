@@ -1,6 +1,6 @@
 {
   "name": "@quilla-be-kit/runtime",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Process runtime: phased ShutdownManager, OS-signal / uncaught-error bridge that owns process.exit, and a transport-agnostic ComponentRegistry.",
   "license": "MIT",
   "author": "Max Martinez",

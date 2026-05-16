@@ -1,6 +1,6 @@
 {
   "name": "@quilla-be-kit/messaging",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Broker-agnostic messaging: event-bus + consumer interfaces, local-outbox pattern, outbox forwarder, Postgres reference implementation.",
   "license": "MIT",
   "author": "Max Martinez",
