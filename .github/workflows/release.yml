@@ -11,7 +11,7 @@ concurrency:
 jobs:
   release:
     name: Version or Publish
-    if: github.repository == 'quilla-be-kit/quilla-be-kit'
+    if: github.repository == 'quilla-kit/quilla-be-kit'
     runs-on: ubuntu-latest
     permissions:
       contents: write
