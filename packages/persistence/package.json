@@ -58,9 +58,9 @@
     "clean": "rm -rf dist *.tsbuildinfo"
   },
   "peerDependencies": {
-    "@quilla-be-kit/ddd": "workspace:^",
-    "@quilla-be-kit/errors": "workspace:^",
-    "@quilla-be-kit/execution-context": "workspace:^",
+    "@quilla-be-kit/ddd": ">=0.1.0",
+    "@quilla-be-kit/errors": ">=0.1.0",
+    "@quilla-be-kit/execution-context": ">=0.1.0",
     "pg": ">=8.0",
     "zod": ">=4.0.0"
   },
