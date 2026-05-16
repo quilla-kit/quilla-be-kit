@@ -1,4 +1,4 @@
-import { NoopLogger } from '@quilla-kit/observability';
+import { NoopLogger } from '@quilla-be-kit/observability';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import type { EventBusEntry } from '../../src/event-bus/event-bus-entry.type.js';

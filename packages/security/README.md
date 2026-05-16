@@ -1,6 +1,6 @@
-# @quilla-kit/security
+# @quilla-be-kit/security
 
-Interface-only security primitives + the two auth middlewares that plug into `@quilla-kit/http`'s Router:
+Interface-only security primitives + the two auth middlewares that plug into `@quilla-be-kit/http`'s Router:
 
 - **`Token`** (extends `AuthenticatedToken` from http) — verified-credential contract with `userId`, `scopeId`, `securityStamp`, `issuedAt`, `expiresAt`, `isExpired()`.
 - **`TokenClaims`** — canonical short-key wire-format type for the JWT payload (`u`, `si`, `st`, `s?` for scopes). Implementers map between the readable `SignTokenPayload` / `Token` shapes and these compact claims at the encode/decode boundary. Tokens travel in every request header — short keys exist for payload size, not security.
@@ -9,14 +9,14 @@ Interface-only security primitives + the two auth middlewares that plug into `@q
 - **`SessionData`** — record shape: `{ securityStamp, displayName, userType }`.
 - **`PasswordHasher`** — `hash` + `compare` interface. Consumer provides the implementation (argon2 / bcrypt / scrypt).
 - **`bearerTokenMiddleware({ tokenService })`** — reads `Authorization: Bearer ...`, calls `tokenService.verify`, populates `HttpAttributes.VERIFIED_TOKEN`. Throws `UnauthorizedError` on any failure.
-- **`authenticatedSessionMiddleware({ sessionStore, executionContextProvider })`** — loads session data, compares `securityStamp`, enriches `ExecutionContext` with `actorType: 'user'` and a populated `session: { scopeId, userId }` (the `AuthSession` from `@quilla-kit/execution-context`). Throws `UnauthorizedError` on stamp mismatch or session miss.
+- **`authenticatedSessionMiddleware({ sessionStore, executionContextProvider })`** — loads session data, compares `securityStamp`, enriches `ExecutionContext` with `actorType: 'user'` and a populated `session: { scopeId, userId }` (the `AuthSession` from `@quilla-be-kit/execution-context`). Throws `UnauthorizedError` on stamp mismatch or session miss.
 
 Zero runtime dependencies on external libraries — JWT lib, cache driver, and hashing library are all consumer-owned. Node 22+.
 
 ## Install
 
 ```sh
-pnpm add @quilla-kit/security @quilla-kit/http @quilla-kit/execution-context @quilla-kit/errors
+pnpm add @quilla-be-kit/security @quilla-be-kit/http @quilla-be-kit/execution-context @quilla-be-kit/errors
 ```
 
 ## Why interface-only?
@@ -26,14 +26,14 @@ JWT algorithm choice, key rotation strategy, cache backend, and password-hashing
 - Freeze a choice (one hashing algorithm, one JWT library) that teams rightfully contest, or
 - Pull in optional peer deps (`bcrypt` brings `node-gyp`, `jose`/`jsonwebtoken` bring opinions about crypto primitives) for what amounts to ~4–10 lines of glue.
 
-Same discipline as `RequestValidator` in `@quilla-kit/http`: ship the interface, let consumers write the 5-line adapter.
+Same discipline as `RequestValidator` in `@quilla-be-kit/http`: ship the interface, let consumers write the 5-line adapter.
 
 ## Quick start
 
 ```ts
-import { AsyncExecutionContextProvider } from '@quilla-kit/execution-context';
-import { Router } from '@quilla-kit/http';
-import { HonoServer } from '@quilla-kit/http/adapter/hono';
+import { AsyncExecutionContextProvider } from '@quilla-be-kit/execution-context';
+import { Router } from '@quilla-be-kit/http';
+import { HonoServer } from '@quilla-be-kit/http/adapter/hono';
 import {
   authenticatedSessionMiddleware,
   bearerTokenMiddleware,
@@ -42,7 +42,7 @@ import {
   type Token,
   type TokenClaims,
   type SignTokenPayload,
-} from '@quilla-kit/security';
+} from '@quilla-be-kit/security';
 
 // --- Consumer-owned TokenService (example: jose) ---
 import { SignJWT, jwtVerify, type JWTPayload } from 'jose';
@@ -137,7 +137,7 @@ system executionContext bootstrap (http-owned)
 
 On a **`*Public` route**, the entire `authMiddlewares` stack is skipped. The system execution-context bootstrap always runs, so even public handlers can call `provider.getContext()`.
 
-The typed `AuthMiddlewareStack` shape (from `@quilla-kit/http`) enforces phase ordering at the type level — `tokenVerification` runs before `sessionLoad` regardless of how keys are declared.
+The typed `AuthMiddlewareStack` shape (from `@quilla-be-kit/http`) enforces phase ordering at the type level — `tokenVerification` runs before `sessionLoad` regardless of how keys are declared.
 
 ## Middleware options
 
@@ -162,7 +162,7 @@ scheme, swap the whole middleware — see "Custom token schemes" below.
 ## Where implementations live
 
 The interfaces (`TokenService`, `SessionStore`, `PasswordHasher`) belong
-in **your consumer project**, not in `@quilla-kit/security`. Typical
+in **your consumer project**, not in `@quilla-be-kit/security`. Typical
 placement:
 
 ```
@@ -184,9 +184,9 @@ then pass the pair to `new Router({ authMiddlewares: { ... } })`.
 Replace `bearerTokenMiddleware` with your own `tokenVerification` middleware to support a different authentication mechanism (API key header, mTLS client cert, OAuth introspection):
 
 ```ts
-import type { AuthMiddlewareStack, HttpMiddleware } from '@quilla-kit/http';
-import { HttpAttributes } from '@quilla-kit/http';
-import { UnauthorizedError } from '@quilla-kit/errors';
+import type { AuthMiddlewareStack, HttpMiddleware } from '@quilla-be-kit/http';
+import { HttpAttributes } from '@quilla-be-kit/http';
+import { UnauthorizedError } from '@quilla-be-kit/errors';
 
 const apiKeyVerification: HttpMiddleware = async (request, next) => {
   const key = request.getHeader('x-api-key');
@@ -214,14 +214,14 @@ The next request with a token carrying the old stamp fails `authenticatedSession
 
 ## Role as the rule-of-three harness
 
-`@quilla-kit/security` is the first consumer that exercises every other quilla-kit package in concert:
+`@quilla-be-kit/security` is the first consumer that exercises every other quilla-be-kit package in concert:
 
-- `@quilla-kit/errors` — `UnauthorizedError` surfaces through the http error handler.
-- `@quilla-kit/execution-context` — enriched context propagates through AsyncLocalStorage to downstream code.
-- `@quilla-kit/http` — `HttpRequest`/`HttpMiddleware`/`HttpAttributes`/`AuthenticatedToken`/`AuthMiddlewareStack` are all load-bearing here.
-- `@quilla-kit/observability` — the `UnauthorizedError` `cause` chain preserves the underlying verification failure for structured logs.
+- `@quilla-be-kit/errors` — `UnauthorizedError` surfaces through the http error handler.
+- `@quilla-be-kit/execution-context` — enriched context propagates through AsyncLocalStorage to downstream code.
+- `@quilla-be-kit/http` — `HttpRequest`/`HttpMiddleware`/`HttpAttributes`/`AuthenticatedToken`/`AuthMiddlewareStack` are all load-bearing here.
+- `@quilla-be-kit/observability` — the `UnauthorizedError` `cause` chain preserves the underlying verification failure for structured logs.
 
-If these primitives can be composed into a clean auth module without bending any quilla-kit interface, the substrate is right. The moment it starts bending, we catch it here.
+If these primitives can be composed into a clean auth module without bending any quilla-be-kit interface, the substrate is right. The moment it starts bending, we catch it here.
 
 ## Status
 

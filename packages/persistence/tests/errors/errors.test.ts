@@ -1,4 +1,4 @@
-import { ConflictError, NotFoundError, QuillaError } from '@quilla-kit/errors';
+import { ConflictError, NotFoundError, QuillaError } from '@quilla-be-kit/errors';
 import { describe, expect, it } from 'vitest';
 import { CrossScopeAccessError } from '../../src/errors/cross-scope-access.error.js';
 import { OptimisticLockError } from '../../src/errors/optimistic-lock.error.js';

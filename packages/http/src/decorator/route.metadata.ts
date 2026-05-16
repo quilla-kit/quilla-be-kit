@@ -26,8 +26,8 @@ export type RouteDefinition = {
   };
 };
 
-const CONTROLLER_PREFIX_KEY = Symbol.for('quilla-kit.http.controller-prefix');
-const ROUTES_KEY = Symbol.for('quilla-kit.http.routes');
+const CONTROLLER_PREFIX_KEY = Symbol.for('quilla-be-kit.http.controller-prefix');
+const ROUTES_KEY = Symbol.for('quilla-be-kit.http.routes');
 
 type MetadataBag = Record<string | symbol, unknown>;
 

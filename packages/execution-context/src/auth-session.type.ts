@@ -10,7 +10,7 @@
  *
  * @example
  * ```ts
- * import type { AuthSession, ExecutionContext } from '@quilla-kit/execution-context';
+ * import type { AuthSession, ExecutionContext } from '@quilla-be-kit/execution-context';
  *
  * type AppAuthSession = AuthSession & {
  *   readonly sessionId: string;

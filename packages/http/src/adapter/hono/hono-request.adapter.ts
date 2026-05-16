@@ -1,4 +1,4 @@
-import type { ExecutionContextProvider } from '@quilla-kit/execution-context';
+import type { ExecutionContextProvider } from '@quilla-be-kit/execution-context';
 import type { Context } from 'hono';
 import type { HttpRequest } from '../../request/http-request.interface.js';
 import type { HttpResponse } from '../../request/http-response.type.js';

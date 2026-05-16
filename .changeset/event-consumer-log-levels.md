@@ -1,5 +1,5 @@
 ---
-"@quilla-kit/messaging": minor
+"@quilla-be-kit/messaging": minor
 ---
 
 `EventConsumer.start()` splits its one info entry into two: the info

@@ -175,7 +175,7 @@ This is the official TypeScript + Node ESM convention. Don't fight it.
 
 ## Interface packages have zero runtime deps
 
-Interface packages (`@quilla-kit/ddd`, `lifecycle`, `observability`,
+Interface packages (`@quilla-be-kit/ddd`, `lifecycle`, `observability`,
 `execution-context`, `http`, `persistence`, `messaging`, `runtime`) must have
 zero external runtime dependencies. Platform-level built-ins (`node:crypto`,
 etc.) are fine. Concrete transport/storage drivers (`hono`, `pg`) belong in
@@ -200,7 +200,7 @@ Before process exit, call `logger.flush()` to await in-flight emissions.
 
 ## Changesets
 
-Every PR that changes published behavior of a `@quilla-kit/*` package adds a
+Every PR that changes published behavior of a `@quilla-be-kit/*` package adds a
 changeset. Independent versioning per package — adapters evolve out-of-lockstep
 with interfaces.
 

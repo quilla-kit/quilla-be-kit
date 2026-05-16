@@ -10,7 +10,7 @@ type SerializedError = {
 };
 
 /**
- * Implements `LogErrorSerializer` from `@quilla-kit/observability` for
+ * Implements `LogErrorSerializer` from `@quilla-be-kit/observability` for
  * `QuillaError` instances. Surfaces `code` and `context` in log entries so
  * aggregators can filter and group by error category.
  *

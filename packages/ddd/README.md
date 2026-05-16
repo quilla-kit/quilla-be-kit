@@ -1,7 +1,7 @@
-# @quilla-kit/ddd
+# @quilla-be-kit/ddd
 
 Domain-Driven Design tactical primitives — the shared vocabulary that every
-other `@quilla-kit/*` package uses to talk about domain objects and the events
+other `@quilla-be-kit/*` package uses to talk about domain objects and the events
 and actors they produce.
 
 Zero runtime dependencies. Sits at the bottom of the toolkit's dependency
@@ -233,7 +233,7 @@ Two load-bearing conventions:
 
 ### Combining both in one aggregate
 
-Real aggregates use both. [User](https://github.com/quilla-kit/quilla-kit) exposes `activate`, `changePassword`, `requestPasswordReset` (domain methods — each with its own events and invariants) alongside `updateFromInput(firstName, lastName, email, phoneNumber, roles, isActive, updatedAt)` for the "edit profile" case.
+Real aggregates use both. [User](https://github.com/quilla-kit/quilla-be-kit) exposes `activate`, `changePassword`, `requestPasswordReset` (domain methods — each with its own events and invariants) alongside `updateFromInput(firstName, lastName, email, phoneNumber, roles, isActive, updatedAt)` for the "edit profile" case.
 
 The split tracks this question: **does this change have its own domain event subscribers care about?** If yes → domain method. If no → fold it into `updateFromInput` as a `changeX`.
 
@@ -257,5 +257,5 @@ Mutation methods enforce **business invariants** (status transitions, permission
 ## Install
 
 ```sh
-pnpm add @quilla-kit/ddd
+pnpm add @quilla-be-kit/ddd
 ```

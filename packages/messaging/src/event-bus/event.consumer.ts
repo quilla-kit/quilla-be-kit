@@ -1,12 +1,12 @@
 import { randomUUID } from 'node:crypto';
-import { ValidationError } from '@quilla-kit/errors';
+import { ValidationError } from '@quilla-be-kit/errors';
 import type {
   ExecutionContext,
   ExecutionContextFactory,
   ExecutionContextProvider,
-} from '@quilla-kit/execution-context';
-import type { Logger } from '@quilla-kit/observability';
-import type { Disposable } from '@quilla-kit/runtime';
+} from '@quilla-be-kit/execution-context';
+import type { Logger } from '@quilla-be-kit/observability';
+import type { Disposable } from '@quilla-be-kit/runtime';
 import {
   DEFAULT_BATCH_SIZE,
   DEFAULT_POLL_INTERVAL_MS,

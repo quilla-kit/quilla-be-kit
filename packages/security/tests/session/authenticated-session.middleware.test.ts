@@ -1,9 +1,9 @@
-import { UnauthorizedError } from '@quilla-kit/errors';
+import { UnauthorizedError } from '@quilla-be-kit/errors';
 import {
   AsyncExecutionContextProvider,
   executionContextFactory,
-} from '@quilla-kit/execution-context';
-import { HttpAttributes } from '@quilla-kit/http';
+} from '@quilla-be-kit/execution-context';
+import { HttpAttributes } from '@quilla-be-kit/http';
 import { describe, expect, it, vi } from 'vitest';
 import { authenticatedSessionMiddleware } from '../../src/session/authenticated-session.middleware.js';
 import { fakeHttpRequest } from '../helpers/fake-http-request.js';

@@ -69,7 +69,7 @@ describe('QuillaError', () => {
     });
 
     it('uses Symbol.for — cross-realm safe', () => {
-      const brand = Symbol.for('quilla-kit.error');
+      const brand = Symbol.for('quilla-be-kit.error');
       const impostor = { [brand]: true };
       expect(QuillaError.is(impostor)).toBe(true);
     });

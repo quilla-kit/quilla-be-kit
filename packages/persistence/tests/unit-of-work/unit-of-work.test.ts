@@ -1,4 +1,4 @@
-import type { AnyEvent } from '@quilla-kit/ddd';
+import type { AnyEvent } from '@quilla-be-kit/ddd';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DatabaseTransaction } from '../../src/database/database-transaction.interface.js';
 import type { EventSink } from '../../src/unit-of-work/event-sink.interface.js';

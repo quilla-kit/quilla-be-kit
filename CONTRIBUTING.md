@@ -1,4 +1,4 @@
-# Contributing to quilla-kit
+# Contributing to quilla-be-kit
 
 ## Prerequisites
 
@@ -27,7 +27,7 @@ pnpm lint        # biome check
    `include: ["src/**/*", "tests/**/*"]`) plus a `"typecheck"` script that
    runs `tsc -p tsconfig.test.json`.
 5. Run `pnpm build && pnpm typecheck && pnpm test && pnpm lint` locally.
-6. If your change affects published behavior of any `@quilla-kit/*` package,
+6. If your change affects published behavior of any `@quilla-be-kit/*` package,
    run `pnpm changeset` and commit the generated file.
 7. Open a PR. CI must pass. A maintainer will review.
 

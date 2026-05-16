@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
-import type { AggregateRoot, AnyEvent, IntegrationEvent } from '@quilla-kit/ddd';
+import type { AggregateRoot, AnyEvent, IntegrationEvent } from '@quilla-be-kit/ddd';
 import type { Database } from '../database/database.interface.js';
 import type { EventSink } from './event-sink.interface.js';
 import type { UnitOfWorkContext } from './unit-of-work-context.type.js';

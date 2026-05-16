@@ -1,5 +1,5 @@
-import { AsyncExecutionContextProvider } from '@quilla-kit/execution-context';
-import { type Logger, NoopLogger } from '@quilla-kit/observability';
+import { AsyncExecutionContextProvider } from '@quilla-be-kit/execution-context';
+import { type Logger, NoopLogger } from '@quilla-be-kit/observability';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BackgroundJob } from '../src/background-job.interface.js';
 import { InProcessJobRunner } from '../src/in-process.job-runner.js';

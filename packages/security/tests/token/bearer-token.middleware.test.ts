@@ -1,5 +1,5 @@
-import { UnauthorizedError } from '@quilla-kit/errors';
-import { HttpAttributes } from '@quilla-kit/http';
+import { UnauthorizedError } from '@quilla-be-kit/errors';
+import { HttpAttributes } from '@quilla-be-kit/http';
 import { describe, expect, it, vi } from 'vitest';
 import { bearerTokenMiddleware } from '../../src/token/bearer-token.middleware.js';
 import { fakeHttpRequest } from '../helpers/fake-http-request.js';

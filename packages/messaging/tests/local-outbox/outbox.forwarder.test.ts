@@ -1,4 +1,4 @@
-import { NoopLogger } from '@quilla-kit/observability';
+import { NoopLogger } from '@quilla-be-kit/observability';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { OutboxForwarder } from '../../src/local-outbox/outbox.forwarder.js';
 import { FakeEventBusPublisher } from '../helpers/fake-bus.js';

@@ -1,5 +1,5 @@
 ---
-"@quilla-kit/http": minor
+"@quilla-be-kit/http": minor
 ---
 
 `@ValidateRequest` now injects `scopeId` and `userId` from the active
@@ -40,13 +40,13 @@ until it reaches a `ZodObject` — so schemas produced by
 `createQueryParametersSchema` (a transform over an object) are
 introspected correctly and auth-derived extras are injected when
 declared via the new `extraFields` option in
-`@quilla-kit/persistence/query-schema`.
+`@quilla-be-kit/persistence/query-schema`.
 
-**New: out-of-the-box Zod adapter.** `@quilla-kit/http/validator/zod`
+**New: out-of-the-box Zod adapter.** `@quilla-be-kit/http/validator/zod`
 exports `createZodRequestValidator({ extractIssues? })` — a drop-in
 `RequestValidator` implementation for Zod 4 with the `ZodPipe` unwrap
 logic baked in. Avoids every consumer re-writing the same ~15 lines,
 and guarantees the unwrap chain matches what
 `createQueryParametersSchema` emits. `zod` is an optional peer dep of
-`@quilla-kit/http` — required only when importing from the
+`@quilla-be-kit/http` — required only when importing from the
 `/validator/zod` sub-path.

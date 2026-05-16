@@ -1,5 +1,5 @@
 ---
-"@quilla-kit/persistence": minor
+"@quilla-be-kit/persistence": minor
 ---
 
 Refactor `BaseReadDao` around a fluent `SqlQueryBuilder` plus a new
@@ -16,7 +16,7 @@ method-generic `findOne<T>(q)` / `findMany<T>(q)` / `findPaginated<T>(q,
 page)`. A single subclass exposes any number of query methods over any
 number of tables.
 
-**New — core (`@quilla-kit/persistence`):**
+**New — core (`@quilla-be-kit/persistence`):**
 
 - `SqlQueryBuilder<T>` interface: `.select / .from / .join / .groupBy /
   .where / .filters / .orderBy / .paginate / .build`. Immutable — each
@@ -35,14 +35,14 @@ number of tables.
 - `ReadDbAdapter.raw<T>(sql, params)` — low-level escape hatch used by
   `BaseReadDao` to execute `QueryProduct`.
 
-**New — postgres (`@quilla-kit/persistence/postgres`):**
+**New — postgres (`@quilla-be-kit/persistence/postgres`):**
 
 - `PgSqlQueryBuilder` — Postgres implementation. `$N` placeholder
   rebasing, `DISTINCT ON`, `COUNT(*)` with GROUP BY subquery wrapping,
   identifier validation against `[a-zA-Z_][a-zA-Z0-9_]*` (plus `.` and
   optional `AS alias`) as defense-in-depth against SQL injection.
 
-**New — query-schema (`@quilla-kit/persistence/query-schema`):**
+**New — query-schema (`@quilla-be-kit/persistence/query-schema`):**
 
 - `createQueryParametersSchema(filterShape, { defaultPageSize?, maxPageSize?, strict?, extraFields? })`
   — Zod helper that takes a base filter shape and returns a full

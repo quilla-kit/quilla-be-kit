@@ -6,7 +6,7 @@ import {
   NotFoundError,
   UnauthorizedError,
   ValidationError,
-} from '@quilla-kit/errors';
+} from '@quilla-be-kit/errors';
 import { describe, expect, it } from 'vitest';
 import { resolveHttpError } from '../../src/error/resolve-http-error.js';
 

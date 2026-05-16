@@ -1,5 +1,5 @@
-import type { ExecutionContextProvider } from '@quilla-kit/execution-context';
-import type { Component } from '@quilla-kit/runtime';
+import type { ExecutionContextProvider } from '@quilla-be-kit/execution-context';
+import type { Component } from '@quilla-be-kit/runtime';
 import type { HttpMiddleware } from '../request/http-middleware.type.js';
 import type { AuthMiddlewareStack } from './auth-middleware-stack.type.js';
 import type { ControllerRegistration } from './controller-registration.type.js';

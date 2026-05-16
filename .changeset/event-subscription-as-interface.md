@@ -1,5 +1,5 @@
 ---
-"@quilla-kit/messaging": minor
+"@quilla-be-kit/messaging": minor
 ---
 
 `EventSubscription` is an `interface`. Consumers can `class Foo implements

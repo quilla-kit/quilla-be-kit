@@ -1,4 +1,4 @@
-# quilla-kit
+# quilla-be-kit
 
 **A TypeScript toolkit for building production backend services with explicit domain logic, principled persistence and messaging, and zero framework lock-in.**
 
@@ -8,7 +8,7 @@
 
 ---
 
-## Why quilla-kit
+## Why quilla-be-kit
 
 - **Extracted from real production code**, not invented at a framework-design whiteboard. Every primitive earned its seat by repeatedly appearing across production services before being lifted into reusable packages.
 - **Interface/adapter split is non-negotiable.** Interface packages have zero external runtime deps. Concrete drivers (Postgres, Hono) live under sub-path exports and opt-in as peer deps. You own your persistence, your HTTP transport, your auth.
@@ -20,7 +20,7 @@
 
 Senior backend engineers building production Node services — especially multi-tenant, event-driven, or DDD-aligned — who want to own their architecture without inheriting a framework's opinions on everything from auth to caching.
 
-If you've built on NestJS and wished it stopped a layer earlier, or hand-rolled your own Unit-of-Work / outbox / logger abstraction because the opinions in available frameworks didn't fit, quilla-kit is the shape you're probably already converging on.
+If you've built on NestJS and wished it stopped a layer earlier, or hand-rolled your own Unit-of-Work / outbox / logger abstraction because the opinions in available frameworks didn't fit, quilla-be-kit is the shape you're probably already converging on.
 
 ## 30-second example
 
@@ -28,7 +28,7 @@ A command handler that emits a domain event, atomically commits aggregate state 
 
 ```ts
 // HTTP boundary: UserController.register() (decorated; omitted for brevity)
-// wired via @quilla-kit/http + @quilla-kit/security
+// wired via @quilla-be-kit/http + @quilla-be-kit/security
 
 await uow.transaction(async (ctx) => {
   const user = User.create({ email, passwordHash });   // emits UserCreated domain event
@@ -59,33 +59,33 @@ End-to-end observability, atomic durability, per-aggregate ordering, graceful sh
 
 ## How the packages fit together
 
-Think of quilla-kit as five concentric layers. You reach for the inner layers first.
+Think of quilla-be-kit as five concentric layers. You reach for the inner layers first.
 
 **Foundation — the vocabulary**
-- [`@quilla-kit/ddd`](packages/ddd) — `AggregateRoot`, `Entity`, `DomainEvent`, `EventMetadata`, `ActorType`
-- [`@quilla-kit/errors`](packages/errors) — `QuillaError` base + category classes with cross-realm-safe classification
-- [`@quilla-kit/execution-context`](packages/execution-context) — AsyncLocalStorage-backed context carrying `scopeId`, `userId`, `actorType`, `correlationId`
+- [`@quilla-be-kit/ddd`](packages/ddd) — `AggregateRoot`, `Entity`, `DomainEvent`, `EventMetadata`, `ActorType`
+- [`@quilla-be-kit/errors`](packages/errors) — `QuillaError` base + category classes with cross-realm-safe classification
+- [`@quilla-be-kit/execution-context`](packages/execution-context) — AsyncLocalStorage-backed context carrying `scopeId`, `userId`, `actorType`, `correlationId`
 
 **Runtime — process lifecycle**
-- [`@quilla-kit/runtime`](packages/runtime) — `Runtime` (signal trap), `ShutdownManager` (phased teardown), `ComponentRegistry`
-- [`@quilla-kit/jobs`](packages/jobs) — `BackgroundJob`, `InProcessJobRunner` with per-tick system `ExecutionContext`
+- [`@quilla-be-kit/runtime`](packages/runtime) — `Runtime` (signal trap), `ShutdownManager` (phased teardown), `ComponentRegistry`
+- [`@quilla-be-kit/jobs`](packages/jobs) — `BackgroundJob`, `InProcessJobRunner` with per-tick system `ExecutionContext`
 
 **HTTP tier — adapter-agnostic**
-- [`@quilla-kit/http`](packages/http) — decorated controllers, specificity-sorted router, Hono adapter under `/adapter/hono`
-- [`@quilla-kit/security`](packages/security) — `TokenService` / `SessionStore` / `PasswordHasher` interfaces plus composable `bearerTokenMiddleware` and `authenticatedSessionMiddleware`
+- [`@quilla-be-kit/http`](packages/http) — decorated controllers, specificity-sorted router, Hono adapter under `/adapter/hono`
+- [`@quilla-be-kit/security`](packages/security) — `TokenService` / `SessionStore` / `PasswordHasher` interfaces plus composable `bearerTokenMiddleware` and `authenticatedSessionMiddleware`
 
 **Durability — where your invariants live**
-- [`@quilla-kit/persistence`](packages/persistence) — `UnitOfWork`, `BaseWriteDao`/`BaseReadDao` (CQRS-isolated), scoped repositories, `BasePersistenceMapper` with prototype reflection
-- [`@quilla-kit/messaging`](packages/messaging) — atomic-claim outbox + worker-queue event bus, Standard Schema v1 payload validation, per-aggregate ordering
+- [`@quilla-be-kit/persistence`](packages/persistence) — `UnitOfWork`, `BaseWriteDao`/`BaseReadDao` (CQRS-isolated), scoped repositories, `BasePersistenceMapper` with prototype reflection
+- [`@quilla-be-kit/messaging`](packages/messaging) — atomic-claim outbox + worker-queue event bus, Standard Schema v1 payload validation, per-aggregate ordering
 
 **Observability — threaded through all of them**
-- [`@quilla-kit/observability`](packages/observability) — `Logger` interface, `StructuredLogger` with `service` / `module` / `location` identity, `forMethod` / `withMeta` child loggers, plug-in enrichers, optional PII obfuscation
+- [`@quilla-be-kit/observability`](packages/observability) — `Logger` interface, `StructuredLogger` with `service` / `module` / `location` identity, `forMethod` / `withMeta` child loggers, plug-in enrichers, optional PII obfuscation
 
-Concrete adapters ship as sub-path exports of their interface package (`@quilla-kit/persistence/postgres`, `@quilla-kit/messaging/postgres`, `@quilla-kit/http/adapter/hono`) with `pg` / `hono` as optional peer deps.
+Concrete adapters ship as sub-path exports of their interface package (`@quilla-be-kit/persistence/postgres`, `@quilla-be-kit/messaging/postgres`, `@quilla-be-kit/http/adapter/hono`) with `pg` / `hono` as optional peer deps.
 
 ## Architectural invariants
 
-These are the contracts quilla-kit guarantees to code built on it:
+These are the contracts quilla-be-kit guarantees to code built on it:
 
 1. **Scope isolation is repo-layer explicit.** Scoped repositories require `scopeId` on every load and raise `CrossScopeAccessError` on mismatch. DAOs never inject `scope_id` implicitly. Consumers choose what `scopeId` represents (tenant, workspace, organization, project, etc.) — the toolkit stays naming-agnostic.
 2. **Audit fields are DAO-layer implicit.** `inserted_by` / `updated_by` resolve from `ExecutionContextProvider` on every write. Callers cannot pass them; audit fields in insert inputs get stripped.
@@ -95,7 +95,7 @@ These are the contracts quilla-kit guarantees to code built on it:
 
 ## Adopting the toolkit: build a shell
 
-quilla-kit is deliberately naming-agnostic. `scopeId` is the generic axis; your app decides whether it's a tenant, workspace, organization, or project. To keep the generic vocabulary from leaking through your domain code, wrap the toolkit at a single **shell layer** — typically `src/infrastructure/shell/`, app-owned, one file per concern, usually a few dozen lines total.
+quilla-be-kit is deliberately naming-agnostic. `scopeId` is the generic axis; your app decides whether it's a tenant, workspace, organization, or project. To keep the generic vocabulary from leaking through your domain code, wrap the toolkit at a single **shell layer** — typically `src/infrastructure/shell/`, app-owned, one file per concern, usually a few dozen lines total.
 
 A shell does four small jobs:
 
@@ -135,26 +135,26 @@ export abstract class BaseTenantScopedRepository<
 
 **4. Fix the column map once.** In your shell mapper, inject `{ tenantId: 'scope_id' }` as a shared override so aggregate mappers don't repeat it per-class.
 
-After this, domain code imports `TenantId`, `BaseTenantScopedRepository`, `CrossTenantAccessError` — and nothing from `@quilla-kit/persistence` directly. When the toolkit evolves its generic vocabulary, only the shell moves.
+After this, domain code imports `TenantId`, `BaseTenantScopedRepository`, `CrossTenantAccessError` — and nothing from `@quilla-be-kit/persistence` directly. When the toolkit evolves its generic vocabulary, only the shell moves.
 
 The same pattern applies outside persistence: rename middleware helpers in your HTTP shell, alias `EventSubscription` verbs in your messaging shell, wrap `Logger` factories to bake in your service identity. The shell is cross-package discipline, not a persistence-only idea.
 
 ## Install
 
-All packages are published under `@quilla-kit/*` on npm, MIT-licensed, ESM-only, Node 22+.
+All packages are published under `@quilla-be-kit/*` on npm, MIT-licensed, ESM-only, Node 22+.
 
 ```sh
 # Foundation + runtime
-pnpm add @quilla-kit/ddd @quilla-kit/errors @quilla-kit/execution-context @quilla-kit/runtime
+pnpm add @quilla-be-kit/ddd @quilla-be-kit/errors @quilla-be-kit/execution-context @quilla-be-kit/runtime
 
 # HTTP service
-pnpm add @quilla-kit/http @quilla-kit/security hono @hono/node-server
+pnpm add @quilla-be-kit/http @quilla-be-kit/security hono @hono/node-server
 
 # Durability
-pnpm add @quilla-kit/persistence @quilla-kit/messaging pg
+pnpm add @quilla-be-kit/persistence @quilla-be-kit/messaging pg
 
 # Observability
-pnpm add @quilla-kit/observability
+pnpm add @quilla-be-kit/observability
 ```
 
 Every package has its own README with full API, design notes, and examples — start there once you've picked which layers you need.

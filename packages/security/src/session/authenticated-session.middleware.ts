@@ -1,6 +1,6 @@
-import { UnauthorizedError } from '@quilla-kit/errors';
-import type { ExecutionContextProvider } from '@quilla-kit/execution-context';
-import { HttpAttributes, type HttpMiddleware } from '@quilla-kit/http';
+import { UnauthorizedError } from '@quilla-be-kit/errors';
+import type { ExecutionContextProvider } from '@quilla-be-kit/execution-context';
+import { HttpAttributes, type HttpMiddleware } from '@quilla-be-kit/http';
 import type { Token } from '../token/token.interface.js';
 import type { SessionStore } from './session-store.interface.js';
 

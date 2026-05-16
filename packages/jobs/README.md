@@ -1,11 +1,11 @@
-# @quilla-kit/jobs
+# @quilla-be-kit/jobs
 
 Background-job contracts and an in-process runner for substrate-grade
 TypeScript services. Register scheduled jobs, run each tick inside a system
 execution context, shut down cleanly via `Disposable`.
 
 ```sh
-pnpm add @quilla-kit/jobs
+pnpm add @quilla-be-kit/jobs
 ```
 
 Node 22+, ESM-only.
@@ -21,21 +21,21 @@ Node 22+, ESM-only.
 | `JobRunner` | Runner contract — `register`, `stop`, `drain`, `dispose` |
 | `InProcessJobRunner` | Reference implementation — timer-based, single-process |
 
-Zero external runtime deps. Depends on `@quilla-kit/execution-context`,
-`@quilla-kit/observability`, and `@quilla-kit/runtime`.
+Zero external runtime deps. Depends on `@quilla-be-kit/execution-context`,
+`@quilla-be-kit/observability`, and `@quilla-be-kit/runtime`.
 
 ---
 
 ## Usage
 
 ```ts
-import { AsyncExecutionContextProvider } from '@quilla-kit/execution-context';
-import { StructuredLoggerFactory } from '@quilla-kit/observability';
+import { AsyncExecutionContextProvider } from '@quilla-be-kit/execution-context';
+import { StructuredLoggerFactory } from '@quilla-be-kit/observability';
 import {
   type BackgroundJob,
   InProcessJobRunner,
   JobScheduleType,
-} from '@quilla-kit/jobs';
+} from '@quilla-be-kit/jobs';
 
 class HeartbeatJob implements BackgroundJob {
   readonly name = 'infra.Heartbeat';
@@ -59,7 +59,7 @@ On shutdown:
 await runner.dispose(); // stops timers + awaits in-flight ticks
 ```
 
-`InProcessJobRunner` implements `Disposable` from `@quilla-kit/runtime`, so you
+`InProcessJobRunner` implements `Disposable` from `@quilla-be-kit/runtime`, so you
 can register it directly with your `Runtime` and it will be drained as part
 of normal shutdown.
 

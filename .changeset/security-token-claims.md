@@ -1,6 +1,6 @@
 ---
-"@quilla-kit/http": minor
-"@quilla-kit/security": minor
+"@quilla-be-kit/http": minor
+"@quilla-be-kit/security": minor
 ---
 
 Add `TokenClaims` (security) and rename `scope` → `scopes` on token-shaped types.
@@ -31,11 +31,11 @@ boundary — see the package README for a `jose` example.
 **Breaking (pre-1.0): `scope` → `scopes` on token-shaped types.** The
 field is a list, so the plural form matches the shape. Affects:
 
-- `@quilla-kit/http` — `AuthenticatedToken.scope?` → `scopes?`,
+- `@quilla-be-kit/http` — `AuthenticatedToken.scope?` → `scopes?`,
   `RouteDefinition.scope?` → `scopes?` (the `@AuthorizeScope` decorator
   name is unchanged — it describes the action; only the underlying
   field is plural).
-- `@quilla-kit/security` — `SignTokenPayload.scope?` → `scopes?`,
+- `@quilla-be-kit/security` — `SignTokenPayload.scope?` → `scopes?`,
   `Token.scopes?` (inherited from `AuthenticatedToken`).
 
 `TokenClaims.s?` (the wire short key) is unchanged.

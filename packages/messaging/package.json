@@ -1,17 +1,17 @@
 {
-  "name": "@quilla-kit/messaging",
+  "name": "@quilla-be-kit/messaging",
   "version": "0.1.0",
   "description": "Broker-agnostic messaging: event-bus + consumer interfaces, local-outbox pattern, outbox forwarder, Postgres reference implementation.",
   "license": "MIT",
   "author": "Max Martinez",
-  "homepage": "https://github.com/quilla-kit/quilla-kit/tree/main/packages/messaging",
+  "homepage": "https://github.com/quilla-kit/quilla-be-kit/tree/main/packages/messaging",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/quilla-kit/quilla-kit.git",
+    "url": "git+https://github.com/quilla-kit/quilla-be-kit.git",
     "directory": "packages/messaging"
   },
   "bugs": {
-    "url": "https://github.com/quilla-kit/quilla-kit/issues"
+    "url": "https://github.com/quilla-kit/quilla-be-kit/issues"
   },
   "keywords": ["messaging", "event-bus", "outbox", "integration-events", "typescript"],
   "type": "module",
@@ -43,10 +43,10 @@
     "clean": "rm -rf dist *.tsbuildinfo"
   },
   "dependencies": {
-    "@quilla-kit/errors": "workspace:^",
-    "@quilla-kit/execution-context": "workspace:^",
-    "@quilla-kit/observability": "workspace:^",
-    "@quilla-kit/runtime": "workspace:^"
+    "@quilla-be-kit/errors": "workspace:^",
+    "@quilla-be-kit/execution-context": "workspace:^",
+    "@quilla-be-kit/observability": "workspace:^",
+    "@quilla-be-kit/runtime": "workspace:^"
   },
   "peerDependencies": {
     "pg": ">=8.0"

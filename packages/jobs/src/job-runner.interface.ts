@@ -1,4 +1,4 @@
-import type { Disposable } from '@quilla-kit/runtime';
+import type { Disposable } from '@quilla-be-kit/runtime';
 import type { BackgroundJob } from './background-job.interface.js';
 
 export interface JobRunner extends Disposable {

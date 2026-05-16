@@ -1,4 +1,4 @@
-import { ForbiddenError } from '@quilla-kit/errors';
+import { ForbiddenError } from '@quilla-be-kit/errors';
 import type { AuthenticatedToken } from '../request/authenticated-token.interface.js';
 import { HttpAttributes } from '../request/http-attributes.js';
 import type { HttpRequest } from '../request/http-request.interface.js';

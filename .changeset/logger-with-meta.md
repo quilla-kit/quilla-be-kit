@@ -1,5 +1,5 @@
 ---
-"@quilla-kit/observability": minor
+"@quilla-be-kit/observability": minor
 ---
 
 `Logger.withMeta(meta)` returns a child logger that merges `meta` into

@@ -1,5 +1,5 @@
-import type { ExecutionContext } from '@quilla-kit/execution-context';
-import type { HttpRequest } from '@quilla-kit/http';
+import type { ExecutionContext } from '@quilla-be-kit/execution-context';
+import type { HttpRequest } from '@quilla-be-kit/http';
 
 export type FakeRequestInit = {
   readonly headers?: Record<string, string>;

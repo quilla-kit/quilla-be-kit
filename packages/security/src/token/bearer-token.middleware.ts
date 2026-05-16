@@ -1,5 +1,5 @@
-import { UnauthorizedError } from '@quilla-kit/errors';
-import { HttpAttributes, type HttpMiddleware } from '@quilla-kit/http';
+import { UnauthorizedError } from '@quilla-be-kit/errors';
+import { HttpAttributes, type HttpMiddleware } from '@quilla-be-kit/http';
 import type { TokenService } from './token-service.interface.js';
 
 export type BearerTokenMiddlewareOptions = {

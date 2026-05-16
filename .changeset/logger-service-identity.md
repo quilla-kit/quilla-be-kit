@@ -1,6 +1,6 @@
 ---
-"@quilla-kit/observability": minor
-"@quilla-kit/messaging": minor
+"@quilla-be-kit/observability": minor
+"@quilla-be-kit/messaging": minor
 ---
 
 `LoggerConfig.service` identifies the emitting service (microservice,

@@ -1,17 +1,17 @@
 {
-  "name": "@quilla-kit/security",
+  "name": "@quilla-be-kit/security",
   "version": "0.1.0",
-  "description": "Security primitives: Token/TokenService, PasswordHasher, SessionStore interfaces, and auth middlewares (Bearer-token verification + authenticated-session enrichment) that plug into @quilla-kit/http's Router.",
+  "description": "Security primitives: Token/TokenService, PasswordHasher, SessionStore interfaces, and auth middlewares (Bearer-token verification + authenticated-session enrichment) that plug into @quilla-be-kit/http's Router.",
   "license": "MIT",
   "author": "Max Martinez",
-  "homepage": "https://github.com/quilla-kit/quilla-kit/tree/main/packages/security",
+  "homepage": "https://github.com/quilla-kit/quilla-be-kit/tree/main/packages/security",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/quilla-kit/quilla-kit.git",
+    "url": "git+https://github.com/quilla-kit/quilla-be-kit.git",
     "directory": "packages/security"
   },
   "bugs": {
-    "url": "https://github.com/quilla-kit/quilla-kit/issues"
+    "url": "https://github.com/quilla-kit/quilla-be-kit/issues"
   },
   "keywords": [
     "security",
@@ -49,9 +49,9 @@
     "clean": "rm -rf dist *.tsbuildinfo"
   },
   "dependencies": {
-    "@quilla-kit/errors": "workspace:^",
-    "@quilla-kit/execution-context": "workspace:^",
-    "@quilla-kit/http": "workspace:^",
-    "@quilla-kit/observability": "workspace:^"
+    "@quilla-be-kit/errors": "workspace:^",
+    "@quilla-be-kit/execution-context": "workspace:^",
+    "@quilla-be-kit/http": "workspace:^",
+    "@quilla-be-kit/observability": "workspace:^"
   }
 }

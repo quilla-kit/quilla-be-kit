@@ -1,16 +1,16 @@
-# @quilla-kit/execution-context
+# @quilla-be-kit/execution-context
 
 Per-operation execution context: `ExecutionContext` type,
 `ExecutionContextProvider` interface, `AsyncExecutionContextProvider`
 (AsyncLocalStorage-backed), `executionContextFactory`, and
-`ExecutionContextEnricher` for bridging into `@quilla-kit/observability`.
+`ExecutionContextEnricher` for bridging into `@quilla-be-kit/observability`.
 
 ## Why this exists
 
 The execution context carries the **actor** (who), **scope** (tenant /
 workspace / project / whatever the consumer's isolation boundary is), **user**
 (when authenticated), and **correlation id** (tracing) for a single logical
-operation. Two quilla-kit invariants rely on it:
+operation. Two quilla-be-kit invariants rely on it:
 
 - **Persistence** uses it to populate audit fields (`inserted_by`,
   `updated_by`) without requiring callers to pass them.
@@ -20,7 +20,7 @@ operation. Two quilla-kit invariants rely on it:
 ## Install
 
 ```sh
-pnpm add @quilla-kit/execution-context
+pnpm add @quilla-be-kit/execution-context
 ```
 
 ## Quick start
@@ -30,8 +30,8 @@ import {
   AsyncExecutionContextProvider,
   executionContextFactory,
   ExecutionContextEnricher,
-} from '@quilla-kit/execution-context';
-import { createLoggerFactory } from '@quilla-kit/observability';
+} from '@quilla-be-kit/execution-context';
+import { createLoggerFactory } from '@quilla-be-kit/observability';
 
 // Composition root — one instance per process.
 const provider = new AsyncExecutionContextProvider();
@@ -120,7 +120,7 @@ or any other product-shaped fields, **extend by intersection** in your
 consumer project:
 
 ```ts
-import type { AuthSession, ExecutionContext } from '@quilla-kit/execution-context';
+import type { AuthSession, ExecutionContext } from '@quilla-be-kit/execution-context';
 
 // Pick whatever session shape fits your project.
 type AppAuthSession = AuthSession & {
@@ -189,5 +189,5 @@ the rest.
 - **Enricher returns `{}` silently when the provider throws.** Logs emitted
   outside a scope (bootstrap, scheduler, pre-auth middleware) should still
   succeed — they just don't carry execution-context fields.
-- **`ActorType` comes from `@quilla-kit/ddd`** — same extensible union used
+- **`ActorType` comes from `@quilla-be-kit/ddd`** — same extensible union used
   by `EventMetadata`. Consistent vocabulary across the toolkit.

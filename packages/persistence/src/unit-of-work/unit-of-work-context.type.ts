@@ -1,4 +1,4 @@
-import type { AggregateRoot, IntegrationEvent } from '@quilla-kit/ddd';
+import type { AggregateRoot, IntegrationEvent } from '@quilla-be-kit/ddd';
 import type { DatabaseTransaction } from '../database/database-transaction.interface.js';
 
 export type UnitOfWorkContext = {

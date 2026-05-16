@@ -1,4 +1,4 @@
-# @quilla-kit/messaging
+# @quilla-be-kit/messaging
 
 Broker-agnostic messaging for substrate-grade TypeScript services. Ships the
 durable-event flow you reach for in production — **local outbox → event bus →
@@ -6,7 +6,7 @@ consumer with retries** — using an atomic claim pattern so multi-replica
 deployments scale without coordination or configuration.
 
 ```sh
-pnpm add @quilla-kit/messaging
+pnpm add @quilla-be-kit/messaging
 # For the Postgres reference:
 pnpm add pg
 ```
@@ -97,7 +97,7 @@ Where terminal means:
 ### 1. Provision the schema
 
 ```ts
-import { getPostgresSchema } from '@quilla-kit/messaging/postgres';
+import { getPostgresSchema } from '@quilla-be-kit/messaging/postgres';
 import { Pool } from 'pg';
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
@@ -109,9 +109,9 @@ Or pipe the string into drizzle-kit / knex / your migration tool.
 ### 2. Wire the outbox into your UnitOfWork
 
 ```ts
-import { UnitOfWork } from '@quilla-kit/persistence';
-import { PgDatabase } from '@quilla-kit/persistence/postgres';
-import { PgLocalOutbox } from '@quilla-kit/messaging/postgres';
+import { UnitOfWork } from '@quilla-be-kit/persistence';
+import { PgDatabase } from '@quilla-be-kit/persistence/postgres';
+import { PgLocalOutbox } from '@quilla-be-kit/messaging/postgres';
 import { Pool } from 'pg';
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
@@ -144,8 +144,8 @@ await uow.transaction(async (ctx) => {
 ### 3. Run the forwarder in the background
 
 ```ts
-import { OutboxForwarder } from '@quilla-kit/messaging';
-import { PgEventBus } from '@quilla-kit/messaging/postgres';
+import { OutboxForwarder } from '@quilla-be-kit/messaging';
+import { PgEventBus } from '@quilla-be-kit/messaging/postgres';
 
 const bus = new PgEventBus({ pool });
 const forwarder = new OutboxForwarder({
@@ -156,7 +156,7 @@ const forwarder = new OutboxForwarder({
 });
 forwarder.start();
 
-// On shutdown (via @quilla-kit/runtime ShutdownManager):
+// On shutdown (via @quilla-be-kit/runtime ShutdownManager):
 await forwarder.dispose();
 ```
 
@@ -169,7 +169,7 @@ configuration.
 
 ```ts
 import { z } from 'zod';
-import { EventConsumer, defineEvent } from '@quilla-kit/messaging';
+import { EventConsumer, defineEvent } from '@quilla-be-kit/messaging';
 
 const OrderPlacedSchema = z.object({
   orderId: z.string().uuid(),
@@ -297,7 +297,7 @@ handlers themselves. The composition root passes the combined array to
 `EventConsumer`:
 
 ```ts
-import type { EventSubscription } from '@quilla-kit/messaging';
+import type { EventSubscription } from '@quilla-be-kit/messaging';
 
 // orders/subscriptions.ts
 export const orderSubscriptions = (): EventSubscription[] => [
@@ -327,11 +327,11 @@ for DI containers that resolve handlers after the consumer is built.
 When an `EventDescriptor` carries a schema, `EventConsumer.on` wraps the
 handler so `entry.payload` is validated before dispatch. Any Standard
 Schema v1 vendor works — Zod (≥ 4), Valibot, ArkType — without a hard
-dependency in `@quilla-kit/messaging`:
+dependency in `@quilla-be-kit/messaging`:
 
 ```ts
 import { z } from 'zod';
-import { defineEvent, SchemaValidationError } from '@quilla-kit/messaging';
+import { defineEvent, SchemaValidationError } from '@quilla-be-kit/messaging';
 
 const UserCreated = defineEvent(
   'user.created',
@@ -377,7 +377,7 @@ new EventConsumer({
 Reconstruction uses `provider.factory.createFromEventMetadata(...)`;
 override the provider's factory to reconstruct into an extended context
 shape (see
-[`@quilla-kit/execution-context` extension pattern](../execution-context/README.md#extension-pattern)).
+[`@quilla-be-kit/execution-context` extension pattern](../execution-context/README.md#extension-pattern)).
 Without an `executionContext` option, handlers still run — they just
 don't have a context scope, and `getContext()` will throw if called.
 
@@ -429,7 +429,7 @@ import {
   DEFAULT_RETRY_DELAYS_MS,
   DEFAULT_POLL_INTERVAL_MS,
   DEFAULT_BATCH_SIZE,
-} from '@quilla-kit/messaging';
+} from '@quilla-be-kit/messaging';
 
 new EventConsumer({
   bus,
@@ -454,7 +454,7 @@ new EventConsumer({
 `getPostgresSchema()` returns DDL for the two tables:
 
 ```ts
-import { getPostgresSchema } from '@quilla-kit/messaging/postgres';
+import { getPostgresSchema } from '@quilla-be-kit/messaging/postgres';
 
 const sql = getPostgresSchema({
   outboxTable: 'orders_outbox',   // defaults: 'outbox_events'
@@ -534,7 +534,7 @@ cutoff).
 Both `OutboxForwarder` and `EventConsumer` implement `Disposable`:
 
 ```ts
-import { ShutdownManager } from '@quilla-kit/runtime';
+import { ShutdownManager } from '@quilla-be-kit/runtime';
 
 const shutdown = new ShutdownManager({ logger });
 shutdown.registerPhase('consumers', [consumer]);
@@ -590,7 +590,7 @@ import type {
   EventBusPublisher,
   EventBusConsumer,
   EventBusEntry,
-} from '@quilla-kit/messaging';
+} from '@quilla-be-kit/messaging';
 
 class KafkaBus implements EventBusPublisher, EventBusConsumer {
   async publish(event) { /* produce to topic */ }

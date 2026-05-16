@@ -1,4 +1,4 @@
-const QUILLA_ERROR = Symbol.for('quilla-kit.error');
+const QUILLA_ERROR = Symbol.for('quilla-be-kit.error');
 
 export type QuillaErrorOptions = {
   readonly message: string;

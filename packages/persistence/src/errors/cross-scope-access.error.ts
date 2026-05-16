@@ -1,4 +1,4 @@
-import { NotFoundError } from '@quilla-kit/errors';
+import { NotFoundError } from '@quilla-be-kit/errors';
 
 export class CrossScopeAccessError extends NotFoundError {
   override readonly code = 'CROSS_SCOPE_ACCESS';

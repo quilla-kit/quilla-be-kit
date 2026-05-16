@@ -1,22 +1,22 @@
-# @quilla-kit/http
+# @quilla-be-kit/http
 
-Framework-agnostic HTTP layer for a quilla-kit service:
+Framework-agnostic HTTP layer for a quilla-be-kit service:
 
 - **Controller decorators** — `@Controller`, `@Get` / `@Post` / `@Put` / `@Patch` / `@Delete` + `*Public` variants, `@AuthorizeScope`, `@ValidateRequest`.
-- **Router** — walks decorated controller instances, composes prefixes, sorts routes by specificity, bridges to `ComponentRegistry<HttpModuleMeta>` from `@quilla-kit/runtime`, and (when `executionContext` is configured) installs a **system-owned execution-context bootstrap** so every handler can rely on `provider.getContext()`.
-- **Typed auth middleware stack** — `AuthMiddlewareStack` enforces phase ordering (`tokenVerification` → `sessionLoad?`) so consumers can't misorder security middlewares. Compose it directly from `@quilla-kit/security`'s middleware factories.
+- **Router** — walks decorated controller instances, composes prefixes, sorts routes by specificity, bridges to `ComponentRegistry<HttpModuleMeta>` from `@quilla-be-kit/runtime`, and (when `executionContext` is configured) installs a **system-owned execution-context bootstrap** so every handler can rely on `provider.getContext()`.
+- **Typed auth middleware stack** — `AuthMiddlewareStack` enforces phase ordering (`tokenVerification` → `sessionLoad?`) so consumers can't misorder security middlewares. Compose it directly from `@quilla-be-kit/security`'s middleware factories.
 - **Request / response contracts** — `HttpRequest`, `HttpResponse`, `HttpMiddleware`, `AuthenticatedToken`, `HttpAttributes`.
 - **Validator contract** — `RequestValidator` interface; wire Zod / Joi / Valibot / ArkType with a ~5-line adapter.
-- **Hono adapter** — `@quilla-kit/http/adapter/hono` sub-path ships a `HonoServer` that implements `WebServer`. `hono` is an optional peer dep.
+- **Hono adapter** — `@quilla-be-kit/http/adapter/hono` sub-path ships a `HonoServer` that implements `WebServer`. `hono` is an optional peer dep.
 
-Runtime deps: `@quilla-kit/errors`, `@quilla-kit/execution-context`, `@quilla-kit/observability`, `@quilla-kit/runtime`.
+Runtime deps: `@quilla-be-kit/errors`, `@quilla-be-kit/execution-context`, `@quilla-be-kit/observability`, `@quilla-be-kit/runtime`.
 
 ## Install
 
 ```sh
 # Core:
-pnpm add @quilla-kit/http @quilla-kit/errors @quilla-kit/execution-context \
-         @quilla-kit/observability @quilla-kit/runtime
+pnpm add @quilla-be-kit/http @quilla-be-kit/errors @quilla-be-kit/execution-context \
+         @quilla-be-kit/observability @quilla-be-kit/runtime
 
 # Plus Hono adapter:
 pnpm add hono
@@ -49,7 +49,7 @@ Consumers do **not** need to polyfill `Symbol.metadata` themselves — the libra
 ## Quick start
 
 ```ts
-import { AsyncExecutionContextProvider } from '@quilla-kit/execution-context';
+import { AsyncExecutionContextProvider } from '@quilla-be-kit/execution-context';
 import {
   Controller,
   Get,
@@ -61,13 +61,13 @@ import {
   type HttpRequest,
   type HttpResponse,
   type RequestValidator,
-} from '@quilla-kit/http';
-import { HonoServer } from '@quilla-kit/http/adapter/hono';
-import { Runtime, ShutdownManager, ComponentRegistry } from '@quilla-kit/runtime';
+} from '@quilla-be-kit/http';
+import { HonoServer } from '@quilla-be-kit/http/adapter/hono';
+import { Runtime, ShutdownManager, ComponentRegistry } from '@quilla-be-kit/runtime';
 import {
   authenticatedSessionMiddleware,
   bearerTokenMiddleware,
-} from '@quilla-kit/security';
+} from '@quilla-be-kit/security';
 import { serve } from '@hono/node-server';
 
 @Controller('/users')
@@ -178,7 +178,7 @@ Scope-based authorization. Reads an `AuthenticatedToken` from `request.getAttrib
 @AuthorizeScope(['user:write', 'admin'], 'all')  // requires both
 ```
 
-Throws `ForbiddenError` on missing token or mismatch. An auth middleware (from `@quilla-kit/security` or consumer code) must have populated the `VERIFIED_TOKEN` attribute.
+Throws `ForbiddenError` on missing token or mismatch. An auth middleware (from `@quilla-be-kit/security` or consumer code) must have populated the `VERIFIED_TOKEN` attribute.
 
 ### `@ValidateRequest(schema, sources)`
 
@@ -203,10 +203,10 @@ On validation failure, throws `ValidationError` with `context.issues` containing
 
 ### Zod — use the out-of-the-box helper
 
-The toolkit ships a ready-made Zod 4 adapter under `@quilla-kit/http/validator/zod`. It implements both `validate` and the optional `describeSchema` — the latter unwraps `ZodPipe` (produced by `.transform(...)`) so schemas from `@quilla-kit/persistence/query-schema` interoperate without any extra wiring.
+The toolkit ships a ready-made Zod 4 adapter under `@quilla-be-kit/http/validator/zod`. It implements both `validate` and the optional `describeSchema` — the latter unwraps `ZodPipe` (produced by `.transform(...)`) so schemas from `@quilla-be-kit/persistence/query-schema` interoperate without any extra wiring.
 
 ```ts
-import { createZodRequestValidator } from '@quilla-kit/http/validator/zod';
+import { createZodRequestValidator } from '@quilla-be-kit/http/validator/zod';
 
 const server = new HonoServer({
   requestValidator: createZodRequestValidator(),
@@ -222,7 +222,7 @@ createZodRequestValidator({
 });
 ```
 
-`zod` is an **optional** peer dep of `@quilla-kit/http` — required only when importing from this sub-path.
+`zod` is an **optional** peer dep of `@quilla-be-kit/http` — required only when importing from this sub-path.
 
 ### Other validators — ~5 lines
 
@@ -245,7 +245,7 @@ const joiRequestValidator: RequestValidator = {
 };
 ```
 
-Pass to `new HonoServer({ requestValidator, ... })`. The library handles conversion from the `{ success, error }` tuple to a thrown `ValidationError` — consumers never construct quilla-kit errors directly.
+Pass to `new HonoServer({ requestValidator, ... })`. The library handles conversion from the `{ success, error }` tuple to a thrown `ValidationError` — consumers never construct quilla-be-kit errors directly.
 
 ## Router
 
@@ -299,11 +299,11 @@ The system bootstrap is Router-owned and not configurable from outside — this 
 
 ## Bridge to `ComponentRegistry<HttpModuleMeta>`
 
-`ComponentRegistry<HttpModuleMeta>` is the shared spine between `@quilla-kit/runtime` and `@quilla-kit/http`:
+`ComponentRegistry<HttpModuleMeta>` is the shared spine between `@quilla-be-kit/runtime` and `@quilla-be-kit/http`:
 
 ```ts
-import { ComponentRegistry } from '@quilla-kit/runtime';
-import { type HttpModuleMeta } from '@quilla-kit/http';
+import { ComponentRegistry } from '@quilla-be-kit/runtime';
+import { type HttpModuleMeta } from '@quilla-be-kit/http';
 
 const registry = new ComponentRegistry<HttpModuleMeta>({
   contracts: [IAM_CONTRACT, DM_CONTRACT],
@@ -354,10 +354,10 @@ export interface WebServer {
 
 ## Hono adapter
 
-Sub-path: `@quilla-kit/http/adapter/hono`. Ships `HonoServer` only. `hono` is an optional peer dep pinned to `4.x.x`.
+Sub-path: `@quilla-be-kit/http/adapter/hono`. Ships `HonoServer` only. `hono` is an optional peer dep pinned to `4.x.x`.
 
 ```ts
-import { HonoServer, type HonoServeFn } from '@quilla-kit/http/adapter/hono';
+import { HonoServer, type HonoServeFn } from '@quilla-be-kit/http/adapter/hono';
 import { serve } from '@hono/node-server';
 
 const honoServe: HonoServeFn = (app, port) => {

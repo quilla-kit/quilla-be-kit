@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import type { Logger } from '@quilla-kit/observability';
-import type { Disposable } from '@quilla-kit/runtime';
+import type { Logger } from '@quilla-be-kit/observability';
+import type { Disposable } from '@quilla-be-kit/runtime';
 import {
   DEFAULT_BATCH_SIZE,
   DEFAULT_POLL_INTERVAL_MS,

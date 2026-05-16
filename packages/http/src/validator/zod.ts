@@ -20,7 +20,7 @@ export type ZodRequestValidatorOptions = {
  * - Bare `ZodObject` — keys come straight from `schema.shape`.
  * - `ZodPipe` over `ZodObject` — the shape produced by chaining
  *   `.transform(...)` onto an object (e.g. the schema returned by
- *   `createQueryParametersSchema` in `@quilla-kit/persistence/query-schema`).
+ *   `createQueryParametersSchema` in `@quilla-be-kit/persistence/query-schema`).
  *   The adapter walks the pipe's input side until it reaches a
  *   `ZodObject` and enumerates that.
  *

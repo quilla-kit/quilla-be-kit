@@ -1,4 +1,4 @@
-import type { ActorType } from '@quilla-kit/ddd';
+import type { ActorType } from '@quilla-be-kit/ddd';
 import type { AuthSession } from './auth-session.type.js';
 
 /**

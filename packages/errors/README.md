@@ -1,4 +1,4 @@
-# @quilla-kit/errors
+# @quilla-be-kit/errors
 
 Transport-agnostic error primitives: `QuillaError` abstract base with a
 cross-realm-safe brand, plus concrete category classes consumers extend or
@@ -9,7 +9,7 @@ Zero runtime dependencies.
 ## Install
 
 ```sh
-pnpm add @quilla-kit/errors
+pnpm add @quilla-be-kit/errors
 ```
 
 ## Categories
@@ -25,7 +25,7 @@ import {
   InternalError,    // INTERNAL     — known internal failure
   ExternalError,    // EXTERNAL     — downstream service failed
   UnknownError,     // UNKNOWN      — unrecognized thrown value (extends InternalError)
-} from '@quilla-kit/errors';
+} from '@quilla-be-kit/errors';
 ```
 
 ## Usage
@@ -95,12 +95,12 @@ function toHttpStatus(e: unknown): number {
 }
 ```
 
-- `QuillaError.is()` uses `Symbol.for('quilla-kit.error')` — works across
+- `QuillaError.is()` uses `Symbol.for('quilla-be-kit.error')` — works across
   module-system realms (e.g. duplicate package copies).
 - `instanceof` works within a single realm and is inheritance-aware
   (`CrossScopeAccessError` matches `instanceof NotFoundError`).
 - To keep `instanceof` reliable, downstream packages should declare
-  `@quilla-kit/errors` as a `peerDependency`.
+  `@quilla-be-kit/errors` as a `peerDependency`.
 
 ## Serialization
 
@@ -114,14 +114,14 @@ internal debug detail goes in `context`.
 
 ## Logger integration
 
-`QuillaErrorSerializer` bridges `@quilla-kit/errors` into
-`@quilla-kit/observability`'s `LogErrorSerializer` contract. Wire it once at
+`QuillaErrorSerializer` bridges `@quilla-be-kit/errors` into
+`@quilla-be-kit/observability`'s `LogErrorSerializer` contract. Wire it once at
 the factory level and every `logger.error(msg, err)` call will surface `code`
 and `context` in the log entry:
 
 ```ts
-import { createLoggerFactory } from '@quilla-kit/observability';
-import { QuillaErrorSerializer } from '@quilla-kit/errors';
+import { createLoggerFactory } from '@quilla-be-kit/observability';
+import { QuillaErrorSerializer } from '@quilla-be-kit/errors';
 
 const factory = createLoggerFactory({
   config: { service: 'my-backend', level: 'info', mode: 'pretty' },

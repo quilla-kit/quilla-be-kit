@@ -1,5 +1,5 @@
 ---
-"@quilla-kit/observability": minor
+"@quilla-be-kit/observability": minor
 ---
 
 Initial public surface: `Logger`, `LoggerFactory`, `LogFormatter`,
@@ -24,7 +24,7 @@ Key design decisions:
   failure in-band.
 - `LogEntry` drops the hardcoded `http` slot; HTTP-specific context goes
   under the generic `extra` bag via an HTTP enricher (shipped separately in
-  `@quilla-kit/http` when that package is written). Observability stays
+  `@quilla-be-kit/http` when that package is written). Observability stays
   Layer 0 with zero toolkit-internal dependencies.
 - `createLoggerFactory()` is a function, not a class. Matches the modern
   TypeScript ecosystem (Pino, Vitest, Zod, Drizzle, tRPC) and keeps

@@ -1,5 +1,5 @@
 ---
-"@quilla-kit/messaging": minor
+"@quilla-be-kit/messaging": minor
 ---
 
 Add `EventSubscription<TPayload>` + bulk wiring on `EventConsumer`

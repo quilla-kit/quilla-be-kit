@@ -1,11 +1,11 @@
 ---
-"@quilla-kit/persistence": minor
+"@quilla-be-kit/persistence": minor
 ---
 
 `PgDatabase` now accepts either a `PoolConfig` (the adapter creates and
 owns the pool — existing behavior) or `{ pool }` (the caller owns the
 pool and can share it with `PgLocalOutbox` / `PgEventBus` /
-`@quilla-kit/messaging` adapters). When the pool is caller-owned,
+`@quilla-be-kit/messaging` adapters). When the pool is caller-owned,
 `disconnect()` is a no-op; the composition root registers `pool.end()`
 on its `ShutdownManager` directly.
 

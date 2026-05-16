@@ -1,9 +1,9 @@
-import type { LogEnricherContribution, LogEntryEnricher } from '@quilla-kit/observability';
+import type { LogEnricherContribution, LogEntryEnricher } from '@quilla-be-kit/observability';
 import type { ExecutionContextProvider } from './execution-context.provider.js';
 
 /**
- * `LogEntryEnricher` that bridges `@quilla-kit/execution-context` into
- * `@quilla-kit/observability`. Registered with the logger factory so every
+ * `LogEntryEnricher` that bridges `@quilla-be-kit/execution-context` into
+ * `@quilla-be-kit/observability`. Registered with the logger factory so every
  * emitted entry carries scope/user/actor/correlation from the active
  * execution context.
  *

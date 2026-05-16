@@ -1,17 +1,17 @@
-# @quilla-kit/runtime
+# @quilla-be-kit/runtime
 
-Process runtime primitives for a quilla-kit service:
+Process runtime primitives for a quilla-be-kit service:
 
 - **`ShutdownManager`** — phased, idempotent, time-bounded graceful shutdown.
 - **`Runtime`** — bridges OS signals (SIGINT/SIGTERM/SIGHUP), uncaught exceptions, and unhandled rejections to `ShutdownManager`. Owns `process.exit`.
 - **`ComponentRegistry<TMeta>`** — transport-agnostic registry for your app's components, with startup-time contract validation and a bridge to `ShutdownManager`.
 
-Zero runtime dependencies on other `@quilla-kit/*` packages. Node stdlib only.
+Zero runtime dependencies on other `@quilla-be-kit/*` packages. Node stdlib only.
 
 ## Install
 
 ```sh
-pnpm add @quilla-kit/runtime
+pnpm add @quilla-be-kit/runtime
 ```
 
 Node 22+.
@@ -24,7 +24,7 @@ import {
   RuntimeSignals,
   ShutdownManager,
   ComponentRegistry,
-} from '@quilla-kit/runtime';
+} from '@quilla-be-kit/runtime';
 
 const shutdown = new ShutdownManager({
   timeoutMs: 10_000,

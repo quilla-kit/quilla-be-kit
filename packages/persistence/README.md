@@ -1,4 +1,4 @@
-# @quilla-kit/persistence
+# @quilla-be-kit/persistence
 
 Persistence primitives: `Database` abstraction, `ReadDbAdapter` /
 `WriteDbAdapter` for CQRS-isolated dialect adapters, DAOs with audit
@@ -6,19 +6,19 @@ injection and optimistic locking, aggregate repositories with scope
 isolation, and a `UnitOfWork` with pluggable outbox.
 
 Ships a **Postgres reference implementation** under
-`@quilla-kit/persistence/postgres` — `PgDatabase`, `PgTransaction`,
+`@quilla-be-kit/persistence/postgres` — `PgDatabase`, `PgTransaction`,
 `PgWriteDbAdapter` (with info-schema cache + JSONB / UUID / timestamp
 casts), `PgReadDbAdapter`. Works with the `pg` package (optional peer dep).
 
-Peer deps: `@quilla-kit/ddd`, `@quilla-kit/execution-context`,
-`@quilla-kit/errors`. `pg` is an optional peer — required only if you
+Peer deps: `@quilla-be-kit/ddd`, `@quilla-be-kit/execution-context`,
+`@quilla-be-kit/errors`. `pg` is an optional peer — required only if you
 import from `/postgres`.
 
 ## Install
 
 ```sh
 # Core:
-pnpm add @quilla-kit/persistence @quilla-kit/ddd @quilla-kit/execution-context @quilla-kit/errors
+pnpm add @quilla-be-kit/persistence @quilla-be-kit/ddd @quilla-be-kit/execution-context @quilla-be-kit/errors
 
 # Plus Postgres adapter:
 pnpm add pg
@@ -66,12 +66,12 @@ import {
   BaseScopedAggregateRepository,
   BaseWriteDao,
   UnitOfWork,
-} from '@quilla-kit/persistence';
+} from '@quilla-be-kit/persistence';
 import {
   PgDatabase,
   PgReadDbAdapter,
   PgWriteDbAdapter,
-} from '@quilla-kit/persistence/postgres';
+} from '@quilla-be-kit/persistence/postgres';
 
 // 1. Write DAO for your row shape:
 class UserDao extends BaseWriteDao<UserRow> {
@@ -136,7 +136,7 @@ const userReadDao = new UserReadDao({
 });
 const rows = await userReadDao.listActive(scopeId); // no ctx, no trx
 
-// Pool lifecycle: register with @quilla-kit/runtime:
+// Pool lifecycle: register with @quilla-be-kit/runtime:
 shutdown.addPhase({
   name: 'database',
   participants: [{ name: 'PgDatabase', dispose: () => db.disconnect() }],
@@ -148,12 +148,12 @@ shutdown.addPhase({
 `PgDatabase` accepts either a `PoolConfig` (the adapter creates and owns
 the pool) or `{ pool }` (the caller owns it — use this when the same
 physical Postgres connection pool needs to back other adapters like
-`PgLocalOutbox` / `PgEventBus` from `@quilla-kit/messaging`):
+`PgLocalOutbox` / `PgEventBus` from `@quilla-be-kit/messaging`):
 
 ```ts
 import { Pool } from 'pg';
-import { PgDatabase } from '@quilla-kit/persistence/postgres';
-import { PgLocalOutbox, PgEventBus } from '@quilla-kit/messaging/postgres';
+import { PgDatabase } from '@quilla-be-kit/persistence/postgres';
+import { PgLocalOutbox, PgEventBus } from '@quilla-be-kit/messaging/postgres';
 
 // Adapter-owned pool — disconnect() ends it:
 const db = new PgDatabase({ connectionString: process.env.DATABASE_URL });
@@ -176,11 +176,11 @@ shutdown.addPhase({
 
 When an update includes `updated_at` in the input row, the DAO asserts
 `rowCount === 1` and throws `OptimisticLockError` (extends `ConflictError`
-from `@quilla-kit/errors`) on a mismatch. Catch it at the command handler
+from `@quilla-be-kit/errors`) on a mismatch. Catch it at the command handler
 boundary and retry or surface a 409 to the client:
 
 ```ts
-import { OptimisticLockError } from '@quilla-kit/persistence';
+import { OptimisticLockError } from '@quilla-be-kit/persistence';
 
 try {
   await uow.transaction(async (ctx) => {
@@ -232,7 +232,7 @@ private setter.
 Setters are also where **structural invariants** live (non-empty strings,
 non-null required fields) — guards that must hold after rehydration from
 the DB, not just after a command. See
-[mutation patterns in `@quilla-kit/ddd`](../ddd/README.md#mutation-patterns)
+[mutation patterns in `@quilla-be-kit/ddd`](../ddd/README.md#mutation-patterns)
 for the full command-side idiom (`updateFromInput`, `changeX`, domain
 methods) and how structural vs. business invariants split between setters
 and mutation methods.
@@ -243,7 +243,7 @@ When every domain property name maps cleanly to its snake_case column
 (e.g. `adminEmail` ↔ `admin_email`), the mapper is just one method:
 
 ```ts
-import { BasePersistenceMapper } from '@quilla-kit/persistence';
+import { BasePersistenceMapper } from '@quilla-be-kit/persistence';
 
 class TenantMapper extends BasePersistenceMapper<Tenant, TenantProps, TenantRow> {
   protected createDomain(props: TenantProps, id: string): Tenant {
@@ -260,7 +260,7 @@ snake_case, and reads values via the getter.
 `createDomain` calls `Tenant.reconstitute(props, id)` — the rehydration
 factory that skips validation and emits no domain events (contrasted
 with `Tenant.create(...)`, the new-aggregate factory). See
-[construction patterns in `@quilla-kit/ddd`](../ddd/README.md#construction-patterns)
+[construction patterns in `@quilla-be-kit/ddd`](../ddd/README.md#construction-patterns)
 for why these are two separate factories and what each is responsible for.
 
 ### Mapper — with overrides + value-object serialization (User)
@@ -348,8 +348,8 @@ And one optional add-on for HTTP controllers:
 ### A read DAO with two query methods
 
 ```ts
-import { BaseReadDao, type PaginatedResult, type StandardListQuery } from '@quilla-kit/persistence';
-import { PgSqlQueryBuilder } from '@quilla-kit/persistence/postgres';
+import { BaseReadDao, type PaginatedResult, type StandardListQuery } from '@quilla-be-kit/persistence';
+import { PgSqlQueryBuilder } from '@quilla-be-kit/persistence/postgres';
 
 type RoleDetailsReadModel = {
   id: string;
@@ -399,7 +399,7 @@ export class RoleReadDao extends BaseReadDao {
 Wire it at the composition root:
 
 ```ts
-import { PgReadDbAdapter, PgSqlQueryBuilder } from '@quilla-kit/persistence/postgres';
+import { PgReadDbAdapter, PgSqlQueryBuilder } from '@quilla-be-kit/persistence/postgres';
 
 const roleReadDao = new RoleReadDao({
   adapter: new PgReadDbAdapter(db),
@@ -488,7 +488,7 @@ If the query uses `GROUP BY`, the count is computed over the grouped set via a s
 Every `BaseReadDao` carries a `ColumnResolver`. The default is `DefaultColumnResolver`, which does camelCase → snake_case plus any explicit overrides you pass:
 
 ```ts
-import { DefaultColumnResolver } from '@quilla-kit/persistence';
+import { DefaultColumnResolver } from '@quilla-be-kit/persistence';
 
 new DefaultColumnResolver({
   overrides: {
@@ -526,11 +526,11 @@ Then `extends RelmoBaseReadDao` everywhere and every query translates `scopeId` 
 
 ### HTTP query string → validated DTO → read DAO
 
-The `@quilla-kit/persistence/query-schema` sub-path provides `createQueryParametersSchema` — a Zod helper that generates the full validation + transform schema from a plain filter shape:
+The `@quilla-be-kit/persistence/query-schema` sub-path provides `createQueryParametersSchema` — a Zod helper that generates the full validation + transform schema from a plain filter shape:
 
 ```ts
 // application/queries/list-roles.query.ts
-import type { StandardListQuery } from '@quilla-kit/persistence';
+import type { StandardListQuery } from '@quilla-be-kit/persistence';
 
 export type ListRolesFilters = {
   name?: string;
@@ -543,7 +543,7 @@ export type ListRolesQuery = StandardListQuery<ListRolesFilters>;
 ```ts
 // presentation/dto/list-roles.request-dto.ts
 import { z } from 'zod';
-import { createQueryParametersSchema } from '@quilla-kit/persistence/query-schema';
+import { createQueryParametersSchema } from '@quilla-be-kit/persistence/query-schema';
 import type { ListRolesFilters } from '../../application/queries/list-roles.query.js';
 
 const filters = z.object({
@@ -625,7 +625,7 @@ Use the `extraFields` option to declare them at the top level of the generated s
 
 ```ts
 import { z } from 'zod';
-import { createQueryParametersSchema } from '@quilla-kit/persistence/query-schema';
+import { createQueryParametersSchema } from '@quilla-be-kit/persistence/query-schema';
 
 export const ListRolesRequestDto = createQueryParametersSchema<
   ListRolesFilters,
@@ -639,7 +639,7 @@ export const ListRolesRequestDto = createQueryParametersSchema<
 });
 ```
 
-`@ValidateRequest` then populates `scopeId` / `userId` from the active `ExecutionContext` because the schema declares them — see [conditional auth-injection in `@quilla-kit/http`](../http/README.md#validaterequestschema-sources). Your consumer-side query type composes via intersection:
+`@ValidateRequest` then populates `scopeId` / `userId` from the active `ExecutionContext` because the schema declares them — see [conditional auth-injection in `@quilla-be-kit/http`](../http/README.md#validaterequestschema-sources). Your consumer-side query type composes via intersection:
 
 ```ts
 export type ListRolesQuery = StandardListQuery<ListRolesFilters> & {

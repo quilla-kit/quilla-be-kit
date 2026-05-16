@@ -1,4 +1,4 @@
-import type { ExecutionContext } from '@quilla-kit/execution-context';
+import type { ExecutionContext } from '@quilla-be-kit/execution-context';
 
 export interface HttpRequest {
   getPath(): string;

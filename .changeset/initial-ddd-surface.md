@@ -1,5 +1,5 @@
 ---
-"@quilla-kit/ddd": minor
+"@quilla-be-kit/ddd": minor
 ---
 
 Initial public surface: `Entity`, `AggregateRoot`, `DomainEvent`,
@@ -27,6 +27,6 @@ properties fall through to `Object.assign`-style own-property semantics,
 preserving backward-compat for simple data classes.
 
 Also reflected in this change: the root README and
-`@quilla-kit/persistence` / `@quilla-kit/execution-context` READMEs now talk
+`@quilla-be-kit/persistence` / `@quilla-be-kit/execution-context` READMEs now talk
 about `scopeId` and `CrossScopeAccessError` instead of `tenantId` and
 `CrossTenantAccessError`.

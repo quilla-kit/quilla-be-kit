@@ -1,5 +1,5 @@
-import { NotFoundError } from '@quilla-kit/errors';
-import { AsyncExecutionContextProvider } from '@quilla-kit/execution-context';
+import { NotFoundError } from '@quilla-be-kit/errors';
+import { AsyncExecutionContextProvider } from '@quilla-be-kit/execution-context';
 import { describe, expect, it } from 'vitest';
 import { type HonoServeHandle, HonoServer } from '../../src/adapter/hono/hono.server.js';
 import { Controller, Get, GetPublic, Post, ValidateRequest } from '../../src/decorator/index.js';

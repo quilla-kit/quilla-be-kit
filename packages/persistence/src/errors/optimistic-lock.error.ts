@@ -1,4 +1,4 @@
-import { ConflictError } from '@quilla-kit/errors';
+import { ConflictError } from '@quilla-be-kit/errors';
 
 export class OptimisticLockError extends ConflictError {
   override readonly code = 'OPTIMISTIC_LOCK';

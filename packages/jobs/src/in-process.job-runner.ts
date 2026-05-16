@@ -1,5 +1,5 @@
-import type { ExecutionContextProvider } from '@quilla-kit/execution-context';
-import type { Logger } from '@quilla-kit/observability';
+import type { ExecutionContextProvider } from '@quilla-be-kit/execution-context';
+import type { Logger } from '@quilla-be-kit/observability';
 import type { BackgroundJob } from './background-job.interface.js';
 import type { JobRunner } from './job-runner.interface.js';
 import { JobScheduleType } from './job-schedule.type.js';

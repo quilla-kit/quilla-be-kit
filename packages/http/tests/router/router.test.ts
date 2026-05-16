@@ -1,4 +1,4 @@
-import { AsyncExecutionContextProvider } from '@quilla-kit/execution-context';
+import { AsyncExecutionContextProvider } from '@quilla-be-kit/execution-context';
 import { describe, expect, it } from 'vitest';
 import { Controller, Get, GetPublic, Post } from '../../src/decorator/index.js';
 import type { HttpMiddleware } from '../../src/request/http-middleware.type.js';

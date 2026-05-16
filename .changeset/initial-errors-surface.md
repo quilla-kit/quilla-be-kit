@@ -1,5 +1,5 @@
 ---
-"@quilla-kit/errors": minor
+"@quilla-be-kit/errors": minor
 ---
 
 Initial public surface: `QuillaError` abstract base and seven category
@@ -10,23 +10,23 @@ plus `UnknownError` extending `InternalError`.
 Key design decisions:
 
 - **Transport-agnostic.** No `httpCode`, no `toHttpResponse()`. The HTTP
-  mapping lives in `@quilla-kit/http`; this package stays usable from jobs,
+  mapping lives in `@quilla-be-kit/http`; this package stays usable from jobs,
   CLIs, workers, anywhere errors need a uniform shape.
 - **`code` is immutable per class**, not a constructor arg. Category classes
   ship a default code (`'NOT_FOUND'`, `'CONFLICT'`, etc.); leaf subclasses
   override via `override readonly code = '…'`. Callers cannot vary the code
   per throw site — it's a property of the type.
 - **Cross-realm-safe brand.** `QuillaError.is(e)` uses
-  `Symbol.for('quilla-kit.error')` so duplicate package copies (peer-dep
+  `Symbol.for('quilla-be-kit.error')` so duplicate package copies (peer-dep
   drift, bundler quirks) still identify toolkit errors correctly. Category
   classification stays `instanceof`-based — downstream packages should
-  declare `@quilla-kit/errors` as a `peerDependency` to keep that reliable.
+  declare `@quilla-be-kit/errors` as a `peerDependency` to keep that reliable.
 - **No `type` / `category` string field.** Class hierarchy *is* the
   classification; consumers don't branch on string literals. `instanceof`
   gives inheritance-aware matching for free (a `CrossScopeAccessError`
   matches `instanceof NotFoundError`).
 - **No normalize helper.** Wrapping unknown throws is a boundary concern
-  that lives in the HTTP error handler (`@quilla-kit/http`), not a generic
+  that lives in the HTTP error handler (`@quilla-be-kit/http`), not a generic
   utility exported here.
 - **Native `cause` passthrough** via the ES2022 `Error({ cause })` option,
   plus a `context?: Record<string, unknown>` field for structured,

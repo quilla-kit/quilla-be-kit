@@ -1,4 +1,4 @@
-import type { Logger } from '@quilla-kit/observability';
+import type { Logger } from '@quilla-be-kit/observability';
 import { Hono } from 'hono';
 import type { Context, Next } from 'hono';
 import { resolveHttpError } from '../../error/resolve-http-error.js';

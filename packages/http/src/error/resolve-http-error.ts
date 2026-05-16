@@ -7,7 +7,7 @@ import {
   QuillaError,
   UnauthorizedError,
   ValidationError,
-} from '@quilla-kit/errors';
+} from '@quilla-be-kit/errors';
 import type { HttpResponse } from '../request/http-response.type.js';
 
 export type ResolvedHttpError = {

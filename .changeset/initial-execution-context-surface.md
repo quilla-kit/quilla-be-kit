@@ -1,11 +1,11 @@
 ---
-"@quilla-kit/execution-context": minor
+"@quilla-be-kit/execution-context": minor
 ---
 
 Initial public surface: `ExecutionContext` type, `ExecutionContextProvider`
 and `ExecutionContextFactory` interfaces, `AsyncExecutionContextProvider`
 class, `executionContextFactory` default implementation, and
-`ExecutionContextEnricher` bridging into `@quilla-kit/observability`.
+`ExecutionContextEnricher` bridging into `@quilla-be-kit/observability`.
 
 Key design decisions:
 
@@ -33,10 +33,10 @@ Key design decisions:
   `{ provider, factory }` twice.
 - **Factory methods**: `createSystemContext('system' | 'job')`,
   `createBaselineContext({ correlationId? })`, `createFromEventMetadata(meta)`.
-  JWT and HTTP-specific factories belong in `@quilla-kit/security` and
-  `@quilla-kit/http` respectively.
+  JWT and HTTP-specific factories belong in `@quilla-be-kit/security` and
+  `@quilla-be-kit/http` respectively.
 - **`ExecutionContextEnricher` is silent** when the provider has no active
   context — returns `{}` instead of propagating the throw. Bootstrap logs
   and pre-request logs still emit, just without context fields.
-- **`ActorType` sourced from `@quilla-kit/ddd`**, same extensible union used
+- **`ActorType` sourced from `@quilla-be-kit/ddd`**, same extensible union used
   by `EventMetadata`. Consistent actor vocabulary across the toolkit.

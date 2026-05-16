@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { EventMetadata } from '@quilla-kit/ddd';
+import type { EventMetadata } from '@quilla-be-kit/ddd';
 import type { ExecutionContext } from './execution-context.type.js';
 
 export interface ExecutionContextFactory {

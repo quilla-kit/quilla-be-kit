@@ -1,17 +1,17 @@
 {
-  "name": "@quilla-kit/errors",
+  "name": "@quilla-be-kit/errors",
   "version": "0.1.0",
   "description": "Transport-agnostic error primitives: QuillaError base with cross-realm-safe brand, and category classes (Validation, NotFound, Conflict, Unauthorized, Forbidden, Internal, External, Unknown).",
   "license": "MIT",
   "author": "Max Martinez",
-  "homepage": "https://github.com/quilla-kit/quilla-kit/tree/main/packages/errors",
+  "homepage": "https://github.com/quilla-kit/quilla-be-kit/tree/main/packages/errors",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/quilla-kit/quilla-kit.git",
+    "url": "git+https://github.com/quilla-kit/quilla-be-kit.git",
     "directory": "packages/errors"
   },
   "bugs": {
-    "url": "https://github.com/quilla-kit/quilla-kit/issues"
+    "url": "https://github.com/quilla-kit/quilla-be-kit/issues"
   },
   "keywords": ["errors", "error-handling", "typescript"],
   "type": "module",

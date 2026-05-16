@@ -1,11 +1,11 @@
 ---
-"@quilla-kit/persistence": minor
+"@quilla-be-kit/persistence": minor
 ---
 
 Initial public surface: transport-agnostic core + Postgres reference
 implementation under the `/postgres` sub-path.
 
-**Core (`@quilla-kit/persistence`):**
+**Core (`@quilla-be-kit/persistence`):**
 
 - `Database` / `DatabaseTransaction` / `DatabaseResult` / `DatabaseHealth`
   types — the transport abstraction.
@@ -43,7 +43,7 @@ implementation under the `/postgres` sub-path.
   `CROSS_SCOPE_ACCESS`), `OptimisticLockError` (extends `ConflictError`,
   code `OPTIMISTIC_LOCK`).
 
-**Postgres (`@quilla-kit/persistence/postgres`):**
+**Postgres (`@quilla-be-kit/persistence/postgres`):**
 
 - `PgDatabase` — owns a `pg.Pool`; constructor takes `PoolConfig`. Wire
   `disconnect()` into `ShutdownManager` for graceful drain. `healthCheck()`
@@ -65,7 +65,7 @@ implementation under the `/postgres` sub-path.
 **Key design decisions:**
 
 - **Transport-agnostic core, dialect-specific sub-path.** Consumers who
-  target Postgres import from `@quilla-kit/persistence/postgres`.
+  target Postgres import from `@quilla-be-kit/persistence/postgres`.
   Consumers targeting another dialect implement `Database` +
   `WriteDbAdapter` + `ReadDbAdapter` themselves. Invariants (audit,
   optimistic-lock check, scope isolation, excluded-keys filtering, event
@@ -86,8 +86,8 @@ implementation under the `/postgres` sub-path.
 - **`code` is class-fixed** on every toolkit error — no constructor
   parameter varies it. `CrossScopeAccessError.code === 'CROSS_SCOPE_
   ACCESS'`, `OptimisticLockError.code === 'OPTIMISTIC_LOCK'`.
-- **Peer dependencies on toolkit packages** (`@quilla-kit/ddd`,
-  `@quilla-kit/execution-context`, `@quilla-kit/errors`) — avoid
+- **Peer dependencies on toolkit packages** (`@quilla-be-kit/ddd`,
+  `@quilla-be-kit/execution-context`, `@quilla-be-kit/errors`) — avoid
   duplicate copies across consumer graphs; keeps `instanceof` reliable.
 
 **Tests:** 64 abstract-level unit tests — audit injection, optimistic-

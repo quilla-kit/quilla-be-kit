@@ -1,9 +1,9 @@
 ---
-'@quilla-kit/jobs': minor
+'@quilla-be-kit/jobs': minor
 ---
 
-Initial surface for `@quilla-kit/jobs`: `BackgroundJob` and `JobRunner`
+Initial surface for `@quilla-be-kit/jobs`: `BackgroundJob` and `JobRunner`
 contracts, `JobSchedule` union (interval-only for now), and
 `InProcessJobRunner` — a timer-based reference runner that runs every tick
 inside a system `ExecutionContext` and implements `Disposable` from
-`@quilla-kit/runtime`.
+`@quilla-be-kit/runtime`.

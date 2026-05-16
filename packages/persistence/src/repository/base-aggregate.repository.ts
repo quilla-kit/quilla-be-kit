@@ -1,4 +1,4 @@
-import type { AggregateRoot } from '@quilla-kit/ddd';
+import type { AggregateRoot } from '@quilla-be-kit/ddd';
 import type { BaseWriteDao } from '../dao/base-write.dao.js';
 import type { UnitOfWorkContext } from '../unit-of-work/unit-of-work-context.type.js';
 import type { PersistenceMapper } from './mapper.interface.js';

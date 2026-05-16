@@ -1,4 +1,4 @@
-import { ValidationError } from '@quilla-kit/errors';
+import { ValidationError } from '@quilla-be-kit/errors';
 import { HttpAttributes } from '../request/http-attributes.js';
 import type { HttpRequest } from '../request/http-request.interface.js';
 import type { HttpResponse } from '../request/http-response.type.js';

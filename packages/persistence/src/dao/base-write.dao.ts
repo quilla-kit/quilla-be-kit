@@ -1,4 +1,4 @@
-import type { ExecutionContextProvider } from '@quilla-kit/execution-context';
+import type { ExecutionContextProvider } from '@quilla-be-kit/execution-context';
 import type { DatabaseTransaction } from '../database/database-transaction.interface.js';
 import type { FilterQuery } from '../db-adapter/filter-query.type.js';
 import type { WriteDbAdapter } from '../db-adapter/write-db-adapter.interface.js';

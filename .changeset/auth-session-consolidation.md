@@ -1,8 +1,8 @@
 ---
-"@quilla-kit/execution-context": minor
-"@quilla-kit/persistence": minor
-"@quilla-kit/http": minor
-"@quilla-kit/security": minor
+"@quilla-be-kit/execution-context": minor
+"@quilla-be-kit/persistence": minor
+"@quilla-be-kit/http": minor
+"@quilla-be-kit/security": minor
 ---
 
 **Breaking (pre-1.0):** consolidate `scopeId` and `userId` on
@@ -17,7 +17,7 @@ never half-populated in well-formed code. The type didn't enforce that.
 New shape:
 
 ```ts
-// @quilla-kit/execution-context
+// @quilla-be-kit/execution-context
 export type AuthSession = {
   readonly scopeId: string;
   readonly userId: string;
@@ -38,19 +38,19 @@ broader context whether or not there's a session.
 
 **Affected toolkit surfaces (all updated):**
 
-- `@quilla-kit/execution-context` — `ExecutionContext.session?`,
+- `@quilla-be-kit/execution-context` — `ExecutionContext.session?`,
   `AuthSession` exported type, `createFromEventMetadata` reconstructs the
   session from flat `EventMetadata.scopeId` / `userId` (metadata stays
   flat on the wire), `ExecutionContextEnricher` flattens `session` into
   top-level `scopeId` / `userId` log fields so log output shape is
   unchanged.
-- `@quilla-kit/persistence` — `BaseWriteDao` reads audit from
+- `@quilla-be-kit/persistence` — `BaseWriteDao` reads audit from
   `ctx.session?.userId`. System contexts with no session persist `null`
   audit.
-- `@quilla-kit/http` — `@ValidateRequest` reads auth from
+- `@quilla-be-kit/http` — `@ValidateRequest` reads auth from
   `ctx.session?.{scopeId,userId}`. Injection requires both a live
   session AND a `describeSchema` impl on the `RequestValidator`.
-- `@quilla-kit/security` — `authenticatedSessionMiddleware` now enriches
+- `@quilla-be-kit/security` — `authenticatedSessionMiddleware` now enriches
   the context with `session: { scopeId, userId }` instead of flat
   top-level fields.
 

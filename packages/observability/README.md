@@ -1,4 +1,4 @@
-# @quilla-kit/observability
+# @quilla-be-kit/observability
 
 Structured logger with pluggable formatters, observers, enrichers, and
 optional PII obfuscation for the `data` bucket.
@@ -8,7 +8,7 @@ Zero runtime dependencies. Uses only Node's built-in Web Crypto
 
 ## Why this package exists
 
-Every `@quilla-kit/*` service-side package needs a logger with a consistent
+Every `@quilla-be-kit/*` service-side package needs a logger with a consistent
 shape so logs can be queried and correlated across packages. This package
 ships:
 
@@ -27,20 +27,20 @@ ships:
 - `RecursiveObfuscator` with HMAC-SHA256 (stable pseudonym) or AES-GCM
   (reversible) strategies for GDPR / PII compliance.
 
-Deliberately has no dependency on `@quilla-kit/execution-context` — the
+Deliberately has no dependency on `@quilla-be-kit/execution-context` — the
 execution-context enricher lives *there* to keep this package adoptable
 standalone.
 
 ## Install
 
 ```sh
-pnpm add @quilla-kit/observability
+pnpm add @quilla-be-kit/observability
 ```
 
 ## Quick start
 
 ```ts
-import { createLoggerFactory } from '@quilla-kit/observability';
+import { createLoggerFactory } from '@quilla-be-kit/observability';
 
 const factory = createLoggerFactory({
   config: {
@@ -79,7 +79,7 @@ scoped.info('ok');
 ## With obfuscation (PII protection)
 
 ```ts
-import { createLoggerFactory, createRecursiveObfuscator } from '@quilla-kit/observability';
+import { createLoggerFactory, createRecursiveObfuscator } from '@quilla-be-kit/observability';
 
 const obfuscator = await createRecursiveObfuscator({
   strategy: 'hmac',           // 'hmac' (stable pseudonym) or 'encrypt' (reversible)
@@ -138,14 +138,14 @@ fire-and-forget. Before process exit, call `flush()` to await any in-flight
 emissions:
 
 ```ts
-import { StructuredLogger } from '@quilla-kit/observability';
+import { StructuredLogger } from '@quilla-be-kit/observability';
 
 // flush() lives on StructuredLogger, not the Logger interface —
 // the interface is deliberately minimal. Narrow the type when you need it:
 await (logger as StructuredLogger).flush();
 ```
 
-Or register it with `@quilla-kit/runtime`'s `ShutdownManager` so it runs
+Or register it with `@quilla-be-kit/runtime`'s `ShutdownManager` so it runs
 automatically in the shutdown phase.
 
 ## Testing
@@ -155,7 +155,7 @@ in code paths that opt out of logging without threading `| undefined`
 through every call site:
 
 ```ts
-import { NoopLogger } from '@quilla-kit/observability';
+import { NoopLogger } from '@quilla-be-kit/observability';
 
 const logger = new NoopLogger();
 // logger.info(...) etc. are no-ops; forMethod/withMeta return the same instance.
@@ -166,11 +166,11 @@ const logger = new NoopLogger();
 By default `StructuredLogger` serializes errors using the standard `Error`
 properties (`name`, `message`, `stack`, `cause`). Pass a `LogErrorSerializer`
 to expose richer fields — for example the `code` and `context` carried by
-`@quilla-kit/errors`:
+`@quilla-be-kit/errors`:
 
 ```ts
-import { createLoggerFactory } from '@quilla-kit/observability';
-import { QuillaErrorSerializer } from '@quilla-kit/errors';
+import { createLoggerFactory } from '@quilla-be-kit/observability';
+import { QuillaErrorSerializer } from '@quilla-be-kit/errors';
 
 const factory = createLoggerFactory({
   config: { service: 'my-backend', level: 'info', mode: 'pretty' },
@@ -194,7 +194,7 @@ produces:
 Implement `LogErrorSerializer` to integrate any other error hierarchy:
 
 ```ts
-import type { LogErrorSerializer, SerializedError } from '@quilla-kit/observability';
+import type { LogErrorSerializer, SerializedError } from '@quilla-be-kit/observability';
 
 class MyErrorSerializer implements LogErrorSerializer {
   serialize(error: unknown): SerializedError | undefined {

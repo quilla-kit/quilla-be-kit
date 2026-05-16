@@ -3,7 +3,7 @@ import {
   type ExecutionContextFactory,
   type ExecutionContextProvider,
   executionContextFactory,
-} from '@quilla-kit/execution-context';
+} from '@quilla-be-kit/execution-context';
 
 export class FakeExecutionContextProvider implements ExecutionContextProvider {
   readonly factory: ExecutionContextFactory;

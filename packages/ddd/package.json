@@ -1,17 +1,17 @@
 {
-  "name": "@quilla-kit/ddd",
+  "name": "@quilla-be-kit/ddd",
   "version": "0.1.0",
   "description": "DDD primitives: AggregateRoot, Entity, DomainEvent, IntegrationEvent, EventMetadata, ActorType.",
   "license": "MIT",
   "author": "Max Martinez",
-  "homepage": "https://github.com/quilla-kit/quilla-kit/tree/main/packages/ddd",
+  "homepage": "https://github.com/quilla-kit/quilla-be-kit/tree/main/packages/ddd",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/quilla-kit/quilla-kit.git",
+    "url": "git+https://github.com/quilla-kit/quilla-be-kit.git",
     "directory": "packages/ddd"
   },
   "bugs": {
-    "url": "https://github.com/quilla-kit/quilla-kit/issues"
+    "url": "https://github.com/quilla-kit/quilla-be-kit/issues"
   },
   "keywords": [
     "ddd",

@@ -1,4 +1,4 @@
-import { EventKind, EventMetadata } from '@quilla-kit/ddd';
+import { EventKind, EventMetadata } from '@quilla-be-kit/ddd';
 import { describe, expect, it } from 'vitest';
 import { executionContextFactory } from '../src/execution-context.factory.js';
 

@@ -1,17 +1,17 @@
 {
-  "name": "quilla-kit",
+  "name": "quilla-be-kit",
   "version": "0.0.0",
   "private": true,
   "description": "A composable TypeScript toolkit for building substrate-grade backend services.",
   "license": "MIT",
   "author": "Max Martinez",
-  "homepage": "https://github.com/quilla-kit/quilla-kit",
+  "homepage": "https://github.com/quilla-kit/quilla-be-kit",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/quilla-kit/quilla-kit.git"
+    "url": "git+https://github.com/quilla-kit/quilla-be-kit.git"
   },
   "bugs": {
-    "url": "https://github.com/quilla-kit/quilla-kit/issues"
+    "url": "https://github.com/quilla-kit/quilla-be-kit/issues"
   },
   "type": "module",
   "engines": {

@@ -1,17 +1,17 @@
 {
-  "name": "@quilla-kit/http",
+  "name": "@quilla-be-kit/http",
   "version": "0.1.0",
   "description": "Framework-agnostic HTTP layer: decorators (@Controller/@Get/@Post/.../@AuthorizeScope/@ValidateRequest), framework-agnostic router, WebServer interface, and a Hono adapter sub-path.",
   "license": "MIT",
   "author": "Max Martinez",
-  "homepage": "https://github.com/quilla-kit/quilla-kit/tree/main/packages/http",
+  "homepage": "https://github.com/quilla-kit/quilla-be-kit/tree/main/packages/http",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/quilla-kit/quilla-kit.git",
+    "url": "git+https://github.com/quilla-kit/quilla-be-kit.git",
     "directory": "packages/http"
   },
   "bugs": {
-    "url": "https://github.com/quilla-kit/quilla-kit/issues"
+    "url": "https://github.com/quilla-kit/quilla-be-kit/issues"
   },
   "keywords": [
     "http",
@@ -55,10 +55,10 @@
     "clean": "rm -rf dist *.tsbuildinfo"
   },
   "dependencies": {
-    "@quilla-kit/errors": "workspace:^",
-    "@quilla-kit/execution-context": "workspace:^",
-    "@quilla-kit/observability": "workspace:^",
-    "@quilla-kit/runtime": "workspace:^"
+    "@quilla-be-kit/errors": "workspace:^",
+    "@quilla-be-kit/execution-context": "workspace:^",
+    "@quilla-be-kit/observability": "workspace:^",
+    "@quilla-be-kit/runtime": "workspace:^"
   },
   "peerDependencies": {
     "hono": "4.x.x",

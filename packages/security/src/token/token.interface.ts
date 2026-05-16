@@ -1,4 +1,4 @@
-import type { AuthenticatedToken } from '@quilla-kit/http';
+import type { AuthenticatedToken } from '@quilla-be-kit/http';
 
 /**
  * `securityStamp` is the revocation marker — compared against the

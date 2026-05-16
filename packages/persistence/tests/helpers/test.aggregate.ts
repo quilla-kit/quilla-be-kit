@@ -1,4 +1,4 @@
-import { AggregateRoot, DomainEvent } from '@quilla-kit/ddd';
+import { AggregateRoot, DomainEvent } from '@quilla-be-kit/ddd';
 
 type TestProps = { readonly name: string };
 
