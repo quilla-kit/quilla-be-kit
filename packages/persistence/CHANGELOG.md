@@ -1,5 +1,11 @@
 # @quilla-be-kit/persistence
 
+## 0.1.2
+
+### Patch Changes
+
+- a919eae: chore: disable provenance for one-time OIDC bootstrap publish
+
 ## 0.1.1
 
 ### Patch Changes
