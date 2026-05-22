@@ -1,6 +1,6 @@
 {
   "name": "@quilla-be-kit/messaging",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Broker-agnostic messaging: event-bus + consumer interfaces, local-outbox pattern, outbox forwarder, Postgres reference implementation.",
   "license": "MIT",
   "author": "Max Martinez",
@@ -13,7 +13,13 @@
   "bugs": {
     "url": "https://github.com/quilla-kit/quilla-be-kit/issues"
   },
-  "keywords": ["messaging", "event-bus", "outbox", "integration-events", "typescript"],
+  "keywords": [
+    "messaging",
+    "event-bus",
+    "outbox",
+    "integration-events",
+    "typescript"
+  ],
   "type": "module",
   "engines": {
     "node": ">=22"
@@ -31,7 +37,11 @@
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "files": ["dist", "README.md", "LICENSE"],
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "publishConfig": {
     "access": "public",
     "provenance": true
