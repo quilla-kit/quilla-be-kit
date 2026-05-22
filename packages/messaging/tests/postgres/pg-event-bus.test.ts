@@ -79,6 +79,31 @@ describe('PgEventBus', () => {
         aggregateId: 'agg-1',
       });
     });
+
+    it('passes null for the topic filter when allowedTopics is omitted', async () => {
+      pool.enqueue([]);
+      await bus.claim('replica-1', 10);
+
+      const call = pool.calls[0];
+      expect(call?.sql).toContain('event_type = ANY($4)');
+      expect(call?.params[3]).toBeNull();
+    });
+
+    it('passes null for the topic filter when allowedTopics is empty', async () => {
+      pool.enqueue([]);
+      await bus.claim('replica-1', 10, []);
+
+      expect(pool.calls[0]?.params[3]).toBeNull();
+    });
+
+    it('passes the topic array when allowedTopics is non-empty', async () => {
+      pool.enqueue([]);
+      await bus.claim('replica-1', 10, ['order.placed', 'order.cancelled']);
+
+      const call = pool.calls[0];
+      expect(call?.sql).toContain('event_type = ANY($4)');
+      expect(call?.params[3]).toEqual(['order.placed', 'order.cancelled']);
+    });
   });
 
   describe('markDone', () => {

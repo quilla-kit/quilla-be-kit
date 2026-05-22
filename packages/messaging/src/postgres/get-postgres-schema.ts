@@ -47,8 +47,8 @@ export function getPostgresSchema(options?: PostgresSchemaOptions): string {
   created_at TIMESTAMPTZ NOT NULL,
   published_at TIMESTAMPTZ NOT NULL
 );`,
-    `CREATE INDEX IF NOT EXISTS ${eventsTable}_status_created_at_idx
-  ON ${eventsTable} (status, created_at)
+    `CREATE INDEX IF NOT EXISTS ${eventsTable}_event_type_created_at_idx
+  ON ${eventsTable} (event_type, created_at)
   WHERE status = 'PENDING';`,
     `CREATE INDEX IF NOT EXISTS ${eventsTable}_aggregate_id_status_idx
   ON ${eventsTable} (aggregate_id, status)

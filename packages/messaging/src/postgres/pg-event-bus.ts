@@ -71,11 +71,17 @@ export class PgEventBus implements EventBusPublisher, EventBusConsumer {
   // NOT EXISTS guards against claiming a second event for an aggregate while
   // an earlier one is still CLAIMED. Advisory xact lock closes the race
   // between NOT EXISTS and UPDATE across overlapping transactions.
-  async claim(instanceId: string, batchSize: number): Promise<readonly EventBusEntry[]> {
+  async claim(
+    instanceId: string,
+    batchSize: number,
+    allowedTopics?: readonly string[],
+  ): Promise<readonly EventBusEntry[]> {
+    const topicFilter = allowedTopics && allowedTopics.length > 0 ? [...allowedTopics] : null;
     const result = await this.pool.query<EventsRow>(
       `WITH claimed AS (
          SELECT id FROM ${this.eventsTable} e
          WHERE e.status = 'PENDING'
+           AND ($4::text[] IS NULL OR e.event_type = ANY($4))
            AND NOT EXISTS (
              SELECT 1 FROM ${this.eventsTable} e2
              WHERE e2.aggregate_id IS NOT NULL
@@ -93,7 +99,7 @@ export class PgEventBus implements EventBusPublisher, EventBusConsumer {
        FROM claimed c
        WHERE t.id = c.id
        RETURNING t.*`,
-      [batchSize, instanceId, new Date()],
+      [batchSize, instanceId, new Date(), topicFilter],
     );
     return result.rows.map((r) => this.rowToEntry(r));
   }

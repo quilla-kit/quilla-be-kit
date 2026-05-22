@@ -15,26 +15,49 @@ Node 22+, ESM-only.
 
 ---
 
-## Single-subscriber constraint
+## What the bus delivers
 
 The bus is a **worker queue**: each event is claimed and handled by **exactly
-one consumer-replica across the entire deployment**. After a successful
-handler chain, the row is deleted.
+one consumer-replica across the deployment for the topic it subscribes to**.
+After a successful handler chain, the row is deleted.
+
+A consumer only receives events whose `eventType` it has registered via
+`consumer.on(...)` or `consumer.subscribe(...)`. The claim query filters by
+the consumer's current handler set, so independent consumer services can
+share a single bus database — each one drains only its own topics.
+
+```
+Service A registers: order.placed, order.cancelled
+Service B registers: shipping.dispatched, shipping.delivered
+
+events table
+├── order.placed         ── claimed by A only
+├── shipping.dispatched  ── claimed by B only
+└── order.cancelled      ── claimed by A only
+```
+
+**Per-aggregate ordering is preserved across services.** The `NOT EXISTS`
+guard and `pg_try_advisory_xact_lock(hashtext(aggregate_id))` operate
+bus-wide, so events for the same `aggregate_id` serialize naturally no
+matter which service owns each topic.
 
 **In-process fan-out works normally.** A single consumer can register
 multiple handlers for the same event type via `consumer.on(...)` — all of
 them run when that replica claims the event.
 
-**What this rules out**: two *independent* services subscribing to the same
-event on the same bus. If service A consumes `order.placed`, service B does
-not see it. If you need that, use a dedicated broker:
+## Not pub-sub fan-out
+
+Each event type is consumed by **one** process group. Two independent
+services cannot both subscribe to the same event type on this bus — they
+would race for the same row. For multi-subscriber broadcast, use a real
+broker:
 
 | Use case | Use this broker |
 |---|---|
-| Fan-out across services | Apache Kafka (consumer groups) |
+| Multi-subscriber fan-out (same topic, two services) | Apache Kafka (consumer groups) |
 | Topic subscriptions, exchanges | RabbitMQ |
 | AWS-native fan-out | SNS → SQS |
-| Simple single-service durable queue | This package |
+| Single-deployment durable queue with topic partitioning | This package |
 
 `EventPublisher` / `EventBusConsumer` are broker-agnostic interfaces — you
 can implement them against any of the above.
@@ -219,8 +242,9 @@ Both `PgLocalOutbox.claim()` and `PgEventBus.claim()` run a single CTE:
 WITH claimed AS (
   SELECT id FROM events
   WHERE status = 'PENDING'
-    AND NOT EXISTS (...)                       -- aggregate-ordering guard (bus only)
-    AND pg_try_advisory_xact_lock(...)         -- concurrent-claim guard (bus only)
+    AND ($4::text[] IS NULL OR event_type = ANY($4))  -- topic filter (bus only)
+    AND NOT EXISTS (...)                              -- aggregate-ordering guard (bus only)
+    AND pg_try_advisory_xact_lock(...)                -- concurrent-claim guard (bus only)
   ORDER BY created_at
   LIMIT $1
   FOR UPDATE SKIP LOCKED
@@ -479,12 +503,14 @@ ordering cursor — events are FIFO-drained by `created_at`.
 
 ### Indexes created
 
-- Partial index on `(status, created_at) WHERE status = 'PENDING'` — hot
-  path for claim queries.
-- Partial index on `(aggregate_id, status) WHERE aggregate_id IS NOT NULL
-  AND status = 'CLAIMED'` — supports the `NOT EXISTS` aggregate guard.
-- Partial index on `(claimed_at) WHERE status = 'CLAIMED'` — supports
-  `resetStale` scans.
+- **Outbox** — partial index on `(status, created_at) WHERE status = 'PENDING'`
+  for the forwarder's claim query, plus `(claimed_at) WHERE status = 'CLAIMED'`
+  for stale-claim scans.
+- **Events** — partial index on `(event_type, created_at) WHERE status = 'PENDING'`
+  matches `EventConsumer`'s topic-filtered claim query. Plus partial indexes on
+  `(aggregate_id, status) WHERE aggregate_id IS NOT NULL AND status = 'CLAIMED'`
+  for the `NOT EXISTS` aggregate guard, and `(claimed_at) WHERE status = 'CLAIMED'`
+  for `resetStale`.
 
 ---
 
@@ -594,7 +620,7 @@ import type {
 
 class KafkaBus implements EventBusPublisher, EventBusConsumer {
   async publish(event) { /* produce to topic */ }
-  async claim(instanceId, batchSize) { /* pull + transition */ }
+  async claim(instanceId, batchSize, allowedTopics) { /* pull + transition; filter by allowedTopics */ }
   async markDone(id) { /* commit offset */ }
   async markFailed(id, reason) { /* retry or DLQ per broker semantics */ }
   async resetStale(olderThan) { /* broker-specific recovery */ }
