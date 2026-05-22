@@ -11,7 +11,11 @@ export class FakeEventBusPublisher implements EventBusPublisher {
 }
 
 export class FakeEventBusConsumer implements EventBusConsumer {
-  readonly claimed: { instanceId: string; batchSize: number }[] = [];
+  readonly claimed: {
+    instanceId: string;
+    batchSize: number;
+    allowedTopics?: readonly string[] | undefined;
+  }[] = [];
   readonly marksDone: string[] = [];
   readonly marksFailed: { id: string; reason: string }[] = [];
   private batches: EventBusEntry[][] = [];
@@ -20,9 +24,16 @@ export class FakeEventBusConsumer implements EventBusConsumer {
     this.batches.push([...events]);
   }
 
-  async claim(instanceId: string, batchSize: number): Promise<readonly EventBusEntry[]> {
-    this.claimed.push({ instanceId, batchSize });
-    return this.batches.shift() ?? [];
+  async claim(
+    instanceId: string,
+    batchSize: number,
+    allowedTopics?: readonly string[],
+  ): Promise<readonly EventBusEntry[]> {
+    this.claimed.push({ instanceId, batchSize, allowedTopics });
+    const next = this.batches.shift() ?? [];
+    if (!allowedTopics || allowedTopics.length === 0) return next;
+    const allowed = new Set(allowedTopics);
+    return next.filter((e) => allowed.has(e.eventType));
   }
 
   async markDone(id: string): Promise<void> {

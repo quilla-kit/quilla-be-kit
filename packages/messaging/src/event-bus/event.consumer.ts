@@ -186,7 +186,10 @@ export class EventConsumer implements Disposable {
   private async tick(): Promise<void> {
     try {
       await this.sweepStale();
-      const events = await this.bus.claim(this.instanceId, this.batchSize);
+      if (this.handlers.size === 0) return;
+      const events = await this.bus.claim(this.instanceId, this.batchSize, [
+        ...this.handlers.keys(),
+      ]);
 
       for (const event of events) {
         if (this.stopping) break;
@@ -200,9 +203,11 @@ export class EventConsumer implements Disposable {
         }
 
         const handlers = this.handlers.get(event.eventType);
-        if (!handlers || handlers.length === 0) {
-          this.onProcessed?.(event);
-          await this.bus.markDone(event.id);
+        if (!handlers) {
+          // Broker contract violation; don't ack so stale-claim recovery surfaces it.
+          this.logger.error('broker delivered event for unregistered type', undefined, {
+            meta: { eventId: event.id, eventType: event.eventType },
+          });
           continue;
         }
 

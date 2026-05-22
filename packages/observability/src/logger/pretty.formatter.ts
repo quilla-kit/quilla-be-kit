@@ -61,7 +61,9 @@ export class PrettyFormatter implements LogFormatter {
 
     if (entry.error !== undefined) {
       const codeLabel = entry.error.code !== undefined ? ` [${entry.error.code}]` : '';
-      lines.push(`  ${color}${BOLD}${entry.error.name}${codeLabel}:${RESET} ${entry.error.message}`);
+      lines.push(
+        `  ${color}${BOLD}${entry.error.name}${codeLabel}:${RESET} ${entry.error.message}`,
+      );
       if (entry.error.context !== undefined) {
         lines.push(`  ${DIM}context:${RESET} ${JSON.stringify(entry.error.context)}`);
       }

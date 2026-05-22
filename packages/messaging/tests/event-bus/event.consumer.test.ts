@@ -102,21 +102,79 @@ describe('EventConsumer', () => {
     );
   });
 
-  it('markDone when no handler is registered for event type', async () => {
+  it('passes the registered handler keys as allowedTopics to claim()', async () => {
     const consumer = new EventConsumer({
       bus,
       consumerName: 'test',
       sourceService: 'svc-a',
       logger: new NoopLogger(),
     });
-    bus.enqueueBatch([makeBusEntry({ eventType: 'unhandled.type' })]);
+    consumer.on('order.placed', async () => {});
+    consumer.on('user.created', async () => {});
 
     consumer.start();
     await vi.advanceTimersByTimeAsync(1000);
     await consumer.dispose();
 
-    expect(bus.marksDone).toEqual(['evt-1']);
-    expect(bus.marksFailed).toHaveLength(0);
+    expect(bus.claimed.length).toBeGreaterThan(0);
+    for (const call of bus.claimed) {
+      expect([...(call.allowedTopics ?? [])].sort()).toEqual(['order.placed', 'user.created']);
+    }
+  });
+
+  it('does not call claim() when no handlers are registered', async () => {
+    const consumer = new EventConsumer({
+      bus,
+      consumerName: 'test',
+      sourceService: 'svc-a',
+      logger: new NoopLogger(),
+    });
+
+    consumer.start();
+    await vi.advanceTimersByTimeAsync(3000);
+    await consumer.dispose();
+
+    expect(bus.claimed).toHaveLength(0);
+  });
+
+  it('two consumers with disjoint topics on the same bus do not see each others events', async () => {
+    const busA: FakeEventBusConsumer = bus;
+    const onOrder = vi.fn(async () => {});
+    const onShipping = vi.fn(async () => {});
+
+    const consumerOrders = new EventConsumer({
+      bus: busA,
+      consumerName: 'orders',
+      sourceService: 'orders',
+      logger: new NoopLogger(),
+    });
+    consumerOrders.on('order.placed', onOrder);
+
+    const consumerShipping = new EventConsumer({
+      bus: busA,
+      consumerName: 'shipping',
+      sourceService: 'shipping',
+      logger: new NoopLogger(),
+    });
+    consumerShipping.on('shipping.dispatched', onShipping);
+
+    busA.enqueueBatch([
+      makeBusEntry({ id: 'o-1', eventType: 'order.placed' }),
+      makeBusEntry({ id: 's-1', eventType: 'shipping.dispatched' }),
+    ]);
+    busA.enqueueBatch([
+      makeBusEntry({ id: 'o-2', eventType: 'order.placed' }),
+      makeBusEntry({ id: 's-2', eventType: 'shipping.dispatched' }),
+    ]);
+
+    consumerOrders.start();
+    consumerShipping.start();
+    await vi.advanceTimersByTimeAsync(2000);
+    await consumerOrders.dispose();
+    await consumerShipping.dispose();
+
+    expect(onOrder).toHaveBeenCalledTimes(1);
+    expect(onShipping).toHaveBeenCalledTimes(1);
   });
 
   it('skips self-emitted events matching `skipOwnEventKinds` and markDone without invoking handler', async () => {
@@ -227,6 +285,7 @@ describe('EventConsumer', () => {
       logger: new NoopLogger(),
       instanceId: 'replica-7',
     });
+    consumer.on('test.happened', async () => {});
 
     consumer.start();
     await vi.advanceTimersByTimeAsync(3000);
