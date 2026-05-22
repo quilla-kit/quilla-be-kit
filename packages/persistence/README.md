@@ -658,7 +658,7 @@ The generator is Zod-bound (extracts field kinds by walking the `ZodObject` sche
 
 Consumer-facing consequences:
 
-- `.from('users; DROP TABLE users')` throws at build time.
+- `.from('users; invalid-sql')` throws at build time.
 - `.select(['id', injectedFromUser])` throws if the user string isn't a plain identifier.
 - `.where('name = ' + userInput)` — still your own bug. Always use `.where('name = ?', userInput)`.
 
