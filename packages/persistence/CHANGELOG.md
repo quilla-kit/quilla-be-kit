@@ -1,5 +1,11 @@
 # @quilla-be-kit/persistence
 
+## 0.1.3
+
+### Patch Changes
+
+- 63d76ac: docs: remove SQL injection example string that triggered npm security scanner
+
 ## 0.1.2
 
 ### Patch Changes
