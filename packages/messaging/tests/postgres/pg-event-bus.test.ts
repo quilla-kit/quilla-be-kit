@@ -80,28 +80,31 @@ describe('PgEventBus', () => {
       });
     });
 
-    it('passes null for the topic filter when allowedTopics is omitted', async () => {
+    it('omits the topic predicate when allowedTopics is not provided', async () => {
       pool.enqueue([]);
       await bus.claim('replica-1', 10);
 
       const call = pool.calls[0];
-      expect(call?.sql).toContain('event_type = ANY($4)');
-      expect(call?.params[3]).toBeNull();
+      expect(call?.sql).not.toContain('event_type');
+      expect(call?.params).toHaveLength(3);
     });
 
-    it('passes null for the topic filter when allowedTopics is empty', async () => {
+    it('omits the topic predicate when allowedTopics is empty', async () => {
       pool.enqueue([]);
       await bus.claim('replica-1', 10, []);
 
-      expect(pool.calls[0]?.params[3]).toBeNull();
+      const call = pool.calls[0];
+      expect(call?.sql).not.toContain('event_type');
+      expect(call?.params).toHaveLength(3);
     });
 
-    it('passes the topic array when allowedTopics is non-empty', async () => {
+    it('inlines event_type = ANY($4) and passes the topic array', async () => {
       pool.enqueue([]);
       await bus.claim('replica-1', 10, ['order.placed', 'order.cancelled']);
 
       const call = pool.calls[0];
-      expect(call?.sql).toContain('event_type = ANY($4)');
+      expect(call?.sql).toContain('AND e.event_type = ANY($4)');
+      expect(call?.params).toHaveLength(4);
       expect(call?.params[3]).toEqual(['order.placed', 'order.cancelled']);
     });
   });

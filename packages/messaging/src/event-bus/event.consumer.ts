@@ -93,6 +93,7 @@ export class EventConsumer implements Disposable {
   private readonly executionContext: EventConsumerOptions['executionContext'];
   private readonly onProcessed: ((entry: EventBusEntry) => void) | undefined;
   private readonly handlers = new Map<string, EventHandler[]>();
+  private topicKeys: readonly string[] = [];
 
   private intervalHandle: ReturnType<typeof setInterval> | null = null;
   private inflightTick: Promise<void> | null = null;
@@ -121,7 +122,7 @@ export class EventConsumer implements Disposable {
   }
 
   get registeredEventTypes(): readonly string[] {
-    return [...this.handlers.keys()];
+    return this.topicKeys;
   }
 
   on<TPayload>(descriptor: EventDescriptor<TPayload>, handler: EventHandler<TPayload>): this;
@@ -135,9 +136,11 @@ export class EventConsumer implements Disposable {
       typeof eventTypeOrDescriptor === 'string' ? undefined : eventTypeOrDescriptor.schema;
     const registered: EventHandler =
       schema !== undefined ? wrapWithSchema(eventType, schema, handler) : handler;
+    const isNewType = !this.handlers.has(eventType);
     const existing = this.handlers.get(eventType) ?? [];
     existing.push(registered);
     this.handlers.set(eventType, existing);
+    if (isNewType) this.topicKeys = [...this.handlers.keys()];
     return this;
   }
 
@@ -186,10 +189,8 @@ export class EventConsumer implements Disposable {
   private async tick(): Promise<void> {
     try {
       await this.sweepStale();
-      if (this.handlers.size === 0) return;
-      const events = await this.bus.claim(this.instanceId, this.batchSize, [
-        ...this.handlers.keys(),
-      ]);
+      if (this.topicKeys.length === 0) return;
+      const events = await this.bus.claim(this.instanceId, this.batchSize, this.topicKeys);
 
       for (const event of events) {
         if (this.stopping) break;
