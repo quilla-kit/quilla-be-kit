@@ -1,5 +1,11 @@
 # @quilla-be-kit/persistence
 
+## 0.1.4
+
+### Patch Changes
+
+- 833a8bf: chore: restore provenance and switch back to OIDC publishing
+
 ## 0.1.3
 
 ### Patch Changes
