@@ -4,12 +4,25 @@ import type { EventBusConsumer, EventBusEntry, EventBusPublisher } from '../../s
 export class FakeEventBusPublisher implements EventBusPublisher {
   readonly published: { id: string; event: Parameters<EventBusPublisher['publish']>[0] }[] = [];
   publishError: Error | null = null;
+  private readonly byOriginEventId = new Map<string, string>();
 
-  async publish(event: Parameters<EventBusPublisher['publish']>[0]): Promise<string> {
+  async publish(
+    event: Parameters<EventBusPublisher['publish']>[0],
+  ): Promise<{ id: string; inserted: boolean }> {
     if (this.publishError) throw this.publishError;
+    if (event.originEventId !== undefined) {
+      const existing = this.byOriginEventId.get(event.originEventId);
+      if (existing !== undefined) {
+        return { id: existing, inserted: false };
+      }
+      const id = randomUUID();
+      this.byOriginEventId.set(event.originEventId, id);
+      this.published.push({ id, event });
+      return { id, inserted: true };
+    }
     const id = randomUUID();
     this.published.push({ id, event });
-    return id;
+    return { id, inserted: true };
   }
 }
 

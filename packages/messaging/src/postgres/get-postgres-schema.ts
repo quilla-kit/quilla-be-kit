@@ -39,6 +39,7 @@ export function getPostgresSchema(options?: PostgresSchemaOptions): string {
   source_service TEXT NOT NULL,
   aggregate_id TEXT,
   correlation_id TEXT,
+  origin_event_id TEXT,
   status TEXT NOT NULL,
   claimed_by TEXT,
   claimed_at TIMESTAMPTZ,
@@ -56,6 +57,9 @@ export function getPostgresSchema(options?: PostgresSchemaOptions): string {
     `CREATE INDEX IF NOT EXISTS ${eventsTable}_claimed_at_idx
   ON ${eventsTable} (claimed_at)
   WHERE status = 'CLAIMED';`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS ${eventsTable}_origin_event_id_uq
+  ON ${eventsTable} (origin_event_id)
+  WHERE origin_event_id IS NOT NULL;`,
   ];
 
   return `${statements.join('\n\n')}\n`;

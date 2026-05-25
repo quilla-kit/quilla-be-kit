@@ -13,7 +13,8 @@ describe('PgEventBus', () => {
 
   describe('publish', () => {
     it('inserts into the events table with PENDING status and returns the generated id', async () => {
-      const returnedId = await bus.publish({
+      pool.enqueue([{ id: 'returning-row' }]);
+      const result = await bus.publish({
         eventType: 'order.placed',
         eventVersion: 1,
         eventKind: 'domain',
@@ -26,22 +27,66 @@ describe('PgEventBus', () => {
 
       const call = pool.calls[0];
       expect(call?.sql).toContain('INSERT INTO events');
-      expect(call?.params[0]).toBe(returnedId);
-      expect(returnedId).toMatch(/^[0-9a-f-]{36}$/);
+      expect(call?.sql).toContain(
+        'ON CONFLICT (origin_event_id) WHERE origin_event_id IS NOT NULL DO NOTHING',
+      );
+      expect(call?.sql).toContain('RETURNING id');
+      expect(result.inserted).toBe(true);
+      expect(result.id).toBe(call?.params[0]); // RETURNING echoes the inserted id
+      expect(result.id).toMatch(/^[0-9a-f-]{36}$/);
       expect(call?.params[1]).toBe('order.placed');
       expect(call?.params[2]).toBe(1);
       expect(call?.params[4]).toBe(JSON.stringify({ orderId: 'o-1' }));
       expect(call?.params[5]).toBe('svc-a');
       expect(call?.params[6]).toBe('agg-1');
       expect(call?.params[7]).toBe('corr-1');
-      expect(call?.params[8]).toBe('PENDING'); // status
-      expect(call?.params[9]).toBeNull(); // claimed_by
-      expect(call?.params[11]).toBe(0); // retry_count
-      expect(call?.params[14]).toBeInstanceOf(Date); // published_at
+      expect(call?.params[8]).toBeNull(); // origin_event_id
+      expect(call?.params[9]).toBe('PENDING'); // status
+      expect(call?.params[10]).toBeNull(); // claimed_by
+      expect(call?.params[12]).toBe(0); // retry_count
+      expect(call?.params[15]).toBeInstanceOf(Date); // published_at
     });
 
-    it('generates a fresh id on every call', async () => {
-      const id1 = await bus.publish({
+    it('passes originEventId through to the INSERT when supplied', async () => {
+      pool.enqueue([{ id: 'returning-row' }]);
+      const result = await bus.publish({
+        eventType: 'order.placed',
+        eventVersion: 1,
+        eventKind: 'domain',
+        payload: {},
+        sourceService: 'svc-a',
+        originEventId: 'outbox-row-uuid',
+        createdAt: new Date('2026-01-01T00:00:00Z'),
+      });
+
+      const call = pool.calls[0];
+      expect(call?.params[8]).toBe('outbox-row-uuid');
+      expect(result.inserted).toBe(true);
+      expect(result.id).toBe(call?.params[0]);
+    });
+
+    it('on dedup conflict (no RETURNING rows) fetches the existing id and reports inserted=false', async () => {
+      pool.enqueue([]); // INSERT returns no rows — conflict
+      pool.enqueue([{ id: 'bus-existing' }]); // SELECT returns the prior row's id
+      const result = await bus.publish({
+        eventType: 'order.placed',
+        eventVersion: 1,
+        eventKind: 'domain',
+        payload: {},
+        sourceService: 'svc-a',
+        originEventId: 'outbox-row-uuid',
+        createdAt: new Date('2026-01-01T00:00:00Z'),
+      });
+
+      expect(result).toEqual({ id: 'bus-existing', inserted: false });
+      expect(pool.calls[1]?.sql).toContain('SELECT id FROM events WHERE origin_event_id = $1');
+      expect(pool.calls[1]?.params).toEqual(['outbox-row-uuid']);
+    });
+
+    it('without originEventId, generates a fresh id on every call (null does not conflict)', async () => {
+      pool.enqueue([{ id: 'returning-1' }]);
+      pool.enqueue([{ id: 'returning-2' }]);
+      const r1 = await bus.publish({
         eventType: 'order.placed',
         eventVersion: 1,
         eventKind: 'domain',
@@ -49,7 +94,7 @@ describe('PgEventBus', () => {
         sourceService: 'svc-a',
         createdAt: new Date('2026-01-01T00:00:00Z'),
       });
-      const id2 = await bus.publish({
+      const r2 = await bus.publish({
         eventType: 'order.placed',
         eventVersion: 1,
         eventKind: 'domain',
@@ -57,7 +102,11 @@ describe('PgEventBus', () => {
         sourceService: 'svc-a',
         createdAt: new Date('2026-01-01T00:00:00Z'),
       });
-      expect(id1).not.toBe(id2);
+      expect(r1.id).not.toBe(r2.id);
+      expect(r1.inserted).toBe(true);
+      expect(r2.inserted).toBe(true);
+      expect(pool.calls[0]?.params[8]).toBeNull();
+      expect(pool.calls[1]?.params[8]).toBeNull();
     });
   });
 

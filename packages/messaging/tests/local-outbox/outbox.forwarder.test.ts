@@ -40,6 +40,50 @@ describe('OutboxForwarder', () => {
     expect(reader.markedFailed).toHaveLength(0);
   });
 
+  it('threads the outbox row id as originEventId on every publish (publisher dedup key)', async () => {
+    reader.enqueueBatch([
+      makeOutboxEntry({ id: 'outbox-AAA' }),
+      makeOutboxEntry({ id: 'outbox-BBB' }),
+    ]);
+    const fwd = new OutboxForwarder({
+      reader,
+      publisher,
+      sourceService: 'svc-a',
+      logger: new NoopLogger(),
+    });
+
+    fwd.start();
+    await vi.advanceTimersByTimeAsync(1000);
+    await fwd.dispose();
+
+    expect(publisher.published.map((p) => p.event.originEventId)).toEqual([
+      'outbox-AAA',
+      'outbox-BBB',
+    ]);
+  });
+
+  it('still marks the outbox row as sent when the bus reports a dedup hit (inserted=false)', async () => {
+    // Simulate replay: same outbox row id forwarded twice — second publish hits dedup.
+    reader.enqueueBatch([makeOutboxEntry({ id: 'outbox-replay' })]);
+    reader.enqueueBatch([makeOutboxEntry({ id: 'outbox-replay' })]);
+    const fwd = new OutboxForwarder({
+      reader,
+      publisher,
+      sourceService: 'svc-a',
+      logger: new NoopLogger(),
+      pollIntervalMs: 1000,
+    });
+
+    fwd.start();
+    await vi.advanceTimersByTimeAsync(1000);
+    await vi.advanceTimersByTimeAsync(1000);
+    await fwd.dispose();
+
+    expect(publisher.published).toHaveLength(1); // bus only stored one row
+    expect(reader.markedSent.map((m) => m.id)).toEqual(['outbox-replay', 'outbox-replay']);
+    expect(reader.markedFailed).toHaveLength(0);
+  });
+
   it('marks entry as failed when publisher throws', async () => {
     reader.enqueueBatch([makeOutboxEntry({ id: 'e1' })]);
     publisher.publishError = new Error('broker down');
@@ -103,7 +147,7 @@ describe('OutboxForwarder', () => {
     reader.enqueueBatch([makeOutboxEntry({ id: 'e1' })]);
     publisher.publish = vi.fn(async () => {
       await blocker;
-      return 'bus-evt-1';
+      return { id: 'bus-evt-1', inserted: true };
     });
 
     const fwd = new OutboxForwarder({
