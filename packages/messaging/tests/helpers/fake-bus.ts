@@ -1,12 +1,15 @@
+import { randomUUID } from 'node:crypto';
 import type { EventBusConsumer, EventBusEntry, EventBusPublisher } from '../../src/index.js';
 
 export class FakeEventBusPublisher implements EventBusPublisher {
-  readonly published: Parameters<EventBusPublisher['publish']>[0][] = [];
+  readonly published: { id: string; event: Parameters<EventBusPublisher['publish']>[0] }[] = [];
   publishError: Error | null = null;
 
-  async publish(event: Parameters<EventBusPublisher['publish']>[0]): Promise<void> {
+  async publish(event: Parameters<EventBusPublisher['publish']>[0]): Promise<string> {
     if (this.publishError) throw this.publishError;
-    this.published.push(event);
+    const id = randomUUID();
+    this.published.push({ id, event });
+    return id;
   }
 }
 

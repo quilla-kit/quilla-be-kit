@@ -34,8 +34,8 @@ describe('OutboxForwarder', () => {
 
     expect(reader.claimed[0]?.instanceId).toBe('replica-1');
     expect(publisher.published).toHaveLength(2);
-    expect(publisher.published[0]?.id).toBe('e1');
-    expect(publisher.published[0]?.sourceService).toBe('svc-a');
+    expect(publisher.published[0]?.event.sourceService).toBe('svc-a');
+    expect(publisher.published[0]?.event.eventType).toBe('test.happened');
     expect(reader.markedSent.map((m) => m.id)).toEqual(['e1', 'e2']);
     expect(reader.markedFailed).toHaveLength(0);
   });
@@ -103,6 +103,7 @@ describe('OutboxForwarder', () => {
     reader.enqueueBatch([makeOutboxEntry({ id: 'e1' })]);
     publisher.publish = vi.fn(async () => {
       await blocker;
+      return 'bus-evt-1';
     });
 
     const fwd = new OutboxForwarder({

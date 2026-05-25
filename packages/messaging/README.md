@@ -289,6 +289,69 @@ FAILED rows stay in the main table with full context — `status='FAILED'`,
 by flipping `status='PENDING'` and `retry_count=0`. One less table to
 reason about.
 
+### At-least-once delivery — handlers must be idempotent
+
+The bus delivers each event **at least once**, never exactly-once. A
+consumer handler can see the same event more than once in real
+operational scenarios:
+
+- **Handler retry:** a handler in the chain throws, the row goes back to
+  PENDING with `retry_count++`, and the whole event is re-dispatched. All
+  handlers for that event re-run, including ones that already succeeded.
+- **Crash after handler success but before `markDone`:** the row stays
+  CLAIMED, `resetStale` flips it back to PENDING, the next replica
+  re-dispatches.
+- **Forwarder partial failure:** if `OutboxForwarder` successfully
+  publishes to the bus but fails to mark the outbox row as SENT, the next
+  tick re-claims the outbox row and publishes a **second** bus row with a
+  fresh id. Consumer sees the same logical event twice.
+
+Event ids are toolkit-generated and unique per publish — they do **not**
+deduplicate logical events across retries or forwarder re-publishes. Two
+bus rows for the same logical event will have different `id` values.
+
+**Consumer handlers must be idempotent.** The two standard patterns:
+
+1. **Naturally idempotent effect.** The handler's side effect tolerates
+   replay — UPSERT to a row keyed by `(aggregateId, eventType)`, an
+   external API that accepts an idempotency key (Stripe-style), a state
+   transition that's only valid from one starting state, etc.
+
+2. **Processed-events table.** Track which logical events the consumer
+   has already handled. Key on whatever identifies the *logical* event in
+   your domain (`aggregateId` + `eventType` + version, or a payload-level
+   correlation key) — not the bus row `id`, since the bus row id changes
+   on re-publish. Write the dedup row in the same transaction as the
+   handler's effect:
+
+   ```sql
+   CREATE TABLE processed_events (
+     consumer_name text NOT NULL,
+     dedup_key     text NOT NULL,
+     processed_at  timestamptz NOT NULL DEFAULT now(),
+     PRIMARY KEY (consumer_name, dedup_key)
+   );
+   ```
+
+   ```ts
+   consumer.on(OrderPlaced, async ({ payload, aggregateId }) => {
+     const dedupKey = `${aggregateId}:order.placed`;
+     await db.transaction(async (trx) => {
+       const inserted = await trx.query(
+         `INSERT INTO processed_events (consumer_name, dedup_key)
+          VALUES ($1, $2) ON CONFLICT DO NOTHING RETURNING 1`,
+         ['billing', dedupKey],
+       );
+       if (inserted.rowCount === 0) return; // already processed
+       await chargeCustomer(trx, payload);
+     });
+   });
+   ```
+
+A first-class `IdempotencyStore` wired into `EventConsumer` is planned;
+until then, hand-roll the pattern above for any handler whose side
+effects are not naturally idempotent.
+
 ### `EventDescriptor` — typed event identity
 
 ```ts
@@ -619,7 +682,7 @@ import type {
 } from '@quilla-be-kit/messaging';
 
 class KafkaBus implements EventBusPublisher, EventBusConsumer {
-  async publish(event) { /* produce to topic */ }
+  async publish(event) { /* produce to topic; return generated id */ }
   async claim(instanceId, batchSize, allowedTopics) { /* pull + transition; filter by allowedTopics */ }
   async markDone(id) { /* commit offset */ }
   async markFailed(id, reason) { /* retry or DLQ per broker semantics */ }
