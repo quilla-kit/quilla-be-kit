@@ -291,56 +291,51 @@ reason about.
 
 ### At-least-once delivery — handlers must be idempotent
 
-The bus delivers each event **at least once**, never exactly-once. A
-consumer handler can see the same event more than once in real
-operational scenarios:
+The bus delivers each event **at least once**, never exactly-once. The
+forwarder-replay path is closed by publisher-side dedup (see
+[Publisher dedup](#publisher-dedup-via-origin_event_id) below), but two
+operational paths still cause a consumer to see the same event more than
+once:
 
 - **Handler retry:** a handler in the chain throws, the row goes back to
   PENDING with `retry_count++`, and the whole event is re-dispatched. All
   handlers for that event re-run, including ones that already succeeded.
 - **Crash after handler success but before `markDone`:** the row stays
   CLAIMED, `resetStale` flips it back to PENDING, the next replica
-  re-dispatches.
-- **Forwarder partial failure:** if `OutboxForwarder` successfully
-  publishes to the bus but fails to mark the outbox row as SENT, the next
-  tick re-claims the outbox row and publishes a **second** bus row with a
-  fresh id. Consumer sees the same logical event twice.
+  re-dispatches **the same bus row** — same `id`, same payload.
 
-Event ids are toolkit-generated and unique per publish — they do **not**
-deduplicate logical events across retries or forwarder re-publishes. Two
-bus rows for the same logical event will have different `id` values.
+In both cases the *same bus row* is re-dispatched: the bus row `id` is
+stable across these re-dispatches. (Contrast with forwarder replay, which
+the publisher dedups away — no second bus row gets created.)
 
-**Consumer handlers must be idempotent.** The two standard patterns:
+**Consumer handlers must still be idempotent.** Two standard patterns:
 
 1. **Naturally idempotent effect.** The handler's side effect tolerates
    replay — UPSERT to a row keyed by `(aggregateId, eventType)`, an
    external API that accepts an idempotency key (Stripe-style), a state
    transition that's only valid from one starting state, etc.
 
-2. **Processed-events table.** Track which logical events the consumer
-   has already handled. Key on whatever identifies the *logical* event in
-   your domain (`aggregateId` + `eventType` + version, or a payload-level
-   correlation key) — not the bus row `id`, since the bus row id changes
-   on re-publish. Write the dedup row in the same transaction as the
-   handler's effect:
+2. **Processed-events table keyed on bus row `id`.** Because re-dispatch
+   reuses the same bus row id, a UPSERT keyed on `entry.id` deduplicates
+   handler-retry and stale-claim re-dispatch in one shot. Write the dedup
+   row in the same transaction as the handler's effect:
 
    ```sql
    CREATE TABLE processed_events (
      consumer_name text NOT NULL,
-     dedup_key     text NOT NULL,
-     processed_at  timestamptz NOT NULL DEFAULT now(),
-     PRIMARY KEY (consumer_name, dedup_key)
+     bus_event_id  uuid NOT NULL,
+     processed_at  timestamptz NOT NULL,
+     PRIMARY KEY (consumer_name, bus_event_id)
    );
    ```
 
    ```ts
-   consumer.on(OrderPlaced, async ({ payload, aggregateId }) => {
-     const dedupKey = `${aggregateId}:order.placed`;
+   consumer.on(OrderPlaced, async ({ payload, id }) => {
      await db.transaction(async (trx) => {
        const inserted = await trx.query(
-         `INSERT INTO processed_events (consumer_name, dedup_key)
-          VALUES ($1, $2) ON CONFLICT DO NOTHING RETURNING 1`,
-         ['billing', dedupKey],
+         `INSERT INTO processed_events (consumer_name, bus_event_id, processed_at)
+          VALUES ($1, $2, $3) ON CONFLICT DO NOTHING RETURNING 1`,
+         ['billing', id, new Date()],
        );
        if (inserted.rowCount === 0) return; // already processed
        await chargeCustomer(trx, payload);
@@ -348,9 +343,43 @@ bus rows for the same logical event will have different `id` values.
    });
    ```
 
-A first-class `IdempotencyStore` wired into `EventConsumer` is planned;
-until then, hand-roll the pattern above for any handler whose side
-effects are not naturally idempotent.
+### Publisher dedup via `origin_event_id`
+
+The publisher contract carries an optional `originEventId: string`. When
+present, the bus enforces uniqueness on it via a partial unique index, so
+a second publish for the same `originEventId` becomes a no-op — the
+existing bus row's id is returned to the caller along with
+`inserted: false`.
+
+`OutboxForwarder` automatically passes the outbox row id as
+`originEventId`. This closes the forwarder-replay hazard: if the
+forwarder crashes between `bus.publish()` succeeding and
+`outbox.markSent()` committing, the next tick republishes from the same
+outbox row, the bus sees the same `originEventId`, and no second row is
+created. Consumers never see the duplicate.
+
+Direct-to-bus publishers can opt in by passing any stable string —
+typically an external request id, a hash of the request, or any
+identifier the caller controls. The field is `TEXT`, not `UUID`, so it
+accommodates non-UUID identifiers.
+
+`publish()` returns `{ id, inserted }`:
+
+```ts
+const { id, inserted } = await bus.publish({
+  eventType: 'order.placed',
+  /* ... */
+  originEventId: 'stripe_charge_ch_3OabcXYZ', // dedup key
+  createdAt: new Date(),
+});
+// inserted=true  → row was created with the returned id
+// inserted=false → an earlier publish with the same originEventId already wrote it;
+//                  the returned id is that pre-existing bus row's id
+```
+
+Omit `originEventId` entirely for fire-and-forget publishes that don't
+need dedup. The partial unique index allows unlimited NULL values, so
+omitting it never produces a conflict.
 
 ### `EventDescriptor` — typed event identity
 
@@ -572,8 +601,10 @@ ordering cursor — events are FIFO-drained by `created_at`.
 - **Events** — partial index on `(event_type, created_at) WHERE status = 'PENDING'`
   matches `EventConsumer`'s topic-filtered claim query. Plus partial indexes on
   `(aggregate_id, status) WHERE aggregate_id IS NOT NULL AND status = 'CLAIMED'`
-  for the `NOT EXISTS` aggregate guard, and `(claimed_at) WHERE status = 'CLAIMED'`
-  for `resetStale`.
+  for the `NOT EXISTS` aggregate guard, `(claimed_at) WHERE status = 'CLAIMED'`
+  for `resetStale`, and a **partial unique index** on `(origin_event_id) WHERE
+  origin_event_id IS NOT NULL` that enforces the publisher dedup contract
+  described in [At-least-once delivery](#at-least-once-delivery--handlers-must-be-idempotent).
 
 ---
 

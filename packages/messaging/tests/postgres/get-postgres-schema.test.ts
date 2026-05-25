@@ -55,4 +55,22 @@ describe('getPostgresSchema', () => {
     expect(sql).toContain('events_aggregate_id_status_idx');
     expect(sql).toContain("WHERE aggregate_id IS NOT NULL AND status = 'CLAIMED'");
   });
+
+  it('declares origin_event_id on the events table for publisher-side dedup', () => {
+    const sql = getPostgresSchema();
+    expect(sql).toContain('origin_event_id TEXT');
+  });
+
+  it('creates a partial unique index on origin_event_id (NULLs do not conflict)', () => {
+    const sql = getPostgresSchema();
+    expect(sql).toMatch(
+      /CREATE UNIQUE INDEX IF NOT EXISTS events_origin_event_id_uq\s+ON events \(origin_event_id\)\s+WHERE origin_event_id IS NOT NULL/,
+    );
+  });
+
+  it('honors eventsTable override for the origin_event_id index name', () => {
+    const sql = getPostgresSchema({ eventsTable: 'svc_events' });
+    expect(sql).toContain('svc_events_origin_event_id_uq');
+    expect(sql).not.toContain('events_origin_event_id_uq ');
+  });
 });

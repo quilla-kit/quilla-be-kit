@@ -88,7 +88,7 @@ export class OutboxForwarder implements Disposable {
       for (const entry of entries) {
         if (this.stopping) break;
         try {
-          const busEventId = await this.publisher.publish({
+          const { id: busEventId, inserted } = await this.publisher.publish({
             eventType: entry.eventType,
             eventVersion: entry.eventVersion,
             eventKind: entry.eventKind,
@@ -96,11 +96,15 @@ export class OutboxForwarder implements Disposable {
             sourceService: this.sourceService,
             ...(entry.aggregateId !== undefined ? { aggregateId: entry.aggregateId } : {}),
             ...(entry.correlationId !== undefined ? { correlationId: entry.correlationId } : {}),
+            originEventId: entry.id,
             createdAt: entry.createdAt,
           });
-          this.logger.debug('forwarded outbox entry', {
-            meta: { outboxId: entry.id, busEventId, eventType: entry.eventType },
-          });
+          this.logger.debug(
+            inserted ? 'forwarded outbox entry' : 'outbox entry already on bus (dedup hit)',
+            {
+              meta: { outboxId: entry.id, busEventId, eventType: entry.eventType, inserted },
+            },
+          );
           await this.reader.markSent(entry.id, new Date());
         } catch (err) {
           const reason = err instanceof Error ? err.message : String(err);

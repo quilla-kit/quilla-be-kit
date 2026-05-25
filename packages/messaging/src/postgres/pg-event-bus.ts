@@ -16,6 +16,7 @@ type EventsRow = {
   source_service: string;
   aggregate_id: string | null;
   correlation_id: string | null;
+  origin_event_id: string | null;
   status: EventBusStatus;
   claimed_by: string | null;
   claimed_at: Date | null;
@@ -41,15 +42,19 @@ export class PgEventBus implements EventBusPublisher, EventBusConsumer {
     this.maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
   }
 
-  async publish(event: Parameters<EventBusPublisher['publish']>[0]): Promise<string> {
+  async publish(
+    event: Parameters<EventBusPublisher['publish']>[0],
+  ): Promise<{ id: string; inserted: boolean }> {
     const id = randomUUID();
     const publishedAt = new Date();
-    await this.pool.query(
+    const result = await this.pool.query<{ id: string }>(
       `INSERT INTO ${this.eventsTable}
          (id, event_type, event_version, event_kind, payload, source_service,
-          aggregate_id, correlation_id, status, claimed_by, claimed_at,
+          aggregate_id, correlation_id, origin_event_id, status, claimed_by, claimed_at,
           retry_count, last_error, created_at, published_at)
-       VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+       VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+       ON CONFLICT (origin_event_id) WHERE origin_event_id IS NOT NULL DO NOTHING
+       RETURNING id`,
       [
         id,
         event.eventType,
@@ -59,6 +64,7 @@ export class PgEventBus implements EventBusPublisher, EventBusConsumer {
         event.sourceService,
         event.aggregateId ?? null,
         event.correlationId ?? null,
+        event.originEventId ?? null,
         'PENDING',
         null,
         null,
@@ -68,7 +74,20 @@ export class PgEventBus implements EventBusPublisher, EventBusConsumer {
         publishedAt,
       ],
     );
-    return id;
+    if (result.rows.length > 0) {
+      return { id, inserted: true };
+    }
+    const existing = await this.pool.query<{ id: string }>(
+      `SELECT id FROM ${this.eventsTable} WHERE origin_event_id = $1`,
+      [event.originEventId],
+    );
+    const existingId = existing.rows[0]?.id;
+    if (!existingId) {
+      throw new Error(
+        `publish: ON CONFLICT skipped insert but no existing row found for origin_event_id=${event.originEventId}`,
+      );
+    }
+    return { id: existingId, inserted: false };
   }
 
   // NOT EXISTS guards against claiming a second event for an aggregate while
