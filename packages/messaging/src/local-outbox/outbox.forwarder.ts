@@ -88,8 +88,7 @@ export class OutboxForwarder implements Disposable {
       for (const entry of entries) {
         if (this.stopping) break;
         try {
-          await this.publisher.publish({
-            id: entry.id,
+          const busEventId = await this.publisher.publish({
             eventType: entry.eventType,
             eventVersion: entry.eventVersion,
             eventKind: entry.eventKind,
@@ -99,11 +98,14 @@ export class OutboxForwarder implements Disposable {
             ...(entry.correlationId !== undefined ? { correlationId: entry.correlationId } : {}),
             createdAt: entry.createdAt,
           });
+          this.logger.debug('forwarded outbox entry', {
+            meta: { outboxId: entry.id, busEventId, eventType: entry.eventType },
+          });
           await this.reader.markSent(entry.id, new Date());
         } catch (err) {
           const reason = err instanceof Error ? err.message : String(err);
           this.logger.error(`failed to forward event ${entry.id}`, err, {
-            meta: { eventId: entry.id, eventType: entry.eventType },
+            meta: { outboxId: entry.id, eventType: entry.eventType },
           });
           await this.reader.markFailed(entry.id, reason);
         }

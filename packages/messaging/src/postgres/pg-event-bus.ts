@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { Pool } from 'pg';
 import type { EventBusConsumer } from '../event-bus/event-bus-consumer.interface.js';
 import type { EventBusEntry, EventBusStatus } from '../event-bus/event-bus-entry.type.js';
@@ -40,7 +41,8 @@ export class PgEventBus implements EventBusPublisher, EventBusConsumer {
     this.maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
   }
 
-  async publish(event: Parameters<EventBusPublisher['publish']>[0]): Promise<void> {
+  async publish(event: Parameters<EventBusPublisher['publish']>[0]): Promise<string> {
+    const id = randomUUID();
     const publishedAt = new Date();
     await this.pool.query(
       `INSERT INTO ${this.eventsTable}
@@ -49,7 +51,7 @@ export class PgEventBus implements EventBusPublisher, EventBusConsumer {
           retry_count, last_error, created_at, published_at)
        VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
       [
-        event.id,
+        id,
         event.eventType,
         event.eventVersion,
         event.eventKind,
@@ -66,6 +68,7 @@ export class PgEventBus implements EventBusPublisher, EventBusConsumer {
         publishedAt,
       ],
     );
+    return id;
   }
 
   // NOT EXISTS guards against claiming a second event for an aggregate while

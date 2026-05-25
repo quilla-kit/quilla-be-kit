@@ -12,9 +12,8 @@ describe('PgEventBus', () => {
   });
 
   describe('publish', () => {
-    it('inserts into the events table with PENDING status', async () => {
-      await bus.publish({
-        id: 'evt-1',
+    it('inserts into the events table with PENDING status and returns the generated id', async () => {
+      const returnedId = await bus.publish({
         eventType: 'order.placed',
         eventVersion: 1,
         eventKind: 'domain',
@@ -27,7 +26,8 @@ describe('PgEventBus', () => {
 
       const call = pool.calls[0];
       expect(call?.sql).toContain('INSERT INTO events');
-      expect(call?.params[0]).toBe('evt-1');
+      expect(call?.params[0]).toBe(returnedId);
+      expect(returnedId).toMatch(/^[0-9a-f-]{36}$/);
       expect(call?.params[1]).toBe('order.placed');
       expect(call?.params[2]).toBe(1);
       expect(call?.params[4]).toBe(JSON.stringify({ orderId: 'o-1' }));
@@ -38,6 +38,26 @@ describe('PgEventBus', () => {
       expect(call?.params[9]).toBeNull(); // claimed_by
       expect(call?.params[11]).toBe(0); // retry_count
       expect(call?.params[14]).toBeInstanceOf(Date); // published_at
+    });
+
+    it('generates a fresh id on every call', async () => {
+      const id1 = await bus.publish({
+        eventType: 'order.placed',
+        eventVersion: 1,
+        eventKind: 'domain',
+        payload: {},
+        sourceService: 'svc-a',
+        createdAt: new Date('2026-01-01T00:00:00Z'),
+      });
+      const id2 = await bus.publish({
+        eventType: 'order.placed',
+        eventVersion: 1,
+        eventKind: 'domain',
+        payload: {},
+        sourceService: 'svc-a',
+        createdAt: new Date('2026-01-01T00:00:00Z'),
+      });
+      expect(id1).not.toBe(id2);
     });
   });
 
