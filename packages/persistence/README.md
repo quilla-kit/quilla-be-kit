@@ -450,6 +450,47 @@ this.qb<TaskRow>()
 
 Each `.where()` call is ANDed with the rest. Never concatenate user input into the SQL string — pass it as a parameter.
 
+### Joins
+
+`.join(clause: string)` appends a raw JOIN clause verbatim. Call it once per join — multiple calls accumulate in declaration order:
+
+```ts
+this.qb<OrderSummaryRow>()
+  .from('orders o')
+  .join('LEFT JOIN customers c ON c.id = o.customer_id')
+  .join('LEFT JOIN order_lines ol ON ol.order_id = o.id')
+  .select(['o.id', 'o.createdAt', 'c.name', 'ol.sku'])
+  .filters({ 'o.scopeId': scopeId })
+  .build();
+```
+
+**Column qualification.** When queries span multiple tables, qualify ambiguous column references in every builder call that touches column names — `.select()`, `.filters()`, `.where()`, `.groupBy()`, and `.orderBy()` all accept `'table.col'` expressions and pass them through without resolver lookup:
+
+```ts
+.select(['o.id', 'o.createdAt'])   // table.col — passed through, no resolver
+.select(['createdAt'])              // bare key — resolved via ColumnResolver
+.select(['o.*'])                    // wildcard — passed through
+.select(['COUNT(ol.id) AS "lineCount"'])  // pre-aliased expression — passed through
+```
+
+`.from()` accepts an alias: `'orders o'` or `'orders AS o'`. Use an alias whenever you qualify columns so the alias propagates consistently through the rest of the query.
+
+### Aggregations with GROUP BY
+
+`.groupBy(columns: readonly string[])` adds a `GROUP BY` clause. Column keys are domain-vocabulary and resolved through the `ColumnResolver` the same way as `.select()`. Qualify with `'table.col'` when the query joins multiple tables:
+
+```ts
+this.qb<LineCountRow>()
+  .from('orders o')
+  .join('LEFT JOIN order_lines ol ON ol.order_id = o.id')
+  .select(['o.id', 'o.createdAt', 'COUNT(ol.id) AS "lineCount"'])
+  .filters({ 'o.scopeId': scopeId })
+  .groupBy(['o.id', 'o.createdAt'])
+  .build();
+```
+
+When `.paginate()` is also applied, the count wraps the grouped subquery automatically — you don't need to do anything extra.
+
 ### Pagination
 
 `.paginate({ page, pageSize })` adds `LIMIT`/`OFFSET` and automatically emits a `countSql` alongside the data SQL. `findPaginated` runs both queries in parallel on the read pool and returns a `PaginatedResult<T>`:
