@@ -468,6 +468,8 @@ const result = await dao.listPage(query, scopeId);
 
 If the query uses `GROUP BY`, the count is computed over the grouped set via a subquery wrap — you don't need to do anything special.
 
+When hand-constructing a `QueryProduct` with both `sql` and `countSql`, both queries receive the same `params` array — the caller is responsible for ensuring both are parametrically compatible.
+
 ### Sorting with enforced + default directives
 
 `.orderBy(userSort, { enforced, defaults })` gives you three layers:
