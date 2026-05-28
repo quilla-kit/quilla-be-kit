@@ -1,5 +1,13 @@
 # @quilla-be-kit/persistence
 
+## 0.1.6
+
+### Patch Changes
+
+- 81f153c: Document `SqlQueryBuilder` gaps: `.join()` (signature, example, column-qualification guidance), `.groupBy()` (example with aggregation + JOIN), `.from()` alias syntax, and `.select()` qualified / wildcard / pre-aliased column forms. All four were mentioned in the method table or security note but had no dedicated section or working example.
+- Updated dependencies [77153bc]
+  - @quilla-be-kit/execution-context@0.2.2
+
 ## 0.1.5
 
 ### Patch Changes

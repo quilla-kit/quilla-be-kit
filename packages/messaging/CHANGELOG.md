@@ -1,5 +1,17 @@
 # @quilla-be-kit/messaging
 
+## 0.5.1
+
+### Patch Changes
+
+- 77153bc: Document `EventConsumer.on(string, handler)` bare-string overload. The descriptor form was the only documented usage; the string form (for untyped forwarding / bridging) was silently available but invisible to consumers.
+- Updated dependencies [77153bc]
+- Updated dependencies [77153bc]
+- Updated dependencies [77153bc]
+  - @quilla-be-kit/execution-context@0.2.2
+  - @quilla-be-kit/observability@0.2.2
+  - @quilla-be-kit/runtime@0.2.2
+
 ## 0.5.0
 
 ### Minor Changes

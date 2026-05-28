@@ -1,5 +1,17 @@
 # @quilla-be-kit/http
 
+## 0.3.1
+
+### Patch Changes
+
+- 77153bc: Document `HttpRequest.getFile(name)` and `getFormFields()` for multipart/form-data handling. Both methods existed in the interface and Hono adapter but had no README coverage — consumers doing file uploads had no documented path.
+- Updated dependencies [77153bc]
+- Updated dependencies [77153bc]
+- Updated dependencies [77153bc]
+  - @quilla-be-kit/execution-context@0.2.2
+  - @quilla-be-kit/observability@0.2.2
+  - @quilla-be-kit/runtime@0.2.2
+
 ## 0.3.0
 
 ### Minor Changes

@@ -1,5 +1,11 @@
 # @quilla-be-kit/observability
 
+## 0.2.2
+
+### Patch Changes
+
+- 77153bc: Export `importObfuscationKey` from the public package surface (previously unexported, leaving consumers with no way to obtain a `CryptoKey` for `decryptValue`). Add README section showing the full incident-response decryption flow: `importObfuscationKey` → `decryptValue`.
+
 ## 0.2.1
 
 ### Patch Changes

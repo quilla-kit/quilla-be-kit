@@ -1,5 +1,13 @@
 # @quilla-be-kit/execution-context
 
+## 0.2.2
+
+### Patch Changes
+
+- 77153bc: Document `createSystemContext` `actorType` parameter: distinguish `'system'` (process-level ops) from `'job'` (background-job ticks). Previously the README listed the method without the parameter or any guidance on when to use each value.
+- Updated dependencies [77153bc]
+  - @quilla-be-kit/observability@0.2.2
+
 ## 0.2.1
 
 ### Patch Changes
