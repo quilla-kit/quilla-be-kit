@@ -1,6 +1,9 @@
-export type HttpResponse = {
+type HttpResponseBase = {
   readonly httpCode: number;
   readonly headers?: Record<string, string>;
+};
+
+export type HttpJsonResponse = HttpResponseBase & {
   readonly payload?: unknown;
   readonly error?: {
     readonly name: string;
@@ -15,3 +18,13 @@ export type HttpResponse = {
     };
   };
 };
+
+export type HttpBinaryResponse = HttpResponseBase & {
+  readonly data: Uint8Array;
+};
+
+export type HttpStreamResponse = HttpResponseBase & {
+  readonly stream: ReadableStream<Uint8Array>;
+};
+
+export type HttpResponse = HttpJsonResponse | HttpBinaryResponse | HttpStreamResponse;

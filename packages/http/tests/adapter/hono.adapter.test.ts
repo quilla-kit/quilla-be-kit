@@ -5,7 +5,11 @@ import { type HonoServeHandle, HonoServer } from '../../src/adapter/hono/hono.se
 import { Controller, Get, GetPublic, Post, ValidateRequest } from '../../src/decorator/index.js';
 import type { HttpMiddleware } from '../../src/request/http-middleware.type.js';
 import type { HttpRequest } from '../../src/request/http-request.interface.js';
-import type { HttpResponse } from '../../src/request/http-response.type.js';
+import type {
+  HttpBinaryResponse,
+  HttpResponse,
+  HttpStreamResponse,
+} from '../../src/request/http-response.type.js';
 import type { AuthMiddlewareStack } from '../../src/router/auth-middleware-stack.type.js';
 import { Router } from '../../src/router/router.js';
 import type { RequestValidator } from '../../src/validator/request-validator.interface.js';
@@ -35,13 +39,14 @@ class UsersController {
 function buildServer(options: {
   validator?: RequestValidator;
   authMiddlewares?: AuthMiddlewareStack;
+  controllers?: readonly object[];
 }): {
   server: HonoServer;
   fetch: (req: Request) => Promise<Response>;
 } {
   const provider = new AsyncExecutionContextProvider();
   const router = new Router({
-    controllers: [new UsersController()],
+    controllers: options.controllers ?? [new UsersController()],
     executionContext: { provider },
     ...(options.authMiddlewares ? { authMiddlewares: options.authMiddlewares } : {}),
   });
@@ -218,5 +223,87 @@ describe('HonoServer adapter', () => {
       new Request('http://localhost/probe', { headers: { 'x-correlation-id': 'req-42' } }),
     );
     expect(capturedCorrelationId).toBe('req-42');
+  });
+});
+
+describe('HonoServer binary and stream responses', () => {
+  it('writes binary data with the headers caller provided and no JSON envelope', async () => {
+    const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
+
+    @Controller('/files')
+    class FilesController {
+      @GetPublic('/avatar')
+      async avatar(_req: HttpRequest): Promise<HttpBinaryResponse> {
+        return {
+          httpCode: 200,
+          headers: { 'content-type': 'image/png', 'cache-control': 'public, max-age=3600' },
+          data: bytes,
+        };
+      }
+    }
+
+    const { fetch } = buildServer({ controllers: [new FilesController()] });
+    const res = await fetch(new Request('http://localhost/files/avatar'));
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('image/png');
+    expect(res.headers.get('cache-control')).toBe('public, max-age=3600');
+    const body = new Uint8Array(await res.arrayBuffer());
+    expect(Array.from(body)).toEqual(Array.from(bytes));
+  });
+
+  it('streams a ReadableStream body through to the response without buffering', async () => {
+    const chunks = ['hello,', 'world\n'];
+
+    @Controller('/files')
+    class FilesController {
+      @GetPublic('/export')
+      async export(_req: HttpRequest): Promise<HttpStreamResponse> {
+        const stream = new ReadableStream<Uint8Array>({
+          start(controller) {
+            const encoder = new TextEncoder();
+            for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+            controller.close();
+          },
+        });
+        return {
+          httpCode: 200,
+          headers: {
+            'content-type': 'text/csv',
+            'content-disposition': 'attachment; filename="report.csv"',
+          },
+          stream,
+        };
+      }
+    }
+
+    const { fetch } = buildServer({ controllers: [new FilesController()] });
+    const res = await fetch(new Request('http://localhost/files/export'));
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('text/csv');
+    expect(res.headers.get('content-disposition')).toBe('attachment; filename="report.csv"');
+    expect(await res.text()).toBe(chunks.join(''));
+  });
+
+  it('does not wrap binary responses in the JSON envelope', async () => {
+    @Controller('/files')
+    class FilesController {
+      @GetPublic('/raw')
+      async raw(_req: HttpRequest): Promise<HttpBinaryResponse> {
+        return {
+          httpCode: 200,
+          headers: { 'content-type': 'application/octet-stream' },
+          data: new Uint8Array([1, 2, 3]),
+        };
+      }
+    }
+
+    const { fetch } = buildServer({ controllers: [new FilesController()] });
+    const res = await fetch(new Request('http://localhost/files/raw'));
+
+    const text = await res.text();
+    expect(text).not.toContain('payload');
+    expect(text).not.toContain('"data"');
   });
 });
