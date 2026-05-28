@@ -89,6 +89,10 @@ system context (`actorType: 'job'`, new `correlationId`). Any downstream code
 that reads `provider.getContext()` will see it — including the logger
 enricher, repository scope checks, event publishers, etc.
 
+If `execute()` throws, `InProcessJobRunner` catches the error, logs it at
+`error` level, and continues scheduling future ticks. A failing job does not
+crash the runner or affect other registered jobs.
+
 ---
 
 ## Schedule types

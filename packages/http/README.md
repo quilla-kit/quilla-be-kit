@@ -199,6 +199,33 @@ async create(req: HttpRequest): Promise<HttpResponse> {
 
 On validation failure, throws `ValidationError` with `context.issues` containing the validator's raw error array (e.g. Zod issues, Joi details). `resolveHttpError` surfaces this as a 400 response with `body.error.details.issues`.
 
+## Multipart / form-data
+
+`HttpRequest` exposes two methods for multipart bodies:
+
+```ts
+getFile(name: string): File | null
+getFormFields(): Record<string, string | readonly string[]>
+```
+
+- **`getFile(name)`** — returns the `File` object for the named file field, or `null` if absent or if the request is not multipart.
+- **`getFormFields()`** — returns all non-file form fields as a flat record. Multi-value fields (e.g. checkboxes) are returned as `readonly string[]`; single-value fields as `string`. Returns an empty object when the request is not multipart.
+
+```ts
+@Post('/avatar')
+async uploadAvatar(req: HttpRequest): Promise<HttpResponse> {
+  const file = req.getFile('avatar');
+  if (!file) return { httpCode: 400, error: { message: 'avatar field required' } };
+  const fields = req.getFormFields();
+  // fields: { caption: 'My photo', tags: ['travel', 'outdoors'] }
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  await this.avatarStore.save(userId, bytes, file.type);
+  return { httpCode: 204 };
+}
+```
+
+These methods are only available on multipart requests. For JSON bodies use `getBody()` as normal; `getFile` / `getFormFields` return `null` / `{}` on non-multipart requests.
+
 ## Binary and stream responses
 
 `HttpResponse` is a union of three shapes:

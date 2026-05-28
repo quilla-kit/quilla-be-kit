@@ -160,7 +160,14 @@ shutdown
   });
 ```
 
-`shutdown()` is idempotent — concurrent callers share the same in-flight promise. Participant errors don't abort the phase; they're collected into `ShutdownResult.phases[n].errors` and logged via the `participant-error` event. Shutdown that exceeds `timeoutMs` sets `result.timedOut = true` and emits a `timeout` event.
+`shutdown()` is idempotent — concurrent callers share the same in-flight promise. `isDraining()` returns `true` once `shutdown()` has been called and the phase sequence is running — useful for health checks that want to signal readiness=false before connections are actually closed:
+
+```ts
+app.get('/healthz', (c) => {
+  if (shutdown.isDraining()) return c.json({ ok: false }, 503);
+  return c.json({ ok: true });
+});
+``` Participant errors don't abort the phase; they're collected into `ShutdownResult.phases[n].errors` and logged via the `participant-error` event. Shutdown that exceeds `timeoutMs` sets `result.timedOut = true` and emits a `timeout` event.
 
 ## ComponentRegistry
 
@@ -229,6 +236,13 @@ for (const c of components.getAll()) {
   router.mount(c.meta?.controllers ?? []);
   for (const sub of c.meta?.subscribers ?? []) eventBus.subscribe(sub);
 }
+```
+
+`getByName(name)` retrieves a single registered component by name, returning `undefined` if not found. Useful in composition roots that wire inter-module dependencies after registration:
+
+```ts
+const iamComponent = components.getByName('iam');
+// Component<ServiceMeta> | undefined
 ```
 
 The registry stays framework-agnostic; your metadata stays type-safe.

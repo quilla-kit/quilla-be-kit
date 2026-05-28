@@ -2,7 +2,7 @@
 
 Interface-only security primitives + the two auth middlewares that plug into `@quilla-be-kit/http`'s Router:
 
-- **`Token`** (extends `AuthenticatedToken` from http) — verified-credential contract with `userId`, `scopeId`, `securityStamp`, `issuedAt`, `expiresAt`, `isExpired()`.
+- **`Token`** (extends `AuthenticatedToken` from http) — verified-credential contract with `userId`, `scopeId`, `securityStamp`, `issuedAt`, `expiresAt`, `isExpired(now?: Date)`. The optional `now` parameter defaults to `new Date()` — pass an explicit date in tests for deterministic expiry checks.
 - **`TokenClaims`** — canonical short-key wire-format type for the JWT payload (`u`, `si`, `st`, `s?` for scopes). Implementers map between the readable `SignTokenPayload` / `Token` shapes and these compact claims at the encode/decode boundary. Tokens travel in every request header — short keys exist for payload size, not security.
 - **`TokenService`** — `sign(payload, { expiresIn })` + `verify(raw)` interface. Consumer provides the implementation (JWT via `jose`/`djwt`/`jsonwebtoken`, PASETO, opaque reference tokens — your choice).
 - **`SessionStore`** — keyed session record storage. Consumer picks the backend (Redis, Valkey, DynamoDB, Postgres).
