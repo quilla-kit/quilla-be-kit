@@ -8,11 +8,11 @@ import {
   UnauthorizedError,
   ValidationError,
 } from '@quilla-be-kit/errors';
-import type { HttpResponse } from '../request/http-response.type.js';
+import type { HttpJsonResponse } from '../request/http-response.type.js';
 
 export type ResolvedHttpError = {
   readonly httpCode: number;
-  readonly body: Omit<HttpResponse, 'httpCode'>;
+  readonly body: Omit<HttpJsonResponse, 'httpCode'>;
 };
 
 export function resolveHttpError(err: unknown): ResolvedHttpError {

@@ -110,6 +110,15 @@ async function parseBody(c: Context): Promise<ParsedBody> {
 }
 
 function writeHonoResponse(c: Context, response: HttpResponse): Response {
+  if ('stream' in response) {
+    const { httpCode, headers, stream } = response;
+    return new Response(stream, { status: httpCode, headers: headers ?? {} });
+  }
+  if ('data' in response) {
+    const { httpCode, headers, data } = response;
+    return new Response(data, { status: httpCode, headers: headers ?? {} });
+  }
+
   const { httpCode, headers, ...rest } = response;
   const bodyKeys = Object.keys(rest);
   if (bodyKeys.length === 0) {

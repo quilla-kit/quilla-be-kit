@@ -199,6 +199,51 @@ async create(req: HttpRequest): Promise<HttpResponse> {
 
 On validation failure, throws `ValidationError` with `context.issues` containing the validator's raw error array (e.g. Zod issues, Joi details). `resolveHttpError` surfaces this as a 400 response with `body.error.details.issues`.
 
+## Binary and stream responses
+
+`HttpResponse` is a union of three shapes:
+
+```ts
+type HttpResponse = HttpJsonResponse | HttpBinaryResponse | HttpStreamResponse;
+```
+
+- `HttpJsonResponse` — the default. Carries `payload` / `error` / `metadata` and gets wrapped in the standard envelope.
+- `HttpBinaryResponse` — carries a `data: Uint8Array`. Adapter writes the bytes directly.
+- `HttpStreamResponse` — carries a `stream: ReadableStream<Uint8Array>`. Adapter pipes the stream straight to the response.
+
+The three are mutually exclusive at the type level. A handler picks the variant in its return type, and the adapter discriminates by field presence — there is no `kind` tag to set.
+
+```ts
+@Get('/:id/avatar')
+async avatar(req: HttpRequest): Promise<HttpBinaryResponse> {
+  const bytes = await this.avatars.load(req.getParams()['id']);
+  return {
+    httpCode: 200,
+    headers: { 'content-type': 'image/png', 'cache-control': 'public, max-age=3600' },
+    data: bytes,
+  };
+}
+
+@Get('/:id/export')
+async export(req: HttpRequest): Promise<HttpStreamResponse> {
+  const stream = this.reports.streamCsv(req.getParams()['id']);
+  return {
+    httpCode: 200,
+    headers: {
+      'content-type': 'text/csv',
+      'content-disposition': 'attachment; filename="report.csv"',
+    },
+    stream,
+  };
+}
+```
+
+`content-type` lives in `headers` like every other header — the response shape does not invent a separate field for it.
+
+**The real tradeoff is that binary responses lose the envelope convention — no `payload` / `metadata` wrapper around the bytes, and middleware can't introspect stream contents post-hoc.** That's intrinsic to streaming, not a flaw: logging, response shaping, and validators that read response bodies all become no-ops on the binary path. You're opting out of the standard JSON shape so the framework can hand bytes directly to the socket.
+
+Error handling caveat: a handler that throws **before** producing the response still goes through `resolveHttpError` and emits a normal JSON error envelope. A handler that throws **mid-stream** — after the response status is already committed — aborts the connection; the client sees a truncated body, not a JSON error.
+
 ## `RequestValidator` adapter
 
 ### Zod — use the out-of-the-box helper
