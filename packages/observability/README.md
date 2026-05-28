@@ -130,6 +130,24 @@ values (strings, numbers, booleans) are replaced with their HMAC or ciphertext.
 - `decryptValue(ciphertext, key)` — incident-response reversal for `'encrypt'`
   strategy. Not for hot paths.
 
+### Decrypting obfuscated values
+
+When the `'encrypt'` strategy is in use, individual leaf values stored in
+logs are `ENCRYPTED(...)` strings. To recover the plaintext during an
+incident or audit, derive the same `CryptoKey` from the secret and call
+`decryptValue`:
+
+```ts
+import { decryptValue, importObfuscationKey } from '@quilla-be-kit/observability';
+
+const key = await importObfuscationKey('encrypt', process.env.LOG_OBFUSCATION_SECRET!);
+const plaintext = await decryptValue('ENCRYPTED(AAAA...base64...)', key);
+```
+
+`decryptValue` throws if the input is not in `ENCRYPTED(...)` format. It
+only works with the `'encrypt'` strategy — HMAC values (`'hmac'`) are
+one-way pseudonyms and cannot be reversed.
+
 ## Graceful shutdown
 
 Emission is internally async (so obfuscation and enrichment can run without

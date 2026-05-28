@@ -66,7 +66,7 @@ await provider.runWithContext(ctx, async () => {
   `getContext()` **throws** if called outside a `runWithContext` scope.
   **`runWithContext(fn)` is async-only** — synchronous code cannot establish a
   scope; wrap it in `async () => {...}` at the boundary.
-- `ExecutionContextFactory` — `createSystemContext`, `createBaselineContext`,
+- `ExecutionContextFactory` — `createSystemContext(actorType)`, `createBaselineContext`,
   `createFromEventMetadata`. Reach it via `provider.factory` so consumers
   take only one injectable (the provider) and stay internally consistent.
   `createSystemContext` and `createBaselineContext` auto-generate
@@ -74,6 +74,13 @@ await provider.runWithContext(ctx, async () => {
   context established at process boot or at a background-job tick carries
   a traceable id without the caller minting one. Pass an explicit
   `correlationId` to propagate one inbound from HTTP/events.
+
+  `createSystemContext` accepts `'system'` or `'job'` as `actorType`:
+  - `'system'` — process-level operations with no scheduled-job framing:
+    startup tasks, health-check callbacks, migration runners.
+  - `'job'` — a background-job tick. `@quilla-be-kit/jobs` calls this
+    automatically for each `InProcessJobRunner` tick; pass it explicitly
+    when you implement a custom `JobRunner` or drive job ticks by hand.
 
 ### Classes
 - `AsyncExecutionContextProvider` — Node-native `AsyncLocalStorage`-backed

@@ -438,6 +438,20 @@ const consumer = new EventConsumer({
 for DI containers that resolve handlers after the consumer is built.
 `consumer.on(descriptor, handler)` remains for ad-hoc wiring.
 
+`consumer.on` also accepts a bare event-type string when you don't need a
+typed descriptor or schema — useful for forwarding, logging, or bridging
+to an external system where the payload shape doesn't matter:
+
+```ts
+consumer.on('order.placed', async (entry) => {
+  // entry.payload is unknown — no validation, no type inference
+  await auditLog.record(entry);
+});
+```
+
+Prefer the descriptor form for any handler that reads `payload` fields.
+The string form is intentionally untyped.
+
 ### Automatic payload validation (Standard Schema v1)
 
 When an `EventDescriptor` carries a schema, `EventConsumer.on` wraps the
