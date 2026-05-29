@@ -1,6 +1,6 @@
 {
   "name": "@quilla-be-kit/jobs",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Background-job interfaces + in-process job runner. Register scheduled jobs, run each tick inside a system execution context, shut down cleanly via Disposable.",
   "license": "MIT",
   "author": "Max Martinez",
@@ -13,7 +13,13 @@
   "bugs": {
     "url": "https://github.com/quilla-kit/quilla-be-kit/issues"
   },
-  "keywords": ["jobs", "background-jobs", "scheduler", "job-runner", "typescript"],
+  "keywords": [
+    "jobs",
+    "background-jobs",
+    "scheduler",
+    "job-runner",
+    "typescript"
+  ],
   "type": "module",
   "engines": {
     "node": ">=22"
@@ -27,7 +33,11 @@
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "files": ["dist", "README.md", "LICENSE"],
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "publishConfig": {
     "access": "public",
     "provenance": true

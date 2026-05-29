@@ -1,5 +1,11 @@
 # @quilla-be-kit/runtime
 
+## 0.2.2
+
+### Patch Changes
+
+- 77153bc: Document `ShutdownManager.isDraining()` (with health-check example) and `ComponentRegistry.getByName(name)`. Both methods existed in source but were absent from the README API surface.
+
 ## 0.2.1
 
 ### Patch Changes

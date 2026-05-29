@@ -1,5 +1,17 @@
 # @quilla-be-kit/jobs
 
+## 0.2.2
+
+### Patch Changes
+
+- 77153bc: Document `InProcessJobRunner` error handling: errors thrown inside `execute()` are caught, logged at `error` level, and do not crash the runner or affect other registered jobs.
+- Updated dependencies [77153bc]
+- Updated dependencies [77153bc]
+- Updated dependencies [77153bc]
+  - @quilla-be-kit/execution-context@0.2.2
+  - @quilla-be-kit/observability@0.2.2
+  - @quilla-be-kit/runtime@0.2.2
+
 ## 0.2.1
 
 ### Patch Changes

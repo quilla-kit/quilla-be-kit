@@ -1,5 +1,17 @@
 # @quilla-be-kit/security
 
+## 0.2.3
+
+### Patch Changes
+
+- 77153bc: Document `Token.isExpired(now?: Date)` optional `now` parameter. The interface signature had it; the README intro listed `isExpired()` without it, leaving the testability injection point undiscovered.
+- Updated dependencies [77153bc]
+- Updated dependencies [77153bc]
+- Updated dependencies [77153bc]
+  - @quilla-be-kit/execution-context@0.2.2
+  - @quilla-be-kit/http@0.3.1
+  - @quilla-be-kit/observability@0.2.2
+
 ## 0.2.2
 
 ### Patch Changes
