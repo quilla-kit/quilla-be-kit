@@ -459,19 +459,21 @@ this.qb<OrderSummaryRow>()
   .from('orders o')
   .join('LEFT JOIN customers c ON c.id = o.customer_id')
   .join('LEFT JOIN order_lines ol ON ol.order_id = o.id')
-  .select(['o.id', 'o.createdAt', 'c.name', 'ol.sku'])
-  .filters({ 'o.scopeId': scopeId })
+  .select(['o.id', 'o.created_at', 'c.name', 'ol.sku'])
+  .filters({ 'o.scope_id': scopeId })
   .build();
 ```
 
 **Column qualification.** When queries span multiple tables, qualify ambiguous column references in every builder call that touches column names — `.select()`, `.filters()`, `.where()`, `.groupBy()`, and `.orderBy()` all accept `'table.col'` expressions and pass them through without resolver lookup:
 
 ```ts
-.select(['o.id', 'o.createdAt'])   // table.col — passed through, no resolver
+.select(['o.created_at'])           // table.col — passed through, no resolver
 .select(['createdAt'])              // bare key — resolved via ColumnResolver
 .select(['o.*'])                    // wildcard — passed through
 .select(['COUNT(ol.id) AS "lineCount"'])  // pre-aliased expression — passed through
 ```
+
+> **Qualified references are SQL space.** The builder holds one resolver — the aggregate's — so it can't sensibly keep mapping past the dot (a joined table may have its own naming or overrides). The rule is: bare `createdAt` is domain vocabulary and gets resolved; `o.createdAt` is SQL and emits `o.createdAt` verbatim, which Postgres will reject if the real column is `created_at`. Write `o.created_at` yourself once you've qualified. The asymmetry is silent at build time and surfaces only at query execution — qualify carefully.
 
 `.from()` accepts an alias: `'orders o'` or `'orders AS o'`. Use an alias whenever you qualify columns so the alias propagates consistently through the rest of the query.
 
@@ -483,9 +485,9 @@ this.qb<OrderSummaryRow>()
 this.qb<LineCountRow>()
   .from('orders o')
   .join('LEFT JOIN order_lines ol ON ol.order_id = o.id')
-  .select(['o.id', 'o.createdAt', 'COUNT(ol.id) AS "lineCount"'])
-  .filters({ 'o.scopeId': scopeId })
-  .groupBy(['o.id', 'o.createdAt'])
+  .select(['o.id', 'o.created_at', 'COUNT(ol.id) AS "lineCount"'])
+  .filters({ 'o.scope_id': scopeId })
+  .groupBy(['o.id', 'o.created_at'])
   .build();
 ```
 
