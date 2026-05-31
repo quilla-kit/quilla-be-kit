@@ -1,5 +1,11 @@
 # @quilla-be-kit/http
 
+## 0.4.0
+
+### Minor Changes
+
+- 42a9ec0: Add `cors` option to `HonoServer` for built-in CORS support. Pass `cors: { origins: string[] }` and `HonoServer` registers Hono's built-in `cors()` middleware before routes so both preflight `OPTIONS` requests and actual cross-origin requests are handled automatically. Requests from unlisted origins receive no CORS headers; requests without an `Origin` header are unaffected. No additional dependency — `hono/cors` ships with Hono.
+
 ## 0.3.1
 
 ### Patch Changes
