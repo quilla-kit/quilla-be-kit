@@ -455,6 +455,34 @@ The `serve` callback is where you pick your Node runtime — `@hono/node-server`
 
 Consumer never constructs `HonoRequestAdapter` or `HonoMiddlewareAdapter` directly — `HonoServer` wires them internally.
 
+### CORS
+
+Pass `cors: { origins: string[] }` to enable CORS. `HonoServer` registers Hono's built-in `cors()` middleware before any route, so preflight and actual requests are both handled — no extra dependency required (`hono/cors` ships with Hono).
+
+```ts
+const server = new HonoServer({
+  port: 3000,
+  router,
+  serve: honoServe,
+  cors: {
+    origins: ['https://app.example.com', 'http://localhost:5173'],
+  },
+});
+```
+
+Requests from an unlisted origin receive no CORS headers — the browser blocks them. Requests with no `Origin` header (server-to-server) are unaffected.
+
+Defaults applied when `cors` is set:
+
+| Header | Value |
+|---|---|
+| `Access-Control-Allow-Methods` | `GET, HEAD, PUT, PATCH, POST, DELETE, OPTIONS` |
+| `Access-Control-Allow-Headers` | `Content-Type, Authorization, If-Match, ETag` |
+| `Access-Control-Allow-Credentials` | `true` |
+| `Access-Control-Max-Age` | `86400` (24 h) |
+
+If you need non-default values, omit `cors` and wire `hono/cors` yourself inside the `serve` callback, or raise an issue.
+
 ## Other frameworks
 
 If you need Express or Fastify: open an issue. Adapter sub-paths ship as library additions when they exist, not as consumer extension points.

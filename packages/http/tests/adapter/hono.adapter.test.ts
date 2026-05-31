@@ -40,6 +40,7 @@ function buildServer(options: {
   validator?: RequestValidator;
   authMiddlewares?: AuthMiddlewareStack;
   controllers?: readonly object[];
+  cors?: { origins: string[] };
 }): {
   server: HonoServer;
   fetch: (req: Request) => Promise<Response>;
@@ -61,6 +62,7 @@ function buildServer(options: {
     port: 0,
     router,
     ...(options.validator ? { requestValidator: options.validator } : {}),
+    ...(options.cors ? { cors: options.cors } : {}),
     serve: noopServe as never,
   });
   server.bootstrap();
@@ -223,6 +225,58 @@ describe('HonoServer adapter', () => {
       new Request('http://localhost/probe', { headers: { 'x-correlation-id': 'req-42' } }),
     );
     expect(capturedCorrelationId).toBe('req-42');
+  });
+});
+
+describe('HonoServer CORS', () => {
+  it('adds CORS headers to responses from allowed origins', async () => {
+    const { fetch } = buildServer({ cors: { origins: ['https://app.example.com'] } });
+    const res = await fetch(
+      new Request('http://localhost/users/42', {
+        headers: { origin: 'https://app.example.com' },
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get('access-control-allow-origin')).toBe('https://app.example.com');
+    expect(res.headers.get('access-control-allow-credentials')).toBe('true');
+  });
+
+  it('does not add CORS headers for disallowed origins', async () => {
+    const { fetch } = buildServer({ cors: { origins: ['https://app.example.com'] } });
+    const res = await fetch(
+      new Request('http://localhost/users/42', {
+        headers: { origin: 'https://evil.example.com' },
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get('access-control-allow-origin')).toBeNull();
+  });
+
+  it('responds to preflight OPTIONS with 204 and CORS headers', async () => {
+    const { fetch } = buildServer({ cors: { origins: ['https://app.example.com'] } });
+    const res = await fetch(
+      new Request('http://localhost/users/42', {
+        method: 'OPTIONS',
+        headers: {
+          origin: 'https://app.example.com',
+          'access-control-request-method': 'POST',
+        },
+      }),
+    );
+    expect(res.status).toBe(204);
+    expect(res.headers.get('access-control-allow-origin')).toBe('https://app.example.com');
+    expect(res.headers.get('access-control-allow-methods')).toBeTruthy();
+  });
+
+  it('does not add CORS headers when cors option is omitted', async () => {
+    const { fetch } = buildServer({});
+    const res = await fetch(
+      new Request('http://localhost/users/42', {
+        headers: { origin: 'https://app.example.com' },
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get('access-control-allow-origin')).toBeNull();
   });
 });
 

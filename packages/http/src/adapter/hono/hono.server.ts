@@ -1,6 +1,7 @@
 import type { Logger } from '@quilla-be-kit/observability';
 import { Hono } from 'hono';
 import type { Context, Next } from 'hono';
+import { cors } from 'hono/cors';
 import { resolveHttpError } from '../../error/resolve-http-error.js';
 import { HttpAttributes } from '../../request/http-attributes.js';
 import type { NormalizedRoute } from '../../router/normalized-route.type.js';
@@ -17,12 +18,17 @@ export type HonoServeHandle = {
 
 export type HonoServeFn = (app: Hono, port: number) => HonoServeHandle;
 
+export type HonoCorsOptions = {
+  readonly origins: string[];
+};
+
 export type HonoServerOptions = {
   readonly port: number;
   readonly router: Router;
   readonly serve: HonoServeFn;
   readonly requestValidator?: RequestValidator;
   readonly logger?: Logger;
+  readonly cors?: HonoCorsOptions;
 };
 
 export class HonoServer implements WebServer {
@@ -46,6 +52,20 @@ export class HonoServer implements WebServer {
       const { httpCode, body } = resolveHttpError(err);
       return c.json(body, httpCode as never);
     });
+
+    if (this.options.cors) {
+      const { origins } = this.options.cors;
+      this.app.use(
+        '*',
+        cors({
+          origin: (origin) => (origins.includes(origin) ? origin : null),
+          allowMethods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
+          allowHeaders: ['Content-Type', 'Authorization', 'If-Match', 'ETag'],
+          credentials: true,
+          maxAge: 86400,
+        }),
+      );
+    }
 
     const validator = this.options.requestValidator;
     if (validator) {
