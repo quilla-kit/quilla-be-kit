@@ -3,6 +3,7 @@ import {
   type RouteDefinition,
   getControllerPrefix,
   getControllerRoutes,
+  getControllerVersion,
 } from '../decorator/route.metadata.js';
 import type { HttpMiddleware } from '../request/http-middleware.type.js';
 import type { HttpRequest } from '../request/http-request.interface.js';
@@ -14,6 +15,7 @@ import type { RouterExecutionContextOptions, RouterOptions } from './router-opti
 
 type Registration = ControllerRegistration & {
   readonly modulePrefix: string;
+  readonly moduleVersion: string | undefined;
   readonly moduleMiddlewares: readonly HttpMiddleware[];
 };
 
@@ -41,6 +43,7 @@ export class Router {
       registrations.push({
         ...normalizeRegistration(raw),
         modulePrefix: '',
+        moduleVersion: undefined,
         moduleMiddlewares: [],
       });
     }
@@ -51,6 +54,7 @@ export class Router {
         registrations.push({
           ...normalizeRegistration(raw),
           modulePrefix: meta.prefix ?? '',
+          moduleVersion: meta.version,
           moduleMiddlewares: meta.middlewares ?? [],
         });
       }
@@ -106,11 +110,19 @@ function buildRoutes(
 
   for (const reg of registrations) {
     const controllerPrefix = getControllerPrefix(reg.controller);
+    const controllerVersion = getControllerVersion(reg.controller);
     const controllerName = reg.controller.constructor.name;
     const routeDefs = getControllerRoutes(reg.controller);
 
     for (const def of routeDefs) {
-      const fullPath = joinPath(reg.modulePrefix, reg.prefix ?? '', controllerPrefix, def.path);
+      const effectiveVersion = def.version ?? controllerVersion ?? reg.moduleVersion ?? '';
+      const fullPath = joinPath(
+        reg.modulePrefix,
+        effectiveVersion,
+        reg.prefix ?? '',
+        controllerPrefix,
+        def.path,
+      );
       const key = `${def.httpMethod} ${fullPath}`;
       const existing = seen.get(key);
       if (existing) {

@@ -1,7 +1,14 @@
 import { type HttpMethod, addRoute } from './route.metadata.js';
 
+export type RouteOptions = {
+  // Per-route version segment. Inserted resource-first into the composed path
+  // and overrides any controller- or module-level version. Goes through the
+  // same slash normalization as every other segment.
+  readonly version?: string;
+};
+
 function createMethodDecorator(httpMethod: HttpMethod, isPublic: boolean) {
-  return (path: string) => {
+  return (path: string, options?: RouteOptions) => {
     return (_target: unknown, context: ClassMethodDecoratorContext): void => {
       if (context.kind !== 'method') {
         throw new Error(`@${httpMethod} can only be applied to methods`);
@@ -11,6 +18,7 @@ function createMethodDecorator(httpMethod: HttpMethod, isPublic: boolean) {
         httpMethod,
         path,
         public: isPublic,
+        ...(options?.version !== undefined ? { version: options.version } : {}),
       });
     };
   };

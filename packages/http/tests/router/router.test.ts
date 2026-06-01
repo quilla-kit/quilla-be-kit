@@ -295,4 +295,202 @@ describe('Router', () => {
       ).toThrow(/Duplicate route/);
     });
   });
+
+  describe('versioning', () => {
+    it('inserts a module version resource-first: prefix + version + controller + path', () => {
+      @Controller('/auth')
+      class AuthController {
+        @Get('/:id')
+        async show(_req: HttpRequest): Promise<HttpResponse> {
+          return { httpCode: 200 };
+        }
+      }
+      const router = new Router({
+        executionContext: makeExecutionContext(),
+        modules: [
+          {
+            name: 'iam',
+            meta: { prefix: '/iam', version: '/api/v1', controllers: [new AuthController()] },
+          },
+        ],
+      });
+      expect(router.getRoutes().map((r) => r.fullPath)).toEqual(['/iam/api/v1/auth/:id']);
+    });
+
+    it('applies a @Controller version as the default for every route on the class', () => {
+      @Controller('/auth', { version: '/api/v1' })
+      class AuthController {
+        @Get('/:id')
+        async show(_req: HttpRequest): Promise<HttpResponse> {
+          return { httpCode: 200 };
+        }
+        @GetPublic('/healthz')
+        async health(_req: HttpRequest): Promise<HttpResponse> {
+          return { httpCode: 200 };
+        }
+      }
+      const router = new Router({
+        executionContext: makeExecutionContext(),
+        controllers: [new AuthController()],
+      });
+      expect(
+        router
+          .getRoutes()
+          .map((r) => r.fullPath)
+          .sort(),
+      ).toEqual(['/api/v1/auth/:id', '/api/v1/auth/healthz']);
+    });
+
+    it('lets a per-route version override the default for that route only', () => {
+      @Controller('/auth', { version: '/api/v1' })
+      class AuthController {
+        @Get('/:id')
+        async show(_req: HttpRequest): Promise<HttpResponse> {
+          return { httpCode: 200 };
+        }
+        @Get('/:id', { version: '/api/v2' })
+        async showV2(_req: HttpRequest): Promise<HttpResponse> {
+          return { httpCode: 200 };
+        }
+      }
+      const router = new Router({
+        executionContext: makeExecutionContext(),
+        controllers: [new AuthController()],
+      });
+      expect(
+        router
+          .getRoutes()
+          .map((r) => r.fullPath)
+          .sort(),
+      ).toEqual(['/api/v1/auth/:id', '/api/v2/auth/:id']);
+    });
+
+    it('resolves precedence route > controller > module', () => {
+      @Controller('/auth', { version: '/api/v2' })
+      class AuthController {
+        @Get('/a')
+        async a(_req: HttpRequest): Promise<HttpResponse> {
+          return { httpCode: 200 };
+        }
+        @Get('/b', { version: '/api/v3' })
+        async b(_req: HttpRequest): Promise<HttpResponse> {
+          return { httpCode: 200 };
+        }
+      }
+      @Controller('/pub')
+      class PubController {
+        @Get('/c')
+        async c(_req: HttpRequest): Promise<HttpResponse> {
+          return { httpCode: 200 };
+        }
+      }
+      const router = new Router({
+        executionContext: makeExecutionContext(),
+        modules: [
+          {
+            name: 'iam',
+            meta: {
+              prefix: '/iam',
+              version: '/api/v1',
+              controllers: [new AuthController(), new PubController()],
+            },
+          },
+        ],
+      });
+      expect(
+        router
+          .getRoutes()
+          .map((r) => r.fullPath)
+          .sort(),
+      ).toEqual(['/iam/api/v1/pub/c', '/iam/api/v2/auth/a', '/iam/api/v3/auth/b']);
+    });
+
+    it('normalizes a version segment with no leading slash (no double slash)', () => {
+      @Controller('/auth', { version: 'api/v1' })
+      class AuthController {
+        @Get('/:id')
+        async show(_req: HttpRequest): Promise<HttpResponse> {
+          return { httpCode: 200 };
+        }
+      }
+      const router = new Router({
+        executionContext: makeExecutionContext(),
+        modules: [{ name: 'iam', meta: { prefix: '/iam/', controllers: [new AuthController()] } }],
+      });
+      expect(router.getRoutes().map((r) => r.fullPath)).toEqual(['/iam/api/v1/auth/:id']);
+    });
+
+    it('produces byte-identical paths when no version is set anywhere', () => {
+      @Controller('/auth')
+      class AuthController {
+        @Get('/:id')
+        async show(_req: HttpRequest): Promise<HttpResponse> {
+          return { httpCode: 200 };
+        }
+      }
+      const router = new Router({
+        executionContext: makeExecutionContext(),
+        controllers: [{ controller: new AuthController(), prefix: '/api' }],
+      });
+      expect(router.getRoutes().map((r) => r.fullPath)).toEqual(['/api/auth/:id']);
+    });
+
+    it('keeps version orthogonal to *Public — a versioned public route stays public', () => {
+      @Controller('/auth', { version: '/api/v1' })
+      class AuthController {
+        @GetPublic('/healthz')
+        async health(_req: HttpRequest): Promise<HttpResponse> {
+          return { httpCode: 200 };
+        }
+      }
+      const router = new Router({
+        executionContext: makeExecutionContext(),
+        controllers: [new AuthController()],
+      });
+      const route = router.getRoutes().find((r) => r.fullPath === '/api/v1/auth/healthz');
+      expect(route?.public).toBe(true);
+    });
+
+    it('treats version-differentiated routes as distinct (no false duplicate)', () => {
+      @Controller('/auth', { version: '/api/v1' })
+      class AuthController {
+        @Get('/:id')
+        async show(_req: HttpRequest): Promise<HttpResponse> {
+          return { httpCode: 200 };
+        }
+        @Get('/:id', { version: '/api/v2' })
+        async showV2(_req: HttpRequest): Promise<HttpResponse> {
+          return { httpCode: 200 };
+        }
+      }
+      expect(
+        () =>
+          new Router({
+            executionContext: makeExecutionContext(),
+            controllers: [new AuthController()],
+          }),
+      ).not.toThrow();
+    });
+
+    it('still detects a duplicate when two routes resolve to the same versioned path', () => {
+      @Controller('/auth', { version: '/api/v1' })
+      class AuthController {
+        @Get('/:id')
+        async show(_req: HttpRequest): Promise<HttpResponse> {
+          return { httpCode: 200 };
+        }
+        @Get('/:id', { version: '/api/v1' })
+        async showAgain(_req: HttpRequest): Promise<HttpResponse> {
+          return { httpCode: 200 };
+        }
+      }
+      expect(
+        () =>
+          new Router({
+            executionContext: makeExecutionContext(),
+            controllers: [new AuthController()],
+          }),
+      ).toThrow(/Duplicate route/);
+    });
+  });
 });

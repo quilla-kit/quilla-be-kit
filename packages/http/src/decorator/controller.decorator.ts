@@ -1,7 +1,18 @@
-import { setControllerPrefix } from './route.metadata.js';
+import { setControllerPrefix, setControllerVersion } from './route.metadata.js';
 
-export function Controller(prefix: string) {
+export type ControllerOptions = {
+  // Controller-level default version segment. Applies to every route on the
+  // class unless a route sets its own version; itself overrides a module-level
+  // version. See the resolution rule in the Router.
+  readonly version?: string;
+};
+
+export function Controller(prefix: string, options?: ControllerOptions) {
   return (_target: unknown, context: ClassDecoratorContext): void => {
-    setControllerPrefix(context.metadata as Record<string | symbol, unknown>, prefix);
+    const metadata = context.metadata as Record<string | symbol, unknown>;
+    setControllerPrefix(metadata, prefix);
+    if (options?.version !== undefined) {
+      setControllerVersion(metadata, options.version);
+    }
   };
 }
