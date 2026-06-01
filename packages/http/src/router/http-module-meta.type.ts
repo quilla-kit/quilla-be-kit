@@ -5,4 +5,5 @@ export type HttpModuleMeta = {
   readonly controllers?: readonly (object | ControllerRegistration)[];
   readonly middlewares?: readonly HttpMiddleware[];
   readonly prefix?: string;
+  readonly version?: string;
 };

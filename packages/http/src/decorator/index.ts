@@ -1,4 +1,4 @@
-export { Controller } from './controller.decorator.js';
+export { Controller, type ControllerOptions } from './controller.decorator.js';
 export {
   Get,
   Post,
@@ -10,6 +10,7 @@ export {
   PutPublic,
   PatchPublic,
   DeletePublic,
+  type RouteOptions,
 } from './method.decorators.js';
 export { AuthorizeScope } from './authorize-scope.decorator.js';
 export { ValidateRequest } from './validate-request.decorator.js';

@@ -147,26 +147,77 @@ await runtime.run(async () => {
 
 ## Decorators
 
-### `@Controller(prefix)`
+### `@Controller(prefix, options?)`
 
-Class decorator. Every route on the class gets `prefix` prepended.
+Class decorator. Every route on the class gets `prefix` prepended. The optional
+second argument carries a controller-level **version** default (see
+[Versioning](#versioning)).
 
 ```ts
 @Controller('/users')
+class UsersController { ... }
+
+@Controller('/users', { version: '/api/v1' })   // controller-wide version default
 class UsersController { ... }
 ```
 
 ### HTTP method decorators
 
 ```ts
-@Get(path)          @GetPublic(path)
-@Post(path)         @PostPublic(path)
-@Put(path)          @PutPublic(path)
-@Patch(path)        @PatchPublic(path)
-@Delete(path)       @DeletePublic(path)
+@Get(path, options?)          @GetPublic(path, options?)
+@Post(path, options?)         @PostPublic(path, options?)
+@Put(path, options?)          @PutPublic(path, options?)
+@Patch(path, options?)        @PatchPublic(path, options?)
+@Delete(path, options?)       @DeletePublic(path, options?)
 ```
 
 The `*Public` variants mark the route as public — **auth middlewares are skipped** for these routes. The non-public variants run every registered `authMiddleware` before the handler.
+
+The optional `options` argument (`RouteOptions`) carries a per-route **version**
+override (see [Versioning](#versioning)):
+
+```ts
+@Get('/:id', { version: '/api/v2' })
+```
+
+### Versioning
+
+A version segment can be declared at three levels and is inserted
+**resource-first** into the composed path — after the module prefix, before the
+controller — so each module stays a clean future service boundary:
+
+```
+[module prefix] + [effective version] + [registration prefix] + [@Controller prefix] + [@Route path]
+```
+
+The effective version for a route resolves by precedence:
+
+```
+route option  ??  @Controller version  ??  HttpModuleMeta.version  ??  ''
+```
+
+- `HttpModuleMeta.version?` — module-wide default (see the [registry bridge](#bridge-to-componentregistryhttpmodulemeta)).
+- `@Controller(prefix, { version })` — controller-level default.
+- `@Get('/x', { version })` — per-route override (available on every method + `*Public` decorator).
+
+```ts
+@Controller('/auth', { version: '/api/v1' })   // default for the whole controller
+class AuthController {
+  @Get('/:id')                                 // → /iam/api/v1/auth/:id  (module prefix /iam)
+  async show() {}
+
+  @Get('/:id', { version: '/api/v2' })         // → /iam/api/v2/auth/:id  (route override)
+  async showV2() {}
+}
+```
+
+Version segments go through the same leading-slash / no-trailing-slash
+normalization as every other segment (`/iam` + `api/v1` → `/iam/api/v1`, no double
+slash). They are static, so they only **add** specificity and never trigger a
+false duplicate; two routes that differ only by version resolve to distinct
+paths. Version is orthogonal to `*Public` / auth — it affects the path only.
+When no version is set anywhere, composed paths are byte-identical to a service
+that never adopted versioning.
 
 ### `@AuthorizeScope(scope, mode?)`
 
@@ -350,7 +401,7 @@ const router = new Router({
 
 - Controllers can be registered as plain instances (no extra metadata) or wrapped in `{ controller, prefix?, middlewares? }` for per-controller prefix + middlewares.
 - Routes are sorted by **specificity** (static segments > parametric > wildcard) so `/users/healthz` matches before `/users/:id`.
-- Path composition: `[module prefix] + [registration prefix] + [@Controller prefix] + [@Route path]`, normalized to a single leading slash and no trailing slash.
+- Path composition: `[module prefix] + [effective version] + [registration prefix] + [@Controller prefix] + [@Route path]`, normalized to a single leading slash and no trailing slash. The **effective version** is resource-first and resolves `route option ?? @Controller version ?? HttpModuleMeta.version ?? ''` — see [Versioning](#versioning).
 - Duplicate routes (same method + path) throw at construction time — you catch double-registrations at startup, not under load.
 
 ### Middleware chain order
@@ -385,7 +436,8 @@ registry
   .register({
     name: 'iam',
     meta: {
-      prefix: '/api/v1',
+      prefix: '/iam',
+      version: '/api/v1',                       // module-wide default; routes/controllers can override
       controllers: [usersController, authController],
       middlewares: [iamModuleMw],
     },
@@ -394,7 +446,8 @@ registry
   .register({
     name: 'dm',
     meta: {
-      prefix: '/api/v1',
+      prefix: '/dm',
+      version: '/api/v1',
       controllers: [documentsController],
     },
   });
