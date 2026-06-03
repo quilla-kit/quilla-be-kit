@@ -426,8 +426,8 @@ The same resolver applies to `.filters()`, `.orderBy()`, and `.groupBy()`. `this
 | --- | --- | --- |
 | `field` (bare) | `field = $n` (or `IS NULL` if value is `null`) | all kinds |
 | `field__contains` | `field ILIKE '%value%'` | string |
-| `field__in` | `field = ANY($n)` | string, number, date |
-| `field__notIn` | `field <> ALL($n) OR field IS NULL` | string, number, date |
+| `field__in` | `field = ANY($n)` | string, number, date, enum |
+| `field__notIn` | `field <> ALL($n) OR field IS NULL` | string, number, date, enum |
 | `field__gt` / `__gte` / `__lt` / `__lte` | `field > $n` etc. | number, date |
 | `field__isNull` | `field IS NULL` (or `IS NOT NULL` if value is `false`) | all kinds |
 | `field__isNotNull` | `field IS NOT NULL` (inverse of above) | all kinds |
@@ -640,7 +640,7 @@ becomes, by the time the controller's handler sees it:
 }
 ```
 
-The filter shape you declare drives the generated operator set automatically — string fields get `__contains` / `__in` / `__notIn` / `__isNull` / `__isNotNull`, numbers and dates add `__gt` / `__gte` / `__lt` / `__lte`, booleans get `__isNull` / `__isNotNull`. Unknown query keys are stripped. Sort directives pointing at unknown fields are dropped. `pageSize` is clamped to `maxPageSize`.
+The filter shape you declare drives the generated operator set automatically — string fields get `__contains` / `__in` / `__notIn` / `__isNull` / `__isNotNull`, numbers and dates add `__gt` / `__gte` / `__lt` / `__lte`, booleans get `__isNull` / `__isNotNull`, enum fields (`z.enum(...)`) get `__in` / `__notIn` / `__isNull` / `__isNotNull` (no `__contains` — substring match is semantically wrong for fixed-value sets). Unknown query keys are stripped. Sort directives pointing at unknown fields are dropped. `pageSize` is clamped to `maxPageSize`.
 
 #### Strict vs tolerant parsing
 

@@ -18,7 +18,7 @@ function createMethodDecorator(httpMethod: HttpMethod, isPublic: boolean) {
         httpMethod,
         path,
         public: isPublic,
-        ...(options?.version !== undefined ? { version: options.version } : {}),
+        version: options?.version,
       });
     };
   };

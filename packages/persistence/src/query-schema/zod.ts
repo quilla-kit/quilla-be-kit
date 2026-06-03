@@ -73,6 +73,7 @@ export type CreateQueryParametersSchemaOptions<
  * - number:  __gt, __gte, __lt, __lte, __in, __notIn, __isNull, __isNotNull
  * - date:    __gt, __gte, __lt, __lte, __in, __notIn, __isNull, __isNotNull
  * - boolean: __isNull, __isNotNull
+ * - enum:    __in, __notIn, __isNull, __isNotNull
  *
  * Equality is the bare key (`name=Ada`). Invalid input is silently tolerated
  * by default; opt into strict validation via `{ strict: true }`.
