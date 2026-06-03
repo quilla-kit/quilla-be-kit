@@ -32,5 +32,6 @@ function kindOf(schema: z.ZodType): FieldKind | null {
   if (schema instanceof z.ZodNumber) return 'number';
   if (schema instanceof z.ZodBoolean) return 'boolean';
   if (schema instanceof z.ZodDate) return 'date';
+  if (schema instanceof z.ZodEnum) return 'enum';
   return null;
 }

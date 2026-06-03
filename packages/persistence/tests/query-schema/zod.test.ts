@@ -7,6 +7,7 @@ type Filters = {
   isActive?: boolean;
   createdAt?: Date;
   age?: number;
+  status?: 'PENDING' | 'ACTIVE' | 'CLOSED';
 };
 
 const filterShape = z.object({
@@ -14,6 +15,7 @@ const filterShape = z.object({
   isActive: z.boolean().optional(),
   createdAt: z.coerce.date().optional(),
   age: z.coerce.number().optional(),
+  status: z.enum(['PENDING', 'ACTIVE', 'CLOSED']).optional(),
 }) as z.ZodObject<{ [K in keyof Filters]: z.ZodType<Filters[K]> }>;
 
 const schema = createQueryParametersSchema<Filters>(filterShape);
@@ -167,5 +169,34 @@ describe('createQueryParametersSchema — extraFields', () => {
         extraFields: z.object({ page: z.string() }),
       }),
     ).toThrow(/collides with a reserved name/);
+  });
+});
+
+describe('createQueryParametersSchema — enum fields', () => {
+  it('accepts a bare enum equality filter', () => {
+    const result = schema.parse({ status: 'ACTIVE' });
+    expect(result.filters).toEqual({ status: 'ACTIVE' });
+  });
+
+  it('parses status__in as a string array', () => {
+    const result = schema.parse({ status__in: 'ACTIVE,PENDING' });
+    expect(result.filters?.status__in).toEqual(['ACTIVE', 'PENDING']);
+  });
+
+  it('parses status__notIn as a string array', () => {
+    const result = schema.parse({ status__notIn: 'CLOSED' });
+    expect(result.filters?.status__notIn).toEqual(['CLOSED']);
+  });
+
+  it('parses status__isNull / status__isNotNull as booleans', () => {
+    const result = schema.parse({ status__isNull: 'true', status__isNotNull: 'false' });
+    expect(result.filters?.status__isNull).toBe(true);
+    expect(result.filters?.status__isNotNull).toBe(false);
+  });
+
+  it('accepts a bare enum equality filter in strict mode', () => {
+    const strictSchema = createQueryParametersSchema<Filters>(filterShape, { strict: true });
+    const result = strictSchema.parse({ status: 'ACTIVE' });
+    expect(result.filters).toEqual({ status: 'ACTIVE' });
   });
 });

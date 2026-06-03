@@ -11,8 +11,6 @@ export function Controller(prefix: string, options?: ControllerOptions) {
   return (_target: unknown, context: ClassDecoratorContext): void => {
     const metadata = context.metadata as Record<string | symbol, unknown>;
     setControllerPrefix(metadata, prefix);
-    if (options?.version !== undefined) {
-      setControllerVersion(metadata, options.version);
-    }
+    setControllerVersion(metadata, options?.version);
   };
 }

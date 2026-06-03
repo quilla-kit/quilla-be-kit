@@ -1,4 +1,4 @@
-export type FieldKind = 'string' | 'number' | 'boolean' | 'date';
+export type FieldKind = 'string' | 'number' | 'boolean' | 'date' | 'enum';
 
 export const ALL_FILTER_OPERATORS = [
   'eq',
@@ -27,6 +27,7 @@ export const OPERATORS_BY_KIND: Readonly<Record<FieldKind, readonly FilterOperat
   number: ['gt', 'gte', 'lt', 'lte', 'in', 'notIn', 'isNull', 'isNotNull'],
   date: ['gt', 'gte', 'lt', 'lte', 'in', 'notIn', 'isNull', 'isNotNull'],
   boolean: ['isNull', 'isNotNull'],
+  enum: ['in', 'notIn', 'isNull', 'isNotNull'],
 };
 
 export const FILTER_DELIMITER = '__';

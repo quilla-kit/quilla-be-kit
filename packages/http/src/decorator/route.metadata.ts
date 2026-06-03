@@ -49,7 +49,8 @@ export function getControllerPrefix(controllerInstance: object): string {
   return '';
 }
 
-export function setControllerVersion(metadata: MetadataBag, version: string): void {
+export function setControllerVersion(metadata: MetadataBag, version: string | undefined): void {
+  if (version === undefined) return;
   metadata[CONTROLLER_VERSION_KEY] = version;
 }
 
