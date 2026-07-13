@@ -539,15 +539,16 @@ If you need non-default values, omit `cors` and wire `hono/cors` yourself inside
 
 ### Response and error conventions
 
-The success/envelope shape and the error shape are both consumer-overridable through the
-optional `conventions` facade on `HonoServer`. It groups two strategies, each defaulting to a
-class that reproduces the built-in wire shape byte-for-byte — omit `conventions` and nothing
-changes.
+The outbound success/envelope shape, the error shape, and the inbound query keys are all
+consumer-overridable through the optional `conventions` facade on `HonoServer`. It groups three
+strategies, each defaulting to a class that reproduces the built-in behavior byte-for-byte — omit
+`conventions` and nothing changes.
 
 ```ts
 type HttpConventions = {
-  readonly errorResolver?: ErrorResolver;           // controls the error status + body
-  readonly responseSerializer?: ResponseSerializer; // controls the JSON success/envelope body
+  readonly errorResolver?: ErrorResolver;             // controls the error status + body
+  readonly responseSerializer?: ResponseSerializer;   // controls the JSON success/envelope body
+  readonly requestDeserializer?: RequestDeserializer; // controls the inbound query keys
 };
 
 interface ErrorResolver {
@@ -556,12 +557,16 @@ interface ErrorResolver {
 interface ResponseSerializer {
   serialize(response: HttpJsonResponse): unknown;    // return the wire body, or undefined for no body
 }
+interface RequestDeserializer {
+  deserializeQuery(query: Record<string, string | readonly string[]>): Record<string, string | readonly string[]>;
+}
 ```
 
 Defaults are exported so a custom strategy can delegate to them: `DefaultErrorResolver` (the
-status mapping — `ValidationError` → 400, `NotFoundError` → 404, …) and `DefaultResponseSerializer`
+status mapping — `ValidationError` → 400, `NotFoundError` → 404, …), `DefaultResponseSerializer`
 (strips `httpCode`/`headers`, keeps `payload` / `error` / `metadata`, and returns `undefined`
-for an empty body so it becomes a bodyless response).
+for an empty body so it becomes a bodyless response), and `DefaultRequestDeserializer` (an
+identity pass unless configured with `paginationKeys`).
 
 **Custom error format** — e.g. RFC 7807 Problem Details, reusing the default status mapping:
 
@@ -629,6 +634,35 @@ const server = new HonoServer({
 The binary/stream response paths never touch the serializer — they still write bytes directly.
 On the frontend, `@quilla-fe-kit/api-client-react-query` reconciles a custom envelope with a
 `queryTransformer`, and `@quilla-fe-kit/api-client` a custom error shape with an `errorParser`.
+
+**Custom request query dialect** — the request-side mirror of `responseSerializer`. A pagination
+dialect is API-wide, so rather than repeat it at every list schema, rename the query keys once at
+the boundary. `DefaultRequestDeserializer` rewrites a consumer's keys onto the canonical `page` /
+`pageSize` every handler (and `@ValidateRequest`) already reads, so no DTO changes:
+
+```ts
+import { DefaultRequestDeserializer } from '@quilla-be-kit/http';
+
+const server = new HonoServer({
+  port: 3000,
+  router,
+  serve: honoServe,
+  conventions: {
+    requestDeserializer: new DefaultRequestDeserializer({
+      paginationKeys: { page: 'p', pageSize: 'per_page' },
+    }),
+  },
+});
+```
+
+Now `GET /roles?p=2&per_page=50` reaches handlers as `page` / `pageSize`. This lines up with the
+frontend: `@quilla-fe-kit`'s `RepeatParamsSerializer` renames the same slots on the emitting end
+(also configured once, in its constructor), so both ends speak one dialect for full round-trip
+symmetry. `sort` is intentionally not remappable — the `sort` key already agrees across ends.
+
+Only pagination keys are renamed; filter keys and all other query params pass through untouched.
+For a bespoke rule, implement `RequestDeserializer` directly. Non-query sources (params, body)
+are never touched.
 
 ## Other frameworks
 

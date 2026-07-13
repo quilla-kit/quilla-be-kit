@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { type HonoServeHandle, HonoServer } from '../../src/adapter/hono/hono.server.js';
 import { Controller, Get, GetPublic, Post, ValidateRequest } from '../../src/decorator/index.js';
 import type { ErrorResolver, ResolvedHttpError } from '../../src/error/error-resolver.interface.js';
+import { DefaultRequestDeserializer } from '../../src/request/default.deserializer.js';
 import type { HttpMiddleware } from '../../src/request/http-middleware.type.js';
 import type { HttpRequest } from '../../src/request/http-request.interface.js';
 import type {
@@ -23,6 +24,11 @@ class UsersController {
   @GetPublic('/healthz')
   async health(_req: HttpRequest): Promise<HttpResponse> {
     return { httpCode: 200, payload: { ok: true } };
+  }
+
+  @GetPublic('/echo-query')
+  async echoQuery(req: HttpRequest): Promise<HttpResponse> {
+    return { httpCode: 200, payload: req.getQuery() };
   }
 
   @Get('/:id')
@@ -410,5 +416,30 @@ describe('HonoServer conventions', () => {
 
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ payload: { id: '42' } });
+  });
+
+  it('remaps a consumer dialect onto canonical query keys via requestDeserializer', async () => {
+    const { fetch } = buildServer({
+      conventions: {
+        requestDeserializer: new DefaultRequestDeserializer({
+          paginationKeys: { page: 'p', pageSize: 'per_page' },
+        }),
+      },
+    });
+    const res = await fetch(
+      new Request('http://localhost/users/echo-query?p=2&per_page=50&name=Ada'),
+    );
+
+    expect(res.status).toBe(200);
+    // handlers (and @ValidateRequest) see canonical page / pageSize.
+    expect(await res.json()).toEqual({ payload: { page: '2', pageSize: '50', name: 'Ada' } });
+  });
+
+  it('leaves query keys untouched when no requestDeserializer is configured', async () => {
+    const { fetch } = buildServer({});
+    const res = await fetch(new Request('http://localhost/users/echo-query?page=2&pageSize=50'));
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ payload: { page: '2', pageSize: '50' } });
   });
 });

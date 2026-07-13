@@ -4,6 +4,7 @@ import type { Context, Next } from 'hono';
 import { cors } from 'hono/cors';
 import { DefaultErrorResolver } from '../../error/default.resolver.js';
 import type { ErrorResolver } from '../../error/error-resolver.interface.js';
+import { DefaultRequestDeserializer } from '../../request/default.deserializer.js';
 import { DefaultResponseSerializer } from '../../request/default.serializer.js';
 import { HttpAttributes } from '../../request/http-attributes.js';
 import type { NormalizedRoute } from '../../router/normalized-route.type.js';
@@ -47,9 +48,12 @@ export class HonoServer implements WebServer {
     this.errorResolver = options.conventions?.errorResolver ?? new DefaultErrorResolver();
     const responseSerializer =
       options.conventions?.responseSerializer ?? new DefaultResponseSerializer();
+    const requestDeserializer =
+      options.conventions?.requestDeserializer ?? new DefaultRequestDeserializer();
     this.requestAdapter = new HonoRequestAdapter(
       options.router.getExecutionContextProvider(),
       responseSerializer,
+      requestDeserializer,
     );
     this.middlewareAdapter = new HonoMiddlewareAdapter(this.requestAdapter);
   }

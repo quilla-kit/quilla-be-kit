@@ -2,6 +2,7 @@ import type { ExecutionContextProvider } from '@quilla-be-kit/execution-context'
 import type { Context } from 'hono';
 import type { HttpRequest } from '../../request/http-request.interface.js';
 import type { HttpResponse } from '../../request/http-response.type.js';
+import type { RequestDeserializer } from '../../request/request-deserializer.interface.js';
 import type { ResponseSerializer } from '../../request/response-serializer.interface.js';
 import type { RequestAdapter } from '../../server/request-adapter.interface.js';
 import { createHttpRequest } from './create-http-request.js';
@@ -16,6 +17,7 @@ export class HonoRequestAdapter implements RequestAdapter {
   constructor(
     private readonly executionContextProvider: ExecutionContextProvider | undefined,
     private readonly responseSerializer: ResponseSerializer,
+    private readonly requestDeserializer: RequestDeserializer,
   ) {}
 
   async toHttpRequest(frameworkContext: unknown): Promise<HttpRequest> {
@@ -30,7 +32,7 @@ export class HonoRequestAdapter implements RequestAdapter {
       {
         path: c.req.path,
         method: c.req.method,
-        query: normalizeQuery(c.req.queries()),
+        query: this.requestDeserializer.deserializeQuery(normalizeQuery(c.req.queries())),
         params: c.req.param() as Record<string, string>,
         headers: normalizeHeaders(c.req.raw.headers),
         body,
