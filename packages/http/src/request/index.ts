@@ -10,3 +10,8 @@ export type { AuthenticatedToken } from './authenticated-token.interface.js';
 export { HttpAttributes } from './http-attributes.js';
 export type { ResponseSerializer } from './response-serializer.interface.js';
 export { DefaultResponseSerializer } from './default.serializer.js';
+export type { RequestDeserializer } from './request-deserializer.interface.js';
+export {
+  DefaultRequestDeserializer,
+  type DefaultRequestDeserializerOptions,
+} from './default.deserializer.js';
