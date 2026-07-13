@@ -2,10 +2,13 @@ import type { Logger } from '@quilla-be-kit/observability';
 import { Hono } from 'hono';
 import type { Context, Next } from 'hono';
 import { cors } from 'hono/cors';
-import { resolveHttpError } from '../../error/resolve-http-error.js';
+import { DefaultErrorResolver } from '../../error/default.resolver.js';
+import type { ErrorResolver } from '../../error/error-resolver.interface.js';
+import { DefaultResponseSerializer } from '../../request/default.serializer.js';
 import { HttpAttributes } from '../../request/http-attributes.js';
 import type { NormalizedRoute } from '../../router/normalized-route.type.js';
 import type { Router } from '../../router/router.js';
+import type { HttpConventions } from '../../server/http-conventions.type.js';
 import type { WebServer } from '../../server/web-server.interface.js';
 import type { RequestValidator } from '../../validator/request-validator.interface.js';
 import { getRequestAttributes } from './get-request-attributes.js';
@@ -29,17 +32,25 @@ export type HonoServerOptions = {
   readonly requestValidator?: RequestValidator;
   readonly logger?: Logger;
   readonly cors?: HonoCorsOptions;
+  readonly conventions?: HttpConventions;
 };
 
 export class HonoServer implements WebServer {
   private readonly app = new Hono();
   private readonly requestAdapter: HonoRequestAdapter;
   private readonly middlewareAdapter: HonoMiddlewareAdapter;
+  private readonly errorResolver: ErrorResolver;
   private bootstrapped = false;
   private handle: HonoServeHandle | undefined;
 
   constructor(private readonly options: HonoServerOptions) {
-    this.requestAdapter = new HonoRequestAdapter(options.router.getExecutionContextProvider());
+    this.errorResolver = options.conventions?.errorResolver ?? new DefaultErrorResolver();
+    const responseSerializer =
+      options.conventions?.responseSerializer ?? new DefaultResponseSerializer();
+    this.requestAdapter = new HonoRequestAdapter(
+      options.router.getExecutionContextProvider(),
+      responseSerializer,
+    );
     this.middlewareAdapter = new HonoMiddlewareAdapter(this.requestAdapter);
   }
 
@@ -49,7 +60,7 @@ export class HonoServer implements WebServer {
 
     this.app.onError((err, c) => {
       this.options.logger?.error('HTTP error', err instanceof Error ? err : undefined);
-      const { httpCode, body } = resolveHttpError(err);
+      const { httpCode, body } = this.errorResolver.resolve(err);
       return c.json(body, httpCode as never);
     });
 

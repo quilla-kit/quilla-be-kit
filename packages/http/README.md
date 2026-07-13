@@ -248,7 +248,7 @@ async create(req: HttpRequest): Promise<HttpResponse> {
 }
 ```
 
-On validation failure, throws `ValidationError` with `context.issues` containing the validator's raw error array (e.g. Zod issues, Joi details). `resolveHttpError` surfaces this as a 400 response with `body.error.details.issues`.
+On validation failure, throws `ValidationError` with `context.issues` containing the validator's raw error array (e.g. Zod issues, Joi details). The default error resolver (`DefaultErrorResolver`) surfaces this as a 400 response with `body.error.details.issues`. See [Response and error conventions](#response-and-error-conventions) to override the wire shape.
 
 ## Multipart / form-data
 
@@ -320,7 +320,7 @@ async export(req: HttpRequest): Promise<HttpStreamResponse> {
 
 **The real tradeoff is that binary responses lose the envelope convention — no `payload` / `metadata` wrapper around the bytes, and middleware can't introspect stream contents post-hoc.** That's intrinsic to streaming, not a flaw: logging, response shaping, and validators that read response bodies all become no-ops on the binary path. You're opting out of the standard JSON shape so the framework can hand bytes directly to the socket.
 
-Error handling caveat: a handler that throws **before** producing the response still goes through `resolveHttpError` and emits a normal JSON error envelope. A handler that throws **mid-stream** — after the response status is already committed — aborts the connection; the client sees a truncated body, not a JSON error.
+Error handling caveat: a handler that throws **before** producing the response still goes through the configured error resolver (`DefaultErrorResolver` by default) and emits a normal JSON error envelope. A handler that throws **mid-stream** — after the response status is already committed — aborts the connection; the client sees a truncated body, not a JSON error.
 
 ## `RequestValidator` adapter
 
@@ -500,6 +500,7 @@ const server = new HonoServer({
   router,                 // HonoServer reads the execution-context provider from Router
   requestValidator,       // optional — required only if any route uses @ValidateRequest
   logger,                 // optional — used for startup/shutdown/error logs
+  conventions,            // optional — override the error / success wire shapes (see below)
   serve: honoServe,
 });
 ```
@@ -535,6 +536,99 @@ Defaults applied when `cors` is set:
 | `Access-Control-Max-Age` | `86400` (24 h) |
 
 If you need non-default values, omit `cors` and wire `hono/cors` yourself inside the `serve` callback, or raise an issue.
+
+### Response and error conventions
+
+The success/envelope shape and the error shape are both consumer-overridable through the
+optional `conventions` facade on `HonoServer`. It groups two strategies, each defaulting to a
+class that reproduces the built-in wire shape byte-for-byte — omit `conventions` and nothing
+changes.
+
+```ts
+type HttpConventions = {
+  readonly errorResolver?: ErrorResolver;           // controls the error status + body
+  readonly responseSerializer?: ResponseSerializer; // controls the JSON success/envelope body
+};
+
+interface ErrorResolver {
+  resolve(err: unknown): ResolvedHttpError;          // { httpCode, body }
+}
+interface ResponseSerializer {
+  serialize(response: HttpJsonResponse): unknown;    // return the wire body, or undefined for no body
+}
+```
+
+Defaults are exported so a custom strategy can delegate to them: `DefaultErrorResolver` (the
+status mapping — `ValidationError` → 400, `NotFoundError` → 404, …) and `DefaultResponseSerializer`
+(strips `httpCode`/`headers`, keeps `payload` / `error` / `metadata`, and returns `undefined`
+for an empty body so it becomes a bodyless response).
+
+**Custom error format** — e.g. RFC 7807 Problem Details, reusing the default status mapping:
+
+```ts
+import {
+  DefaultErrorResolver,
+  type ErrorResolver,
+  type ResolvedHttpError,
+} from '@quilla-be-kit/http';
+
+class ProblemDetailsResolver implements ErrorResolver {
+  private readonly base = new DefaultErrorResolver();
+
+  resolve(err: unknown): ResolvedHttpError {
+    const { httpCode, body } = this.base.resolve(err);   // reuse status mapping
+    return {
+      httpCode,
+      body: {
+        error: {
+          name: 'about:blank',
+          message: body.error?.message ?? 'Error',
+          details: { status: httpCode, ...(body.error?.details ?? {}) },
+        },
+      },
+    };
+  }
+}
+
+const server = new HonoServer({
+  port: 3000,
+  router,
+  serve: honoServe,
+  conventions: { errorResolver: new ProblemDetailsResolver() },
+});
+```
+
+**Custom success envelope** — e.g. rename `payload` → `data` and lift pagination to the top level:
+
+```ts
+import {
+  type HttpJsonResponse,
+  type ResponseSerializer,
+} from '@quilla-be-kit/http';
+
+class DataEnvelopeSerializer implements ResponseSerializer {
+  serialize(r: HttpJsonResponse): unknown {
+    if (r.error) return { error: r.error };
+    if (r.payload === undefined) return undefined;       // preserve the bodyless-response branch
+    const p = r.metadata?.pagination;
+    return {
+      data: r.payload,
+      ...(p ? { pagination: { page: p.page, perPage: p.limit, total: p.total } } : {}),
+    };
+  }
+}
+
+const server = new HonoServer({
+  port: 3000,
+  router,
+  serve: honoServe,
+  conventions: { responseSerializer: new DataEnvelopeSerializer() },
+});
+```
+
+The binary/stream response paths never touch the serializer — they still write bytes directly.
+On the frontend, `@quilla-fe-kit/api-client-react-query` reconciles a custom envelope with a
+`queryTransformer`, and `@quilla-fe-kit/api-client` a custom error shape with an `errorParser`.
 
 ## Other frameworks
 
