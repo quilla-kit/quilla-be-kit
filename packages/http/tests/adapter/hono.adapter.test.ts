@@ -3,15 +3,19 @@ import { AsyncExecutionContextProvider } from '@quilla-be-kit/execution-context'
 import { describe, expect, it } from 'vitest';
 import { type HonoServeHandle, HonoServer } from '../../src/adapter/hono/hono.server.js';
 import { Controller, Get, GetPublic, Post, ValidateRequest } from '../../src/decorator/index.js';
+import type { ErrorResolver, ResolvedHttpError } from '../../src/error/error-resolver.interface.js';
 import type { HttpMiddleware } from '../../src/request/http-middleware.type.js';
 import type { HttpRequest } from '../../src/request/http-request.interface.js';
 import type {
   HttpBinaryResponse,
+  HttpJsonResponse,
   HttpResponse,
   HttpStreamResponse,
 } from '../../src/request/http-response.type.js';
+import type { ResponseSerializer } from '../../src/request/response-serializer.interface.js';
 import type { AuthMiddlewareStack } from '../../src/router/auth-middleware-stack.type.js';
 import { Router } from '../../src/router/router.js';
+import type { HttpConventions } from '../../src/server/http-conventions.type.js';
 import type { RequestValidator } from '../../src/validator/request-validator.interface.js';
 
 @Controller('/users')
@@ -41,6 +45,7 @@ function buildServer(options: {
   authMiddlewares?: AuthMiddlewareStack;
   controllers?: readonly object[];
   cors?: { origins: string[] };
+  conventions?: HttpConventions;
 }): {
   server: HonoServer;
   fetch: (req: Request) => Promise<Response>;
@@ -63,6 +68,7 @@ function buildServer(options: {
     router,
     ...(options.validator ? { requestValidator: options.validator } : {}),
     ...(options.cors ? { cors: options.cors } : {}),
+    ...(options.conventions ? { conventions: options.conventions } : {}),
     serve: noopServe as never,
   });
   server.bootstrap();
@@ -359,5 +365,50 @@ describe('HonoServer binary and stream responses', () => {
     const text = await res.text();
     expect(text).not.toContain('payload');
     expect(text).not.toContain('"data"');
+  });
+});
+
+describe('HonoServer conventions', () => {
+  it('reshapes the success envelope via a custom responseSerializer', async () => {
+    const dataEnvelope: ResponseSerializer = {
+      serialize(r: HttpJsonResponse): unknown {
+        if (r.error) return { error: r.error };
+        if (r.payload === undefined) return undefined;
+        return { data: r.payload };
+      },
+    };
+
+    const { fetch } = buildServer({ conventions: { responseSerializer: dataEnvelope } });
+    const res = await fetch(new Request('http://localhost/users/42'));
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: { id: '42' } });
+  });
+
+  it('reshapes the error body and status via a custom errorResolver', async () => {
+    const problemDetails: ErrorResolver = {
+      resolve(_err: unknown): ResolvedHttpError {
+        return {
+          httpCode: 422,
+          body: { error: { name: 'about:blank', message: 'overridden' } },
+        };
+      },
+    };
+
+    const { fetch } = buildServer({ conventions: { errorResolver: problemDetails } });
+    const res = await fetch(new Request('http://localhost/users/missing'));
+
+    expect(res.status).toBe(422);
+    const body = (await res.json()) as { error: { name: string; message: string } };
+    expect(body.error.name).toBe('about:blank');
+    expect(body.error.message).toBe('overridden');
+  });
+
+  it('preserves the default wire shape when conventions are omitted', async () => {
+    const { fetch } = buildServer({});
+    const res = await fetch(new Request('http://localhost/users/42'));
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ payload: { id: '42' } });
   });
 });

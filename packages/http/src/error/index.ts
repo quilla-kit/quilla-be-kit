@@ -1,1 +1,2 @@
-export { resolveHttpError, type ResolvedHttpError } from './resolve-http-error.js';
+export type { ErrorResolver, ResolvedHttpError } from './error-resolver.interface.js';
+export { DefaultErrorResolver } from './default.resolver.js';

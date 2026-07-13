@@ -2,6 +2,7 @@ import type { ExecutionContextProvider } from '@quilla-be-kit/execution-context'
 import type { Context } from 'hono';
 import type { HttpRequest } from '../../request/http-request.interface.js';
 import type { HttpResponse } from '../../request/http-response.type.js';
+import type { ResponseSerializer } from '../../request/response-serializer.interface.js';
 import type { RequestAdapter } from '../../server/request-adapter.interface.js';
 import { createHttpRequest } from './create-http-request.js';
 import { getRequestAttributes } from './get-request-attributes.js';
@@ -12,7 +13,10 @@ import {
 } from './hono.types.js';
 
 export class HonoRequestAdapter implements RequestAdapter {
-  constructor(private readonly executionContextProvider: ExecutionContextProvider | undefined) {}
+  constructor(
+    private readonly executionContextProvider: ExecutionContextProvider | undefined,
+    private readonly responseSerializer: ResponseSerializer,
+  ) {}
 
   async toHttpRequest(frameworkContext: unknown): Promise<HttpRequest> {
     const c = frameworkContext as Context;
@@ -48,8 +52,26 @@ export class HonoRequestAdapter implements RequestAdapter {
       const c = frameworkContext as Context;
       const request = await this.toHttpRequest(c);
       const response = await handler(request);
-      return writeHonoResponse(c, response);
+      return this.writeHonoResponse(c, response);
     };
+  }
+
+  private writeHonoResponse(c: Context, response: HttpResponse): Response {
+    if ('stream' in response) {
+      const { httpCode, headers, stream } = response;
+      return new Response(stream, { status: httpCode, headers: headers ?? {} });
+    }
+    if ('data' in response) {
+      const { httpCode, headers, data } = response;
+      return new Response(data, { status: httpCode, headers: headers ?? {} });
+    }
+
+    const { httpCode, headers } = response;
+    const body = this.responseSerializer.serialize(response);
+    if (body === undefined) {
+      return new Response(null, { status: httpCode, headers: headers ?? {} });
+    }
+    return c.json(body as never, httpCode as never, headers);
   }
 
   private async ensureParsedBody(c: Context): Promise<ParsedBody> {
@@ -107,25 +129,4 @@ async function parseBody(c: Context): Promise<ParsedBody> {
   }
 
   return { body: null, formData: null, binary: null };
-}
-
-function writeHonoResponse(c: Context, response: HttpResponse): Response {
-  if ('stream' in response) {
-    const { httpCode, headers, stream } = response;
-    return new Response(stream, { status: httpCode, headers: headers ?? {} });
-  }
-  if ('data' in response) {
-    const { httpCode, headers, data } = response;
-    return new Response(data, { status: httpCode, headers: headers ?? {} });
-  }
-
-  const { httpCode, headers, ...rest } = response;
-  const bodyKeys = Object.keys(rest);
-  if (bodyKeys.length === 0) {
-    return new Response(null, {
-      status: httpCode,
-      headers: headers ?? {},
-    });
-  }
-  return c.json(rest, httpCode as never, headers);
 }

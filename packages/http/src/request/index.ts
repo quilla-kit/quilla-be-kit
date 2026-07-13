@@ -8,3 +8,5 @@ export type {
 export type { HttpMiddleware } from './http-middleware.type.js';
 export type { AuthenticatedToken } from './authenticated-token.interface.js';
 export { HttpAttributes } from './http-attributes.js';
+export type { ResponseSerializer } from './response-serializer.interface.js';
+export { DefaultResponseSerializer } from './default.serializer.js';
