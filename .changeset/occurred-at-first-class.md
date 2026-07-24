@@ -20,3 +20,7 @@ from `createdAt` (outbox-row write time) and `publishedAt` (bus-forward time).
 business date should put it in payload metadata. Existing consumers add the column with
 `ALTER TABLE ... ADD COLUMN occurred_at TIMESTAMPTZ NOT NULL` (backfilling as appropriate)
 and supply `occurredAt` when mapping events into the outbox.
+
+Also add the bus row `id` to `HandlerEntry`, so handlers receive the stable bus event id.
+This makes the documented processed-events idempotency pattern (dedup keyed on `entry.id`)
+usable — previously the id was referenced in the docs but never passed to handlers.

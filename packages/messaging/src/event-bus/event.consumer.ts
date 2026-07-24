@@ -259,6 +259,7 @@ export class EventConsumer implements Disposable {
       try {
         const run = async () =>
           handler({
+            id: event.id,
             payload: this.unwrapPayload(event.payload),
             eventType: event.eventType,
             eventVersion: event.eventVersion,

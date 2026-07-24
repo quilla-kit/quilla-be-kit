@@ -1,4 +1,5 @@
 export type HandlerEntry<TPayload = unknown> = {
+  readonly id: string;
   readonly payload: TPayload;
   readonly eventType: string;
   readonly eventVersion: number;

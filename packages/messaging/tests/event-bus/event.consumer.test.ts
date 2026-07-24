@@ -53,6 +53,7 @@ describe('EventConsumer', () => {
     await consumer.dispose();
 
     expect(handler).toHaveBeenCalledTimes(1);
+    expect(handler).toHaveBeenCalledWith(expect.objectContaining({ id: 'evt-1' }));
     expect(bus.marksDone).toEqual(['evt-1']);
     expect(bus.marksFailed).toHaveLength(0);
   });
