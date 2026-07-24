@@ -24,6 +24,7 @@ type EventsRow = {
   last_error: string | null;
   created_at: Date;
   published_at: Date;
+  occurred_at: Date;
 };
 
 export type PgEventBusOptions = {
@@ -51,8 +52,8 @@ export class PgEventBus implements EventBusPublisher, EventBusConsumer {
       `INSERT INTO ${this.eventsTable}
          (id, event_type, event_version, event_kind, payload, source_service,
           aggregate_id, correlation_id, origin_event_id, status, claimed_by, claimed_at,
-          retry_count, last_error, created_at, published_at)
-       VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+          retry_count, last_error, created_at, published_at, occurred_at)
+       VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
        ON CONFLICT (origin_event_id) WHERE origin_event_id IS NOT NULL DO NOTHING
        RETURNING id`,
       [
@@ -72,6 +73,7 @@ export class PgEventBus implements EventBusPublisher, EventBusConsumer {
         null,
         event.createdAt,
         publishedAt,
+        event.occurredAt,
       ],
     );
     if (result.rows.length > 0) {
@@ -189,6 +191,7 @@ export class PgEventBus implements EventBusPublisher, EventBusConsumer {
       eventKind: row.event_kind,
       payload: row.payload,
       sourceService: row.source_service,
+      occurredAt: row.occurred_at,
       ...(row.aggregate_id !== null ? { aggregateId: row.aggregate_id } : {}),
       ...(row.correlation_id !== null ? { correlationId: row.correlation_id } : {}),
       status: row.status,

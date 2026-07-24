@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { PgEventBus } from '../../src/postgres/pg-event-bus.js';
 import { FakePgPool } from '../helpers/fake-pg-pool.js';
 
+const OCCURRED_AT = new Date('2025-12-31T23:59:00Z');
+
 describe('PgEventBus', () => {
   let pool: FakePgPool;
   let bus: PgEventBus;
@@ -22,6 +24,7 @@ describe('PgEventBus', () => {
         sourceService: 'svc-a',
         aggregateId: 'agg-1',
         correlationId: 'corr-1',
+        occurredAt: OCCURRED_AT,
         createdAt: new Date('2026-01-01T00:00:00Z'),
       });
 
@@ -45,6 +48,8 @@ describe('PgEventBus', () => {
       expect(call?.params[10]).toBeNull(); // claimed_by
       expect(call?.params[12]).toBe(0); // retry_count
       expect(call?.params[15]).toBeInstanceOf(Date); // published_at
+      expect(call?.params[16]).toEqual(OCCURRED_AT); // occurred_at
+      expect(call?.sql).toContain('occurred_at');
     });
 
     it('passes originEventId through to the INSERT when supplied', async () => {
@@ -56,6 +61,7 @@ describe('PgEventBus', () => {
         payload: {},
         sourceService: 'svc-a',
         originEventId: 'outbox-row-uuid',
+        occurredAt: OCCURRED_AT,
         createdAt: new Date('2026-01-01T00:00:00Z'),
       });
 
@@ -75,6 +81,7 @@ describe('PgEventBus', () => {
         payload: {},
         sourceService: 'svc-a',
         originEventId: 'outbox-row-uuid',
+        occurredAt: OCCURRED_AT,
         createdAt: new Date('2026-01-01T00:00:00Z'),
       });
 
@@ -92,6 +99,7 @@ describe('PgEventBus', () => {
         eventKind: 'domain',
         payload: {},
         sourceService: 'svc-a',
+        occurredAt: OCCURRED_AT,
         createdAt: new Date('2026-01-01T00:00:00Z'),
       });
       const r2 = await bus.publish({
@@ -100,6 +108,7 @@ describe('PgEventBus', () => {
         eventKind: 'domain',
         payload: {},
         sourceService: 'svc-a',
+        occurredAt: OCCURRED_AT,
         createdAt: new Date('2026-01-01T00:00:00Z'),
       });
       expect(r1.id).not.toBe(r2.id);
@@ -129,6 +138,7 @@ describe('PgEventBus', () => {
           last_error: null,
           created_at: new Date('2026-01-01T00:00:00Z'),
           published_at: new Date('2026-01-01T00:00:01Z'),
+          occurred_at: OCCURRED_AT,
         },
       ]);
 
@@ -146,6 +156,7 @@ describe('PgEventBus', () => {
         id: 'evt-1',
         status: 'CLAIMED',
         aggregateId: 'agg-1',
+        occurredAt: OCCURRED_AT,
       });
     });
 

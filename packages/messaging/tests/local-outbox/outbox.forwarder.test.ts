@@ -40,6 +40,23 @@ describe('OutboxForwarder', () => {
     expect(reader.markedFailed).toHaveLength(0);
   });
 
+  it('threads the outbox row occurredAt onto every publish', async () => {
+    const occurredAt = new Date('2025-12-31T23:59:00Z');
+    reader.enqueueBatch([makeOutboxEntry({ id: 'e1', occurredAt })]);
+    const fwd = new OutboxForwarder({
+      reader,
+      publisher,
+      sourceService: 'svc-a',
+      logger: new NoopLogger(),
+    });
+
+    fwd.start();
+    await vi.advanceTimersByTimeAsync(1000);
+    await fwd.dispose();
+
+    expect(publisher.published[0]?.event.occurredAt).toBe(occurredAt);
+  });
+
   it('threads the outbox row id as originEventId on every publish (publisher dedup key)', async () => {
     reader.enqueueBatch([
       makeOutboxEntry({ id: 'outbox-AAA' }),

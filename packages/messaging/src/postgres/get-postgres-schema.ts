@@ -22,7 +22,8 @@ export function getPostgresSchema(options?: PostgresSchemaOptions): string {
   retry_count INTEGER NOT NULL,
   last_error TEXT,
   published_at TIMESTAMPTZ,
-  created_at TIMESTAMPTZ NOT NULL
+  created_at TIMESTAMPTZ NOT NULL,
+  occurred_at TIMESTAMPTZ NOT NULL
 );`,
     `CREATE INDEX IF NOT EXISTS ${outboxTable}_status_created_at_idx
   ON ${outboxTable} (status, created_at)
@@ -46,7 +47,8 @@ export function getPostgresSchema(options?: PostgresSchemaOptions): string {
   retry_count INTEGER NOT NULL,
   last_error TEXT,
   created_at TIMESTAMPTZ NOT NULL,
-  published_at TIMESTAMPTZ NOT NULL
+  published_at TIMESTAMPTZ NOT NULL,
+  occurred_at TIMESTAMPTZ NOT NULL
 );`,
     `CREATE INDEX IF NOT EXISTS ${eventsTable}_event_type_created_at_idx
   ON ${eventsTable} (event_type, created_at)

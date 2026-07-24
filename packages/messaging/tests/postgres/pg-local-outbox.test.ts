@@ -1,18 +1,9 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import type { TransactionHandle } from '../../src/index.js';
 import { PgLocalOutbox } from '../../src/postgres/pg-local-outbox.js';
+import { CapturingTrx } from '../helpers/capturing-trx.js';
 import { FakePgPool } from '../helpers/fake-pg-pool.js';
 
-class CapturingTrx implements TransactionHandle {
-  calls: { sql: string; params: readonly unknown[] }[] = [];
-  async query<TRow = unknown>(
-    sql: string,
-    params: readonly unknown[] = [],
-  ): Promise<{ rows: readonly TRow[] }> {
-    this.calls.push({ sql, params });
-    return { rows: [] };
-  }
-}
+const OCCURRED_AT = new Date('2025-12-31T23:59:00Z');
 
 describe('PgLocalOutbox', () => {
   let pool: FakePgPool;
@@ -32,6 +23,7 @@ describe('PgLocalOutbox', () => {
             eventType: 'order.placed',
             eventKind: 'domain',
             payload: { orderId: 'o-1' },
+            occurredAt: OCCURRED_AT,
             aggregateId: 'agg-1',
           },
         ],
@@ -54,6 +46,8 @@ describe('PgLocalOutbox', () => {
       expect(call?.params[11]).toBeNull(); // last_error
       expect(call?.params[12]).toBeNull(); // published_at
       expect(call?.params[13]).toBeInstanceOf(Date); // created_at
+      expect(call?.params[14]).toBe(OCCURRED_AT); // occurred_at
+      expect(call?.sql).toContain('occurred_at');
     });
 
     it('honors caller-supplied id, version, createdAt', async () => {
@@ -67,6 +61,7 @@ describe('PgLocalOutbox', () => {
             eventVersion: 7,
             eventKind: 'domain',
             payload: {},
+            occurredAt: OCCURRED_AT,
             createdAt,
           },
         ],
@@ -87,7 +82,10 @@ describe('PgLocalOutbox', () => {
     it('honors custom table name', async () => {
       const custom = new PgLocalOutbox({ pool: pool.asPool(), tableName: 'svc_outbox' });
       const trx = new CapturingTrx();
-      await custom.insert([{ eventType: 't', eventKind: 'domain', payload: {} }], trx);
+      await custom.insert(
+        [{ eventType: 't', eventKind: 'domain', payload: {}, occurredAt: new Date() }],
+        trx,
+      );
       expect(trx.calls[0]?.sql).toContain('INSERT INTO svc_outbox');
     });
   });
@@ -110,6 +108,7 @@ describe('PgLocalOutbox', () => {
           last_error: null,
           published_at: null,
           created_at: new Date('2026-01-01T00:00:00Z'),
+          occurred_at: OCCURRED_AT,
         },
       ]);
 
@@ -125,6 +124,7 @@ describe('PgLocalOutbox', () => {
         id: 'e1',
         status: 'CLAIMED',
         claimedBy: 'replica-1',
+        occurredAt: OCCURRED_AT,
       });
     });
   });

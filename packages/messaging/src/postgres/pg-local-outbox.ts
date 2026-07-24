@@ -11,7 +11,7 @@ import type { TransactionHandle } from '../local-outbox/transaction-handle.inter
 
 const DEFAULT_TABLE_NAME = 'outbox_events';
 const DEFAULT_MAX_RETRIES = 3;
-const INSERT_COLUMN_COUNT = 14;
+const INSERT_COLUMN_COUNT = 15;
 
 type OutboxRow = {
   id: string;
@@ -28,6 +28,7 @@ type OutboxRow = {
   last_error: string | null;
   published_at: Date | null;
   created_at: Date;
+  occurred_at: Date;
 };
 
 export type PgLocalOutboxOptions = {
@@ -58,7 +59,7 @@ export class PgLocalOutbox implements LocalOutboxWriter, LocalOutboxReader {
       valueGroups.push(
         `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}::jsonb, ` +
           `$${base + 6}, $${base + 7}, $${base + 8}, $${base + 9}, $${base + 10}, ` +
-          `$${base + 11}, $${base + 12}, $${base + 13}, $${base + 14})`,
+          `$${base + 11}, $${base + 12}, $${base + 13}, $${base + 14}, $${base + 15})`,
       );
       params.push(
         entry.id ?? randomUUID(),
@@ -75,6 +76,7 @@ export class PgLocalOutbox implements LocalOutboxWriter, LocalOutboxReader {
         null,
         null,
         entry.createdAt ?? new Date(),
+        entry.occurredAt,
       );
     }
 
@@ -82,7 +84,7 @@ export class PgLocalOutbox implements LocalOutboxWriter, LocalOutboxReader {
       `INSERT INTO ${this.tableName}
         (id, event_type, event_version, event_kind, payload,
          aggregate_id, correlation_id, status, claimed_by, claimed_at,
-         retry_count, last_error, published_at, created_at)
+         retry_count, last_error, published_at, created_at, occurred_at)
        VALUES ${valueGroups.join(', ')}`,
       params,
     );
@@ -169,6 +171,7 @@ export class PgLocalOutbox implements LocalOutboxWriter, LocalOutboxReader {
       eventVersion: row.event_version,
       eventKind: row.event_kind,
       payload: row.payload,
+      occurredAt: row.occurred_at,
       ...(row.aggregate_id !== null ? { aggregateId: row.aggregate_id } : {}),
       ...(row.correlation_id !== null ? { correlationId: row.correlation_id } : {}),
       status: row.status,
