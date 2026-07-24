@@ -37,6 +37,7 @@ export function makeOutboxEntry(overrides: Partial<LocalOutboxEntry> = {}): Loca
     payload: { foo: 'bar' },
     status: 'CLAIMED',
     retryCount: 0,
+    occurredAt: new Date('2025-12-31T23:59:00Z'),
     createdAt: new Date('2026-01-01T00:00:00Z'),
     ...overrides,
   };

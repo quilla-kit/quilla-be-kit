@@ -94,6 +94,7 @@ export class OutboxForwarder implements Disposable {
             eventKind: entry.eventKind,
             payload: entry.payload,
             sourceService: this.sourceService,
+            occurredAt: entry.occurredAt,
             ...(entry.aggregateId !== undefined ? { aggregateId: entry.aggregateId } : {}),
             ...(entry.correlationId !== undefined ? { correlationId: entry.correlationId } : {}),
             originEventId: entry.id,

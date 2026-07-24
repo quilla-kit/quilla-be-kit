@@ -149,6 +149,7 @@ const uow = new UnitOfWork({
       eventType: event.name,
       eventVersion: 1,
       eventKind: 'domain',
+      occurredAt: event.occurredAt, // event occurrence time, threaded through to the handler
       payload: { payload: event.toJSON(), metadata: { /* correlationId, ... */ } },
       aggregateId: 'aggregateId' in event ? event.aggregateId : undefined,
     }),
@@ -209,8 +210,9 @@ const consumer = new EventConsumer({
   skipOwnEventKinds: ['integration'], // skip self-emitted integration events
 });
 
-consumer.on(OrderPlaced, async ({ payload, correlationId }) => {
+consumer.on(OrderPlaced, async ({ payload, correlationId, occurredAt }) => {
   // payload is already validated by OrderPlacedSchema before this line runs
+  // occurredAt is the event's occurrence time (a first-class field, not payload)
   await sendReceiptEmail(payload.orderId);
 });
 
@@ -370,6 +372,7 @@ const { id, inserted } = await bus.publish({
   eventType: 'order.placed',
   /* ... */
   originEventId: 'stripe_charge_ch_3OabcXYZ', // dedup key
+  occurredAt: new Date(), // event occurrence time
   createdAt: new Date(),
 });
 // inserted=true  → row was created with the returned id

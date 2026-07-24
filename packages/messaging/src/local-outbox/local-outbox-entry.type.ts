@@ -6,6 +6,7 @@ export type LocalOutboxEntry = {
   readonly eventVersion: number;
   readonly eventKind: string;
   readonly payload: unknown;
+  readonly occurredAt: Date;
   readonly aggregateId?: string | undefined;
   readonly correlationId?: string | undefined;
   readonly status: LocalOutboxStatus;
@@ -23,6 +24,9 @@ export type LocalOutboxInsertInput = {
   readonly eventVersion?: number;
   readonly eventKind: string;
   readonly payload: unknown;
+  // Event occurrence time (DomainEvent.occurredAt). For any other business date,
+  // use payload metadata rather than this first-class field.
+  readonly occurredAt: Date;
   readonly aggregateId?: string | undefined;
   readonly correlationId?: string | undefined;
   readonly createdAt?: Date;

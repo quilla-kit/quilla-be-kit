@@ -32,6 +32,12 @@ describe('getPostgresSchema', () => {
     expect(sql).toContain('last_error TEXT');
   });
 
+  it('includes an occurred_at NOT NULL column on both tables', () => {
+    const sql = getPostgresSchema();
+    const matches = sql.match(/occurred_at TIMESTAMPTZ NOT NULL/g) ?? [];
+    expect(matches.length).toBe(2);
+  });
+
   it('declares no DEFAULT clauses (dumb-DB principle)', () => {
     const sql = getPostgresSchema();
     expect(sql).not.toMatch(/\bDEFAULT\b/i);

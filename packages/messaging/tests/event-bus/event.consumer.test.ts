@@ -16,6 +16,7 @@ function makeBusEntry(overrides: Partial<EventBusEntry> = {}): EventBusEntry {
     eventKind: 'domain',
     payload: { foo: 'bar' },
     sourceService: 'svc-a',
+    occurredAt: new Date('2025-12-31T23:59:00Z'),
     status: 'CLAIMED',
     retryCount: 0,
     createdAt: new Date('2026-01-01T00:00:00Z'),
@@ -54,6 +55,25 @@ describe('EventConsumer', () => {
     expect(handler).toHaveBeenCalledTimes(1);
     expect(bus.marksDone).toEqual(['evt-1']);
     expect(bus.marksFailed).toHaveLength(0);
+  });
+
+  it('passes the event occurredAt through to the handler entry', async () => {
+    const occurredAt = new Date('2025-12-31T23:59:00Z');
+    const handler = vi.fn(async () => {});
+    const consumer = new EventConsumer({
+      bus,
+      consumerName: 'test',
+      sourceService: 'svc-a',
+      logger: new NoopLogger(),
+    });
+    consumer.on('test.happened', handler);
+    bus.enqueueBatch([makeBusEntry({ occurredAt })]);
+
+    consumer.start();
+    await vi.advanceTimersByTimeAsync(1000);
+    await consumer.dispose();
+
+    expect(handler).toHaveBeenCalledWith(expect.objectContaining({ occurredAt }));
   });
 
   it('unwraps { payload, metadata } envelopes before handing to handler', async () => {
