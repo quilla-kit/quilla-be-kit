@@ -6,6 +6,7 @@ import type { ExecutionContext } from '../src/execution-context.type.js';
 const baseCtx: ExecutionContext = {
   actorType: 'system',
   correlationId: 'corr-1',
+  executionAttemptId: 'attempt-1',
 };
 
 describe('AsyncExecutionContextProvider', () => {
@@ -35,11 +36,13 @@ describe('AsyncExecutionContextProvider', () => {
     const a: ExecutionContext = {
       actorType: 'user',
       correlationId: 'a',
+      executionAttemptId: 'attempt-a',
       session: { scopeId: 's-a', userId: 'user-a' },
     };
     const b: ExecutionContext = {
       actorType: 'user',
       correlationId: 'b',
+      executionAttemptId: 'attempt-b',
       session: { scopeId: 's-b', userId: 'user-b' },
     };
 
@@ -68,9 +71,21 @@ describe('AsyncExecutionContextProvider', () => {
 
   it('honors a consumer-supplied factory override', () => {
     const custom = {
-      createSystemContext: () => ({ actorType: 'system' as const, correlationId: 'custom' }),
-      createBaselineContext: () => ({ actorType: 'anonymous' as const, correlationId: 'custom' }),
-      createFromEventMetadata: () => ({ actorType: 'system' as const, correlationId: 'custom' }),
+      createSystemContext: () => ({
+        actorType: 'system' as const,
+        correlationId: 'custom',
+        executionAttemptId: 'custom-attempt',
+      }),
+      createBaselineContext: () => ({
+        actorType: 'anonymous' as const,
+        correlationId: 'custom',
+        executionAttemptId: 'custom-attempt',
+      }),
+      createFromEventMetadata: () => ({
+        actorType: 'system' as const,
+        correlationId: 'custom',
+        executionAttemptId: 'custom-attempt',
+      }),
     };
     const provider = new AsyncExecutionContextProvider({ factory: custom });
     expect(provider.factory).toBe(custom);

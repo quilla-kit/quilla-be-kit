@@ -64,6 +64,27 @@ describe('authenticatedSessionMiddleware', () => {
     });
   });
 
+  it('preserves the baseline executionAttemptId when enriching — re-authenticating mid-request is still the same physical attempt', async () => {
+    const provider = new AsyncExecutionContextProvider();
+    const middleware = authenticatedSessionMiddleware({
+      sessionStore: makeSessionStore(makeSession()),
+      executionContextProvider: provider,
+    });
+
+    const request = fakeHttpRequest();
+    request.setAttribute(HttpAttributes.VERIFIED_TOKEN, makeToken());
+
+    const baseline = executionContextFactory.createBaselineContext();
+    let observed: ReturnType<typeof provider.getContext> | undefined;
+    await provider.runWithContext(baseline, async () => {
+      await middleware(request, async () => {
+        observed = provider.getContext();
+      });
+    });
+
+    expect(observed?.executionAttemptId).toBe(baseline.executionAttemptId);
+  });
+
   it('throws UnauthorizedError when no verified token is on the request', async () => {
     const provider = new AsyncExecutionContextProvider();
     const middleware = authenticatedSessionMiddleware({

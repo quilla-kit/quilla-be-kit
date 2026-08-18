@@ -25,6 +25,7 @@ export class ExecutionContextEnricher implements LogEntryEnricher {
           ...(ctx.session ? { scopeId: ctx.session.scopeId, userId: ctx.session.userId } : {}),
           actorType: ctx.actorType,
           correlationId: ctx.correlationId,
+          executionAttemptId: ctx.executionAttemptId,
         },
       };
     } catch {

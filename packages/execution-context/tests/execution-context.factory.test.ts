@@ -12,6 +12,13 @@ describe('executionContextFactory.createSystemContext', () => {
     expect(a.correlationId).not.toBe(b.correlationId);
   });
 
+  it('produces a fresh executionAttemptId per call', () => {
+    const a = executionContextFactory.createSystemContext('system');
+    const b = executionContextFactory.createSystemContext('system');
+    expect(a.executionAttemptId).toMatch(UUID);
+    expect(a.executionAttemptId).not.toBe(b.executionAttemptId);
+  });
+
   it('sets actorType to the requested value', () => {
     expect(executionContextFactory.createSystemContext('system').actorType).toBe('system');
     expect(executionContextFactory.createSystemContext('job').actorType).toBe('job');
@@ -39,6 +46,13 @@ describe('executionContextFactory.createBaselineContext', () => {
     const ctx = executionContextFactory.createBaselineContext({});
     expect(ctx.correlationId).toMatch(UUID);
   });
+
+  it('produces a fresh executionAttemptId per call, uncontrollable by input', () => {
+    const a = executionContextFactory.createBaselineContext({ correlationId: 'trace-abc' });
+    const b = executionContextFactory.createBaselineContext({ correlationId: 'trace-abc' });
+    expect(a.executionAttemptId).toMatch(UUID);
+    expect(a.executionAttemptId).not.toBe(b.executionAttemptId);
+  });
 });
 
 describe('executionContextFactory.createFromEventMetadata', () => {
@@ -50,11 +64,25 @@ describe('executionContextFactory.createFromEventMetadata', () => {
       scopeId: 'scope-1',
       userId: 'user-1',
     });
-    expect(executionContextFactory.createFromEventMetadata(meta)).toEqual({
+    const ctx = executionContextFactory.createFromEventMetadata(meta);
+    expect(ctx).toEqual({
       actorType: 'user',
       correlationId: 'corr-1',
+      executionAttemptId: ctx.executionAttemptId,
       session: { scopeId: 'scope-1', userId: 'user-1' },
     });
+    expect(ctx.executionAttemptId).toMatch(UUID);
+  });
+
+  it('produces a fresh executionAttemptId per call, not read from metadata', () => {
+    const meta = EventMetadata.create({
+      kind: EventKind.INTEGRATION,
+      correlationId: 'corr-1',
+      actorType: 'user',
+    });
+    const a = executionContextFactory.createFromEventMetadata(meta);
+    const b = executionContextFactory.createFromEventMetadata(meta);
+    expect(a.executionAttemptId).not.toBe(b.executionAttemptId);
   });
 
   it('omits session when metadata has neither scopeId nor userId', () => {
