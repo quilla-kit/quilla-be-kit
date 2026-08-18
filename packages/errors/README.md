@@ -83,17 +83,23 @@ Use `QuillaError.is(e)` as the cross-realm-safe boundary check, then
 `instanceof` for category matching:
 
 ```ts
-function toHttpStatus(e: unknown): number {
-  if (!QuillaError.is(e)) return 500;
-  if (e instanceof ValidationError)   return 400;
-  if (e instanceof UnauthorizedError) return 401;
-  if (e instanceof ForbiddenError)    return 403;
-  if (e instanceof NotFoundError)     return 404;
-  if (e instanceof ConflictError)     return 409;
-  if (e instanceof ExternalError)     return 502;
-  return 500;
+function isRetriable(e: unknown): boolean {
+  if (!QuillaError.is(e)) return false;
+  if (e instanceof ValidationError)   return false;  // caller's input won't change
+  if (e instanceof UnauthorizedError) return false;
+  if (e instanceof ForbiddenError)    return false;
+  if (e instanceof NotFoundError)     return false;
+  if (e instanceof ExternalError)     return true;   // upstream may recover
+  return false;
 }
 ```
+
+**Do not hand-roll an HTTP status table from these categories.**
+`@quilla-be-kit/http` already maps every category to a status in its
+`DefaultErrorResolver`, and exposes an `HttpStatusAware` brand for errors that
+need a status no category covers. Status codes live in the HTTP layer on
+purpose — this package stays transport-agnostic so `messaging` and
+`persistence` can depend on it without inheriting a transport vocabulary.
 
 - `QuillaError.is()` uses `Symbol.for('quilla-be-kit.error')` — works across
   module-system realms (e.g. duplicate package copies).

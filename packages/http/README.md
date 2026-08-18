@@ -335,7 +335,7 @@ async create(req: HttpRequest): Promise<HttpResponse> {
 }
 ```
 
-On validation failure, throws `ValidationError` with `context.issues` containing the validator's raw error array (e.g. Zod issues, Joi details). The default error resolver (`DefaultErrorResolver`) surfaces this as a 400 response with `body.error.details.issues`. See [Response and error conventions](#response-and-error-conventions) to override the wire shape.
+On validation failure, throws `ValidationError` with `context.issues` containing the validator's raw error array (e.g. Zod issues, Joi details). The default error resolver (`DefaultErrorResolver`) surfaces this as a 400 response with `body.error.details.issues`. See [Error status mapping](#error-status-mapping) for how that 400 is derived, and [Response and error conventions](#response-and-error-conventions) to override the wire shape.
 
 ## Multipart / form-data
 
@@ -665,6 +665,57 @@ status mapping — `ValidationError` → 400, `NotFoundError` → 404, …), `De
 (strips `httpCode`/`headers`, keeps `payload` / `error` / `metadata`, and returns `undefined`
 for an empty body so it becomes a bodyless response), and `DefaultRequestDeserializer` (an
 identity pass unless configured with `paginationKeys`).
+
+#### Error status mapping
+
+`DefaultErrorResolver` resolves a status in three steps, first match wins.
+
+**1. The category table.** These are the defaults for the error categories `@quilla-be-kit/http`
+ships against — and throws itself, so changing them changes documented behavior:
+
+| Error | Status | Thrown by the toolkit at |
+|---|---|---|
+| `ValidationError` | 400 | `@ValidateRequest` |
+| `UnauthorizedError` | 401 | `@quilla-be-kit/security` bearer-token and session middleware |
+| `ForbiddenError` | 403 | `@AuthorizeScope` |
+| `NotFoundError` | 404 | — |
+| `ConflictError` | 409 | — |
+| `InternalError` (and `UnknownError`) | 500 | — |
+| `ExternalError` | 502 | — |
+
+The table lives here, in the HTTP layer, rather than on the error classes: `@quilla-be-kit/errors`
+is transport-agnostic and is consumed by `messaging` and `persistence`, where a status code means
+nothing.
+
+**2. Subclass a category — the zero-config path.** Inheritance is what most custom errors want, and
+costs nothing. `@quilla-be-kit/persistence` already relies on it:
+
+```ts
+export class OptimisticLockError extends ConflictError {}   // → 409
+export class CrossScopeAccessError extends NotFoundError {} // → 404
+```
+
+**3. Brand the error — the escape hatch.** When you need a status no category covers, implement
+`HttpStatusAware`. This outranks the category table:
+
+```ts
+import { QuillaError } from '@quilla-be-kit/errors';
+import { HTTP_STATUS, type HttpStatusAware } from '@quilla-be-kit/http';
+
+export class GoneError extends QuillaError implements HttpStatusAware {
+  readonly code: string = 'GONE';
+  readonly [HTTP_STATUS] = 410;
+}
+```
+
+The brand is a `Symbol.for('quilla-be-kit.http.status')` key rather than a plain `httpCode` field
+so that it can only ever be set deliberately — an error that happens to carry an unrelated
+`httpCode` (say, an `ExternalError` subclass storing the *upstream's* status) keeps its category
+status instead of leaking that number to your own clients.
+
+A branded value outside 100–599, or one that isn't an integer, is ignored and the error falls
+through to the category table. Anything that isn't a `QuillaError` at all resolves to a generic
+500 with a redacted body, brand or no brand.
 
 **Custom error format** — e.g. RFC 7807 Problem Details, reusing the default status mapping:
 
