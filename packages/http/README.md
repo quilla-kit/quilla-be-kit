@@ -661,7 +661,7 @@ interface RequestDeserializer {
 ```
 
 Defaults are exported so a custom strategy can delegate to them: `DefaultErrorResolver` (the
-status mapping — `ValidationError` → 400, `NotFoundError` → 404, …), `DefaultResponseSerializer`
+status mapping — see [Error status mapping](#error-status-mapping)), `DefaultResponseSerializer`
 (strips `httpCode`/`headers`, keeps `payload` / `error` / `metadata`, and returns `undefined`
 for an empty body so it becomes a bodyless response), and `DefaultRequestDeserializer` (an
 identity pass unless configured with `paginationKeys`).
@@ -677,34 +677,50 @@ ships against — and throws itself, so changing them changes documented behavio
 |---|---|---|
 | `ValidationError` | 400 | `@ValidateRequest` |
 | `UnauthorizedError` | 401 | `@quilla-be-kit/security` bearer-token and session middleware |
+| `PaymentRequiredError` | 402 | — |
 | `ForbiddenError` | 403 | `@AuthorizeScope` |
 | `NotFoundError` | 404 | — |
 | `ConflictError` | 409 | — |
+| `GoneError` | 410 | — |
+| `PreconditionFailedError` | 412 | — |
+| `RateLimitError` | 429 | — |
 | `InternalError` (and `UnknownError`) | 500 | — |
+| `NotImplementedError` | 501 | — |
 | `ExternalError` | 502 | — |
+| `UnavailableError` | 503 | — |
+| `TimeoutError` | 504 | — |
 
 The table lives here, in the HTTP layer, rather than on the error classes: `@quilla-be-kit/errors`
 is transport-agnostic and is consumed by `messaging` and `persistence`, where a status code means
 nothing.
 
-**2. Subclass a category — the zero-config path.** Inheritance is what most custom errors want, and
-costs nothing. `@quilla-be-kit/persistence` already relies on it:
+**2. Subclass a category — this is what you want.** Inheritance carries the status down, so a
+narrower `code` costs nothing and your domain code never imports `@quilla-be-kit/http`:
 
 ```ts
-export class OptimisticLockError extends ConflictError {}   // → 409
-export class CrossScopeAccessError extends NotFoundError {} // → 404
+import { ConflictError, GoneError, NotFoundError } from '@quilla-be-kit/errors';
+
+export class ResourceRetiredError extends GoneError {
+  override readonly code: string = 'RESOURCE_RETIRED';                     // → 410
+}
 ```
 
-**3. Brand the error — the escape hatch.** When you need a status no category covers, implement
-`HttpStatusAware`. This outranks the category table:
+`@quilla-be-kit/persistence` already relies on this — `OptimisticLockError extends ConflictError`
+→ 409, `CrossScopeAccessError extends NotFoundError` → 404.
+
+**3. Brand the error — escape hatch, rarely needed.** Reach for this only when the category table
+genuinely has no entry for what you need — a vendor-specific status, or overriding a status you
+inherited. It requires importing from `@quilla-be-kit/http`, so prefer a category wherever one
+fits; if you find yourself branding the same status across projects, open an issue and it should
+become a category instead.
 
 ```ts
 import { QuillaError } from '@quilla-be-kit/errors';
 import { HTTP_STATUS, type HttpStatusAware } from '@quilla-be-kit/http';
 
-export class GoneError extends QuillaError implements HttpStatusAware {
-  readonly code: string = 'GONE';
-  readonly [HTTP_STATUS] = 410;
+export class TeapotError extends QuillaError implements HttpStatusAware {
+  readonly code: string = 'TEAPOT';
+  readonly [HTTP_STATUS] = 418;
 }
 ```
 
