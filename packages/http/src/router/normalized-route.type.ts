@@ -8,8 +8,13 @@ export type NormalizedRoute = {
   readonly fullPath: string;
   readonly public: boolean;
   /**
+   * Resolved auth stack name. `undefined` on public routes, and on every route
+   * when no `authStacks` are configured.
+   */
+  readonly authStack: string | undefined;
+  /**
    * Complete ordered middleware chain for this route:
-   * `[system? → globalMiddlewares → (public ? [] : authMiddlewares) → moduleMiddlewares → registrationMiddlewares]`.
+   * `[system? → globalMiddlewares → (public ? [] : resolved auth stack) → moduleMiddlewares → registrationMiddlewares]`.
    * Adapters iterate and wrap each entry; they do not re-compose the chain.
    */
   readonly middlewareChain: readonly HttpMiddleware[];

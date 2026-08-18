@@ -1,6 +1,7 @@
 import { AsyncExecutionContextProvider } from '@quilla-be-kit/execution-context';
 import { describe, expect, it } from 'vitest';
 import { Controller, Get, GetPublic, Post } from '../../src/decorator/index.js';
+import { HttpAttributes } from '../../src/request/http-attributes.js';
 import type { HttpMiddleware } from '../../src/request/http-middleware.type.js';
 import type { HttpRequest } from '../../src/request/http-request.interface.js';
 import type { HttpResponse } from '../../src/request/http-response.type.js';
@@ -112,7 +113,7 @@ describe('Router', () => {
         await next();
       };
       const authStack: AuthMiddlewareStack = {
-        tokenVerification: tokenMw,
+        credentialVerification: tokenMw,
         sessionLoad: sessionMw,
       };
 
@@ -120,16 +121,17 @@ describe('Router', () => {
         executionContext: makeExecutionContext(),
         controllers: [new UsersController()],
         globalMiddlewares: [globalMw],
-        authMiddlewares: authStack,
+        authStacks: { bearer: authStack },
+        defaultAuthStack: 'bearer',
       });
 
       const showRoute = router.getRoutes().find((r) => r.fullPath === '/users/:id');
       expect(showRoute).toBeDefined();
-      // chain: [system, global, token, session]
-      expect(showRoute?.middlewareChain).toHaveLength(4);
+      // chain: [system, global, stack-stamp, credential, session]
+      expect(showRoute?.middlewareChain).toHaveLength(5);
       expect(showRoute?.middlewareChain[1]).toBe(globalMw);
-      expect(showRoute?.middlewareChain[2]).toBe(tokenMw);
-      expect(showRoute?.middlewareChain[3]).toBe(sessionMw);
+      expect(showRoute?.middlewareChain[3]).toBe(tokenMw);
+      expect(showRoute?.middlewareChain[4]).toBe(sessionMw);
     });
 
     it('omits the auth phase for public routes', () => {
@@ -139,15 +141,17 @@ describe('Router', () => {
       const router = new Router({
         executionContext: makeExecutionContext(),
         controllers: [new UsersController()],
-        authMiddlewares: { tokenVerification: tokenMw },
+        authStacks: { bearer: { credentialVerification: tokenMw } },
+        defaultAuthStack: 'bearer',
       });
 
       const publicRoute = router.getRoutes().find((r) => r.fullPath === '/users/healthz');
       expect(publicRoute?.public).toBe(true);
+      expect(publicRoute?.authStack).toBeUndefined();
       expect(publicRoute?.middlewareChain).not.toContain(tokenMw);
     });
 
-    it('orders auth phases: tokenVerification → sessionLoad, regardless of key declaration', () => {
+    it('orders auth phases: credentialVerification → sessionLoad, regardless of key declaration', () => {
       const tokenMw: HttpMiddleware = async (_req, next) => {
         await next();
       };
@@ -157,7 +161,8 @@ describe('Router', () => {
       const router = new Router({
         executionContext: makeExecutionContext(),
         controllers: [new UsersController()],
-        authMiddlewares: { sessionLoad: sessionMw, tokenVerification: tokenMw },
+        authStacks: { bearer: { sessionLoad: sessionMw, credentialVerification: tokenMw } },
+        defaultAuthStack: 'bearer',
       });
 
       const showRoute = router.getRoutes().find((r) => r.fullPath === '/users/:id');
@@ -230,7 +235,7 @@ describe('Router', () => {
       }
     });
 
-    it('throws at construction when authMiddlewares is set but executionContext is not', () => {
+    it('throws at construction when authStacks is set but executionContext is not', () => {
       const tokenMw: HttpMiddleware = async (_req, next) => {
         await next();
       };
@@ -238,9 +243,10 @@ describe('Router', () => {
         () =>
           new Router({
             controllers: [new UsersController()],
-            authMiddlewares: { tokenVerification: tokenMw },
+            authStacks: { bearer: { credentialVerification: tokenMw } },
+            defaultAuthStack: 'bearer',
           }),
-      ).toThrow(/authMiddlewares.*requires.*executionContext/);
+      ).toThrow(/authStacks.*requires.*executionContext/);
     });
   });
 
@@ -491,6 +497,373 @@ describe('Router', () => {
             controllers: [new AuthController()],
           }),
       ).toThrow(/Duplicate route/);
+    });
+  });
+
+  describe('auth stacks', () => {
+    // Assertions identify stacks by middleware reference, so the body only has
+    // to be distinct — not observable.
+    function stack(): AuthMiddlewareStack {
+      return {
+        credentialVerification: async (_req, next) => {
+          await next();
+        },
+      };
+    }
+
+    it('applies the default stack to every non-public route', () => {
+      const bearer = stack();
+      const router = new Router({
+        executionContext: makeExecutionContext(),
+        controllers: [new UsersController()],
+        authStacks: { bearer },
+        defaultAuthStack: 'bearer',
+      });
+
+      for (const route of router.getRoutes()) {
+        if (route.public) {
+          expect(route.authStack).toBeUndefined();
+          expect(route.middlewareChain).not.toContain(bearer.credentialVerification);
+        } else {
+          expect(route.authStack).toBe('bearer');
+          expect(route.middlewareChain).toContain(bearer.credentialVerification);
+        }
+      }
+    });
+
+    it('throws when authStacks is present but empty', () => {
+      expect(
+        () =>
+          new Router({
+            executionContext: makeExecutionContext(),
+            controllers: [new UsersController()],
+            authStacks: {},
+          }),
+      ).toThrow(/authStacks.*empty/);
+    });
+
+    it('omitting authStacks leaves non-public routes without an auth phase', () => {
+      const router = new Router({
+        executionContext: makeExecutionContext(),
+        controllers: [new UsersController()],
+      });
+      for (const route of router.getRoutes()) {
+        expect(route.authStack).toBeUndefined();
+        expect(route.middlewareChain).toHaveLength(1);
+      }
+    });
+
+    // The `as never` casts below are the point: these configs are compile-time
+    // errors for TypeScript consumers. The casts prove that, and the runtime
+    // guard still covers JS consumers and dynamically-built stack records.
+    it('throws when authStacks is declared without defaultAuthStack', () => {
+      const bearer = stack();
+      expect(
+        () =>
+          new Router({
+            executionContext: makeExecutionContext(),
+            controllers: [new UsersController()],
+            authStacks: { bearer },
+          } as never),
+      ).toThrow(/defaultAuthStack.*required/);
+    });
+
+    it('throws when defaultAuthStack names an undeclared stack', () => {
+      const bearer = stack();
+      expect(
+        () =>
+          new Router({
+            executionContext: makeExecutionContext(),
+            controllers: [new UsersController()],
+            authStacks: { bearer },
+            defaultAuthStack: 'nope',
+          } as never),
+      ).toThrow(/defaultAuthStack.*not a declared stack/);
+    });
+
+    it('resolves route ?? controller ?? module ?? default, most specific winning', () => {
+      const bearer = stack();
+      const apiKey = stack();
+      const mtls = stack();
+
+      @Controller('/mixed', { authStack: 'apiKey' })
+      class MixedController {
+        @Get('/from-controller')
+        async fromController(_req: HttpRequest): Promise<HttpResponse> {
+          return { httpCode: 200 };
+        }
+        @Get('/from-route', { authStack: 'mtls' })
+        async fromRoute(_req: HttpRequest): Promise<HttpResponse> {
+          return { httpCode: 200 };
+        }
+        @GetPublic('/healthz')
+        async health(_req: HttpRequest): Promise<HttpResponse> {
+          return { httpCode: 200 };
+        }
+      }
+
+      const router = new Router({
+        executionContext: makeExecutionContext(),
+        controllers: [new MixedController(), new DocsController()],
+        authStacks: { bearer: bearer, apiKey: apiKey, mtls: mtls },
+        defaultAuthStack: 'bearer',
+      });
+
+      const byPath = (p: string) => router.getRoutes().find((r) => r.fullPath === p);
+      expect(byPath('/mixed/from-controller')?.authStack).toBe('apiKey');
+      expect(byPath('/mixed/from-route')?.authStack).toBe('mtls');
+      expect(byPath('/mixed/healthz')?.authStack).toBeUndefined();
+      // DocsController declares nothing — falls through to the default.
+      expect(byPath('/docs/:id/sections/:section')?.authStack).toBe('bearer');
+    });
+
+    it('module-level authStack applies, and a controller overrides it', () => {
+      const bearer = stack();
+      const apiKey = stack();
+
+      @Controller('/plain')
+      class PlainController {
+        @Get('/')
+        async list(_req: HttpRequest): Promise<HttpResponse> {
+          return { httpCode: 200 };
+        }
+      }
+
+      @Controller('/override', { authStack: 'bearer' })
+      class OverrideController {
+        @Get('/')
+        async list(_req: HttpRequest): Promise<HttpResponse> {
+          return { httpCode: 200 };
+        }
+      }
+
+      const router = new Router({
+        executionContext: makeExecutionContext(),
+        modules: [
+          {
+            name: 'mcp',
+            meta: {
+              prefix: '/mcp',
+              authStack: 'apiKey',
+              controllers: [new PlainController(), new OverrideController()],
+            },
+          },
+        ],
+        authStacks: { bearer: bearer, apiKey: apiKey },
+        defaultAuthStack: 'bearer',
+      });
+
+      const byPath = (p: string) => router.getRoutes().find((r) => r.fullPath === p);
+      expect(byPath('/mcp/plain')?.authStack).toBe('apiKey');
+      expect(byPath('/mcp/override')?.authStack).toBe('bearer');
+    });
+
+    it('a controller-level stack still allows a *Public sibling with no auth', () => {
+      const apiKey = stack();
+
+      @Controller('/mcp', { authStack: 'apiKey' })
+      class McpController {
+        @Get('/tools')
+        async tools(_req: HttpRequest): Promise<HttpResponse> {
+          return { httpCode: 200 };
+        }
+        @GetPublic('/healthz')
+        async health(_req: HttpRequest): Promise<HttpResponse> {
+          return { httpCode: 200 };
+        }
+      }
+
+      const router = new Router({
+        executionContext: makeExecutionContext(),
+        controllers: [new McpController()],
+        authStacks: { apiKey: apiKey },
+        defaultAuthStack: 'apiKey',
+      });
+
+      const byPath = (p: string) => router.getRoutes().find((r) => r.fullPath === p);
+      expect(byPath('/mcp/tools')?.middlewareChain).toContain(apiKey.credentialVerification);
+      expect(byPath('/mcp/healthz')?.middlewareChain).not.toContain(apiKey.credentialVerification);
+    });
+
+    it('throws when a route-level authStack sits on a *Public route', () => {
+      const apiKey = stack();
+
+      @Controller('/bad')
+      class BadController {
+        @GetPublic('/open', { authStack: 'apiKey' })
+        async open(_req: HttpRequest): Promise<HttpResponse> {
+          return { httpCode: 200 };
+        }
+      }
+
+      expect(
+        () =>
+          new Router({
+            executionContext: makeExecutionContext(),
+            controllers: [new BadController()],
+            authStacks: { apiKey: apiKey },
+            defaultAuthStack: 'apiKey',
+          }),
+      ).toThrow(/\*Public route but declares/);
+    });
+
+    it('throws when a route resolves to an undeclared stack, naming controller and handler', () => {
+      const bearer = stack();
+
+      @Controller('/typo')
+      class TypoController {
+        @Get('/thing', { authStack: 'nope' })
+        async thing(_req: HttpRequest): Promise<HttpResponse> {
+          return { httpCode: 200 };
+        }
+      }
+
+      expect(
+        () =>
+          new Router({
+            executionContext: makeExecutionContext(),
+            controllers: [new TypoController()],
+            authStacks: { bearer },
+            defaultAuthStack: 'bearer',
+          }),
+      ).toThrow(/TypoController\.thing.*unknown auth stack "nope"/s);
+    });
+
+    it('throws when a @Controller-level stack is undeclared, even on an all-public controller', () => {
+      const bearer = stack();
+
+      @Controller('/allpublic', { authStack: 'nope' })
+      class AllPublicController {
+        @GetPublic('/open')
+        async open(_req: HttpRequest): Promise<HttpResponse> {
+          return { httpCode: 200 };
+        }
+      }
+
+      expect(
+        () =>
+          new Router({
+            executionContext: makeExecutionContext(),
+            controllers: [new AllPublicController()],
+            authStacks: { bearer },
+            defaultAuthStack: 'bearer',
+          }),
+      ).toThrow(/AllPublicController.*unknown auth stack "nope"/s);
+    });
+
+    it('resolves per registration when one controller is mounted twice', () => {
+      const bearer = stack();
+      const apiKey = stack();
+      const controller = new DocsController();
+
+      const router = new Router({
+        executionContext: makeExecutionContext(),
+        controllers: [controller],
+        modules: [
+          { name: 'mcp', meta: { prefix: '/mcp', authStack: 'apiKey', controllers: [controller] } },
+        ],
+        authStacks: { bearer: bearer, apiKey: apiKey },
+        defaultAuthStack: 'bearer',
+      });
+
+      const byPath = (p: string) => router.getRoutes().find((r) => r.fullPath === p);
+      expect(byPath('/docs/:id/sections/:section')?.authStack).toBe('bearer');
+      expect(byPath('/mcp/docs/:id/sections/:section')?.authStack).toBe('apiKey');
+    });
+
+    it('stamps the resolved stack name on the request before the stack runs', async () => {
+      const bearer = stack();
+      const router = new Router({
+        executionContext: makeExecutionContext(),
+        controllers: [new DocsController()],
+        authStacks: { bearer },
+        defaultAuthStack: 'bearer',
+      });
+
+      const chain = router.getRoutes()[0]?.middlewareChain;
+      const stamp = chain?.[1];
+      if (!stamp) throw new Error('stack stamp should follow the system bootstrap');
+
+      const attributes = new Map<string, unknown>();
+      await stamp(
+        { setAttribute: (k: string, v: unknown) => attributes.set(k, v) } as unknown as HttpRequest,
+        async () => {},
+      );
+      expect(attributes.get(HttpAttributes.AUTH_STACK)).toBe('bearer');
+    });
+
+    it('keeps two stacks independent — each route runs only its own', () => {
+      const bearer = stack();
+      const apiKey = stack();
+
+      @Controller('/human')
+      class HumanController {
+        @Get('/')
+        async list(_req: HttpRequest): Promise<HttpResponse> {
+          return { httpCode: 200 };
+        }
+      }
+
+      @Controller('/machine', { authStack: 'apiKey' })
+      class MachineController {
+        @Get('/')
+        async list(_req: HttpRequest): Promise<HttpResponse> {
+          return { httpCode: 200 };
+        }
+      }
+
+      const router = new Router({
+        executionContext: makeExecutionContext(),
+        controllers: [new HumanController(), new MachineController()],
+        authStacks: { bearer: bearer, apiKey: apiKey },
+        defaultAuthStack: 'bearer',
+      });
+
+      const byPath = (p: string) => router.getRoutes().find((r) => r.fullPath === p);
+      const human = byPath('/human')?.middlewareChain ?? [];
+      const machine = byPath('/machine')?.middlewareChain ?? [];
+
+      expect(human).toContain(bearer.credentialVerification);
+      expect(human).not.toContain(apiKey.credentialVerification);
+      expect(machine).toContain(apiKey.credentialVerification);
+      expect(machine).not.toContain(bearer.credentialVerification);
+    });
+
+    it('registering a subclassed controller does not duplicate inherited routes', () => {
+      @Controller('/base')
+      class BaseController {
+        @Get('/inherited')
+        async inherited(_req: HttpRequest): Promise<HttpResponse> {
+          return { httpCode: 200 };
+        }
+      }
+
+      @Controller('/child')
+      class ChildController extends BaseController {
+        @Get('/own')
+        async own(_req: HttpRequest): Promise<HttpResponse> {
+          return { httpCode: 200 };
+        }
+      }
+
+      class UndecoratedChild extends BaseController {}
+
+      const child = new Router({
+        executionContext: makeExecutionContext(),
+        controllers: [new ChildController()],
+      });
+      expect(
+        child
+          .getRoutes()
+          .map((r) => r.fullPath)
+          .sort(),
+      ).toEqual(['/child/inherited', '/child/own']);
+
+      const undecorated = new Router({
+        executionContext: makeExecutionContext(),
+        controllers: [new UndecoratedChild()],
+      });
+      expect(undecorated.getRoutes().map((r) => r.fullPath)).toEqual(['/base/inherited']);
     });
   });
 });

@@ -4,7 +4,7 @@ Framework-agnostic HTTP layer for a quilla-be-kit service:
 
 - **Controller decorators** — `@Controller`, `@Get` / `@Post` / `@Put` / `@Patch` / `@Delete` + `*Public` variants, `@AuthorizeScope`, `@ValidateRequest`.
 - **Router** — walks decorated controller instances, composes prefixes, sorts routes by specificity, bridges to `ComponentRegistry<HttpModuleMeta>` from `@quilla-be-kit/runtime`, and (when `executionContext` is configured) installs a **system-owned execution-context bootstrap** so every handler can rely on `provider.getContext()`.
-- **Typed auth middleware stack** — `AuthMiddlewareStack` enforces phase ordering (`tokenVerification` → `sessionLoad?`) so consumers can't misorder security middlewares. Compose it directly from `@quilla-be-kit/security`'s middleware factories.
+- **Named auth stacks** — declare one stack per audience (`bearer` for humans, `apiKey` for machine-to-machine) and select one per route, controller, or module. `AuthMiddlewareStack` enforces phase ordering (`credentialVerification` → `sessionLoad?`) *within* a stack so consumers can't misorder security middlewares. Compose each from `@quilla-be-kit/security`'s middleware factories.
 - **Request / response contracts** — `HttpRequest`, `HttpResponse`, `HttpMiddleware`, `AuthenticatedToken`, `HttpAttributes`.
 - **Validator contract** — `RequestValidator` interface; wire Zod / Joi / Valibot / ArkType with a ~5-line adapter.
 - **Hono adapter** — `@quilla-be-kit/http/adapter/hono` sub-path ships a `HonoServer` that implements `WebServer`. `hono` is an optional peer dep.
@@ -109,13 +109,16 @@ const router = new Router({
   modules: components.getAll(),
   executionContext: { provider },
   globalMiddlewares: [/* your custom globals (cors, rate-limit, request-logger, ...) */],
-  authMiddlewares: {
-    tokenVerification: bearerTokenMiddleware({ tokenService }),
-    sessionLoad: authenticatedSessionMiddleware({
-      sessionStore,
-      executionContextProvider: provider,
-    }),
+  authStacks: {
+    bearer: {
+      credentialVerification: bearerTokenMiddleware({ tokenService }),
+      sessionLoad: authenticatedSessionMiddleware({
+        sessionStore,
+        executionContextProvider: provider,
+      }),
+    },
   },
+  defaultAuthStack: 'bearer',
 });
 
 const server = new HonoServer({
@@ -150,8 +153,9 @@ await runtime.run(async () => {
 ### `@Controller(prefix, options?)`
 
 Class decorator. Every route on the class gets `prefix` prepended. The optional
-second argument carries a controller-level **version** default (see
-[Versioning](#versioning)).
+second argument carries controller-level **version** (see
+[Versioning](#versioning)) and **auth stack** (see [Auth stacks](#auth-stacks))
+defaults.
 
 ```ts
 @Controller('/users')
@@ -159,6 +163,9 @@ class UsersController { ... }
 
 @Controller('/users', { version: '/api/v1' })   // controller-wide version default
 class UsersController { ... }
+
+@Controller('/mcp', { authStack: 'apiKey' })    // controller-wide auth stack
+class McpController { ... }
 ```
 
 ### HTTP method decorators
@@ -171,14 +178,20 @@ class UsersController { ... }
 @Delete(path, options?)       @DeletePublic(path, options?)
 ```
 
-The `*Public` variants mark the route as public — **auth middlewares are skipped** for these routes. The non-public variants run every registered `authMiddleware` before the handler.
+The `*Public` variants mark the route as public — **the auth stack is skipped entirely** for these routes. The non-public variants run their resolved auth stack before the handler.
 
-The optional `options` argument (`RouteOptions`) carries a per-route **version**
-override (see [Versioning](#versioning)):
+The optional `options` argument (`RouteOptions`) carries per-route **version**
+(see [Versioning](#versioning)) and **auth stack** (see
+[Auth stacks](#auth-stacks)) overrides:
 
 ```ts
 @Get('/:id', { version: '/api/v2' })
+@Get('/tools', { authStack: 'apiKey' })
 ```
+
+Declaring `authStack` on a `*Public` route throws at Router construction — the
+stack could never run, so silently ignoring it would be a bypass-shaped
+surprise.
 
 ### Versioning
 
@@ -218,6 +231,80 @@ false duplicate; two routes that differ only by version resolve to distinct
 paths. Version is orthogonal to `*Public` / auth — it affects the path only.
 When no version is set anywhere, composed paths are byte-identical to a service
 that never adopted versioning.
+
+### Auth stacks
+
+Declare one `AuthMiddlewareStack` per authentication audience and select one per
+route. Stack names are yours; Router owns only selection, ordering, and failure
+behavior.
+
+```ts
+const router = new Router({
+  modules: components.getAll(),
+  executionContext: { provider },
+  authStacks: {
+    bearer: {
+      credentialVerification: bearerTokenMiddleware({ tokenService }),
+      sessionLoad: authenticatedSessionMiddleware({ sessionStore, executionContextProvider: provider }),
+    },
+    apiKey: {
+      credentialVerification: apiKeyMiddleware({ apiKeyService }),
+      sessionLoad: machineSessionLoad,
+    },
+  },
+  defaultAuthStack: 'bearer',   // type-checked against the declared keys
+});
+```
+
+A route resolves to exactly one stack, most specific level winning:
+
+```
+@Get(path, { authStack })  ??  @Controller(prefix, { authStack })  ??  HttpModuleMeta.authStack  ??  defaultAuthStack
+```
+
+`*Public` routes skip the auth phase entirely, so they never resolve a stack —
+a controller- or module-level `authStack` with a `*Public` sibling is fine and
+common:
+
+```ts
+@Controller('/mcp', { authStack: 'apiKey' })
+class McpController {
+  @Get('/tools')       async tools(req) { ... }   // apiKey
+  @GetPublic('/healthz') async health(req) { ... } // no auth
+}
+```
+
+Router stamps the resolved name on the request as
+`HttpAttributes.AUTH_STACK`, so a guard can assert *which* stack authenticated
+the caller — `scopes` share one flat namespace across stacks and cannot carry
+that distinction.
+
+**Everything that can fail, fails at construction**, never at request time:
+
+| Condition | Why it throws |
+| --- | --- |
+| `authStacks` present but empty | Every non-public route would run unauthenticated while looking configured. Omit the option for a service with no auth. |
+| `authStacks` set without `executionContext` | Auth middlewares need an active `ExecutionContext` scope. |
+| `authStacks` set without `defaultAuthStack` | Routes that declare nothing would have no stack. Also a compile-time error. |
+| `defaultAuthStack` names an undeclared stack | Typo. Also a compile-time error. |
+| A route / `@Controller` / module names an undeclared stack | Typo, reported with the controller and handler name. |
+| `authStack` on a `*Public` route | Contradictory — the stack could never run. |
+| The same controller registered twice | Its copies would resolve to different stacks at different paths. |
+
+`defaultAuthStack` is constrained to the keys of `authStacks`, so a typo is a
+type error before it is a runtime one. Route-, controller-, and module-level
+`authStack` are plain strings — decorators and module metadata are evaluated
+independently of Router construction, which is exactly why the runtime guards
+above exist.
+
+> **One controller, one audience.** Mixing two audiences within a controller is
+> legal but usually a smell: a reviewer scanning the class can no longer tell its
+> auth surface at a glance. Prefer a separate controller.
+
+> **Stacks must not share a credential verifier or signing key.** Per-route
+> selection is the only thing keeping audiences apart — a credential minted for
+> one stack is otherwise verifiable by any stack holding the same key. Scope
+> strings must likewise be globally unique across stacks.
 
 ### `@AuthorizeScope(scope, mode?)`
 
@@ -383,7 +470,7 @@ const router = new Router({
   // non-public) gets a baseline anonymous context with a correlation id
   // read from `correlationIdHeader` (default `'x-correlation-id'`) or a
   // generated UUID if absent.
-  // **Required iff `authMiddlewares` is set** — Router throws at construction
+  // **Required iff `authStacks` is set** — Router throws at construction
   // otherwise. Skip it for pure-public services that never call
   // `request.getExecutionContext()`. The provider carries its own factory
   // (default `executionContextFactory`); pass a custom factory via
@@ -395,7 +482,14 @@ const router = new Router({
   },
 
   globalMiddlewares: [...],               // custom — run on every route after system bootstrap
-  authMiddlewares: { tokenVerification, sessionLoad? },  // typed stack — non-public routes only
+
+  // Named auth stacks — non-public routes only. See "Auth stacks" above for
+  // the resolution ladder and the full list of construction-time throws.
+  authStacks: {
+    bearer: { credentialVerification, sessionLoad? },
+    apiKey: { credentialVerification, sessionLoad? },
+  },
+  defaultAuthStack: 'bearer',             // required with `authStacks`; typed to its keys
 });
 ```
 
@@ -403,22 +497,25 @@ const router = new Router({
 - Routes are sorted by **specificity** (static segments > parametric > wildcard) so `/users/healthz` matches before `/users/:id`.
 - Path composition: `[module prefix] + [effective version] + [registration prefix] + [@Controller prefix] + [@Route path]`, normalized to a single leading slash and no trailing slash. The **effective version** is resource-first and resolves `route option ?? @Controller version ?? HttpModuleMeta.version ?? ''` — see [Versioning](#versioning).
 - Duplicate routes (same method + path) throw at construction time — you catch double-registrations at startup, not under load.
+- Routes **accumulate** down a class hierarchy; they never replace. A subclass that re-decorates an inherited handler with a different path leaves the parent's route live at both paths. A subclass that overrides a decorated handler *without* re-decorating inherits the parent's route metadata while shadowing the wrapper the parent's `@AuthorizeScope` / `@ValidateRequest` installed — so the metadata claims a guard that no longer runs. Re-declare the decorators on the override.
 
 ### Middleware chain order
 
 On a **non-public** route:
 
 ```
-system executionContext bootstrap  →  globalMiddlewares[]  →  tokenVerification  →  sessionLoad?  →  route middlewares  →  handler
+system executionContext bootstrap  →  globalMiddlewares[]  →  <stack> credentialVerification  →  <stack> sessionLoad?  →  route middlewares  →  handler
 ```
 
-On a **`*Public` route**, the entire `authMiddlewares` stack is skipped:
+On a **`*Public` route**, the auth stack is skipped entirely:
 
 ```
 system executionContext bootstrap  →  globalMiddlewares[]  →  route middlewares  →  handler
 ```
 
-The system bootstrap is Router-owned and not configurable from outside — this eliminates "I forgot to add `executionContextMiddleware`" as a failure mode for services that use auth or read `ExecutionContext`. When `executionContext` is omitted, the bootstrap step is skipped entirely; services that never read context pay no boilerplate. Router throws at construction if `authMiddlewares` is set without `executionContext` — the known-static dependency is caught at startup, not at the first authenticated request. The typed `AuthMiddlewareStack` prevents phase misordering at the type level; the array in `globalMiddlewares` stays open-ended because custom middleware ordering is consumer-owned.
+The system bootstrap is Router-owned and not configurable from outside — this eliminates "I forgot to add `executionContextMiddleware`" as a failure mode for services that use auth or read `ExecutionContext`. When `executionContext` is omitted, the bootstrap step is skipped entirely; services that never read context pay no boilerplate. Router throws at construction if `authStacks` is set without `executionContext` — the known-static dependency is caught at startup, not at the first authenticated request. The typed `AuthMiddlewareStack` prevents phase misordering within a stack at the type level; the array in `globalMiddlewares` stays open-ended because custom middleware ordering is consumer-owned.
+
+Router composes the complete chain per route, including which auth stack applies. Adapters iterate `NormalizedRoute.middlewareChain` and wrap each entry — they never re-compose it, so phases cannot drift between adapters.
 
 ## Bridge to `ComponentRegistry<HttpModuleMeta>`
 
@@ -438,6 +535,7 @@ registry
     meta: {
       prefix: '/iam',
       version: '/api/v1',                       // module-wide default; routes/controllers can override
+      authStack: 'bearer',                      // module-wide default; routes/controllers can override
       controllers: [usersController, authController],
       middlewares: [iamModuleMw],
     },

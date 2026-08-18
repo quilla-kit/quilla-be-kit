@@ -3,7 +3,7 @@ import type { AuthenticatedToken } from '../request/authenticated-token.interfac
 import { HttpAttributes } from '../request/http-attributes.js';
 import type { HttpRequest } from '../request/http-request.interface.js';
 import type { HttpResponse } from '../request/http-response.type.js';
-import { updateLastRoute } from './route.metadata.js';
+import { addRoutePatch } from './route.metadata.js';
 
 type ControllerMethod = (this: unknown, request: HttpRequest) => Promise<HttpResponse>;
 
@@ -18,7 +18,7 @@ export function AuthorizeScope(scopes: string | readonly string[], mode: 'any' |
 
     const required = Array.isArray(scopes) ? scopes : [scopes as string];
 
-    updateLastRoute(context.metadata as Record<string | symbol, unknown>, context.name as string, {
+    addRoutePatch(context.metadata as Record<string | symbol, unknown>, context.name as string, {
       scopes: required,
       scopeMode: mode,
     });

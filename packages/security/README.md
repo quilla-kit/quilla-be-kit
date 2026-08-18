@@ -109,13 +109,16 @@ const provider = new AsyncExecutionContextProvider();
 
 const router = new Router({
   executionContext: { provider },
-  authMiddlewares: {
-    tokenVerification: bearerTokenMiddleware({ tokenService: jwtTokenService }),
-    sessionLoad: authenticatedSessionMiddleware({
-      sessionStore,
-      executionContextProvider: provider,
-    }),
+  authStacks: {
+    bearer: {
+      credentialVerification: bearerTokenMiddleware({ tokenService: jwtTokenService }),
+      sessionLoad: authenticatedSessionMiddleware({
+        sessionStore,
+        executionContextProvider: provider,
+      }),
+    },
   },
+  defaultAuthStack: 'bearer',
   modules: registry.getAll(),
 });
 
@@ -124,20 +127,25 @@ const server = new HonoServer({ port: 3000, router, serve });
 
 ## Middleware chain
 
-When `authMiddlewares` is populated, Router runs on a **non-public** route:
+On a **non-public** route, Router runs the route's **resolved** auth stack:
 
 ```
 system executionContext bootstrap (http-owned)
   → globalMiddlewares[]
-    → bearerTokenMiddleware           (security — tokenVerification phase)
+    → bearerTokenMiddleware           (security — credentialVerification phase)
       → authenticatedSessionMiddleware  (security — sessionLoad phase, if present)
         → route middlewares
           → handler
 ```
 
-On a **`*Public` route**, the entire `authMiddlewares` stack is skipped. The system execution-context bootstrap always runs, so even public handlers can call `provider.getContext()`.
+Which stack a route resolves to is decided by `@Get(path, { authStack })` ??
+`@Controller(prefix, { authStack })` ?? `HttpModuleMeta.authStack` ??
+`defaultAuthStack` — see the `@quilla-be-kit/http` README. A single-audience
+service declares one stack and never thinks about it again.
 
-The typed `AuthMiddlewareStack` shape (from `@quilla-be-kit/http`) enforces phase ordering at the type level — `tokenVerification` runs before `sessionLoad` regardless of how keys are declared.
+On a **`*Public` route**, the auth stack is skipped entirely. The system execution-context bootstrap always runs, so even public handlers can call `provider.getContext()`.
+
+The typed `AuthMiddlewareStack` shape (from `@quilla-be-kit/http`) enforces phase ordering at the type level — `credentialVerification` runs before `sessionLoad` regardless of how keys are declared. The phase is named for the *credential* rather than the token because a stack may verify a JWT, an opaque token, an API key, or a client certificate; the attribute it populates keeps the `VERIFIED_TOKEN` name.
 
 ## Middleware options
 
@@ -177,14 +185,14 @@ src/
 The composition root is where you inject your concrete adapters into
 `bearerTokenMiddleware({ tokenService })` and
 `authenticatedSessionMiddleware({ sessionStore, executionContextProvider })`,
-then pass the pair to `new Router({ authMiddlewares: { ... } })`.
+then pass the pair to `new Router({ authStacks: { bearer: { ... } }, defaultAuthStack: 'bearer' })`.
 
-## Custom token schemes
+## Custom credential schemes
 
-Replace `bearerTokenMiddleware` with your own `tokenVerification` middleware to support a different authentication mechanism (API key header, mTLS client cert, OAuth introspection):
+Write your own `credentialVerification` middleware to support a mechanism other than Bearer — an API key header, an mTLS client cert, OAuth introspection. The only contract it must honor: on success, populate `HttpAttributes.VERIFIED_TOKEN` with something satisfying `AuthenticatedToken` (for `@AuthorizeScope`) — typically a full `Token`, so a session-load phase can load the matching session.
 
 ```ts
-import type { AuthMiddlewareStack, HttpMiddleware } from '@quilla-be-kit/http';
+import type { HttpMiddleware } from '@quilla-be-kit/http';
 import { HttpAttributes } from '@quilla-be-kit/http';
 import { UnauthorizedError } from '@quilla-be-kit/errors';
 
@@ -196,12 +204,51 @@ const apiKeyVerification: HttpMiddleware = async (request, next) => {
   request.setAttribute(HttpAttributes.VERIFIED_TOKEN, await loadTokenForKey(key));
   await next();
 };
-
-const stack: AuthMiddlewareStack = { tokenVerification: apiKeyVerification };
-new Router({ /* ... */ authMiddlewares: stack });
 ```
 
-The only contract `tokenVerification` must honor: on success, populate `HttpAttributes.VERIFIED_TOKEN` with something satisfying `AuthenticatedToken` (for `@AuthorizeScope`) — typically a full `Token`, so `authenticatedSessionMiddleware` can load the matching session.
+If the service authenticates *only* this way, declare it as the single stack. If it serves two audiences — human routes on JWTs plus a bounded family of machine routes on API keys — declare both and select per route. The two never interact: a route runs exactly one stack.
+
+```ts
+const router = new Router({
+  executionContext: { provider },
+  authStacks: {
+    bearer: {
+      credentialVerification: bearerTokenMiddleware({ tokenService }),
+      sessionLoad: authenticatedSessionMiddleware({ sessionStore, executionContextProvider: provider }),
+    },
+    apiKey: {
+      credentialVerification: apiKeyVerification,
+      sessionLoad: machineSessionLoad,   // yours — see the two warnings below
+    },
+  },
+  defaultAuthStack: 'bearer',
+  modules: registry.getAll(),
+});
+```
+
+```ts
+@Controller('/mcp', { authStack: 'apiKey' })
+class McpController {
+  @Get('/tools')
+  async tools(req: HttpRequest) { ... }
+}
+```
+
+Everything else composes unchanged: `@AuthorizeScope` reads `VERIFIED_TOKEN` without caring which stack populated it, and `HttpAttributes.AUTH_STACK` carries the resolved stack name if a guard needs to assert *which* one authenticated the caller.
+
+### Each stack needs its own `sessionLoad`
+
+Do **not** reuse `authenticatedSessionMiddleware` for a second stack. It keys the store on `token.userId` alone and hardcodes `actorType: 'user'`. If a machine credential resolves to an existing user:
+
+- the machine has no session record of its own — it collides with the human's;
+- a human logging out (`sessionStore.delete(userId)`) silently revokes machine access, and a `securityStamp` rotation locks the machine out;
+- the context can never carry `actorType: 'machine'`.
+
+Write a `sessionLoad` that checks *that credential's* revocation source — its own expiry and revoked flag — and enters a nested `runWithContext` with its own `actorType`. It **must** populate `ExecutionContext.session` (`scopeId` + `userId`): `@ValidateRequest` injects auth-derived `scopeId`/`userId` only when `session` is present, so a stack that sets `actorType` but omits `session` fails *open* — the handler runs with an undefined scope rather than being rejected.
+
+### Stacks must not share a credential verifier or signing key
+
+`TokenService.verify(token)` takes no audience, and `TokenClaims` carries no `aud`, so a credential is verifiable by any verifier holding the same key. Per-route stack selection is the only thing keeping audiences apart — sharing a verifier between two stacks collapses that boundary, and unlike the revocation trap above it fails **open**. Give each stack its own verifier and key material. Scope strings must likewise be globally unique across stacks, since `@AuthorizeScope` reads one flat `token.scopes` namespace.
 
 ## Session revocation
 
@@ -211,6 +258,8 @@ The only contract `tokenVerification` must honor: on success, populate `HttpAttr
 - **Password change / force revoke** → rotate `securityStamp` in your user record and `sessionStore.set(userId, { ...session, securityStamp: newStamp }, ttl)`.
 
 The next request with a token carrying the old stamp fails `authenticatedSessionMiddleware`'s stamp comparison and is rejected as `UnauthorizedError` — without any change to the token itself.
+
+This mechanism belongs to the `bearer` stack. Revocation is **per stack**: another stack's `sessionLoad` checks its own source (an API key's revoked flag and expiry, a certificate revocation list), and must not route through the same `SessionStore` — see [Each stack needs its own `sessionLoad`](#each-stack-needs-its-own-sessionload).
 
 ## Role as the rule-of-three harness
 

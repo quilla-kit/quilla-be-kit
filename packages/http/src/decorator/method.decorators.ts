@@ -5,6 +5,12 @@ export type RouteOptions = {
   // and overrides any controller- or module-level version. Goes through the
   // same slash normalization as every other segment.
   readonly version?: string;
+
+  // Named auth stack from `RouterOptions.authStacks`. Overrides any controller-
+  // or module-level stack. Illegal on a `*Public` route — public routes skip the
+  // auth phase entirely, so Router throws at construction rather than silently
+  // ignoring it.
+  readonly authStack?: string;
 };
 
 function createMethodDecorator(httpMethod: HttpMethod, isPublic: boolean) {
@@ -19,6 +25,7 @@ function createMethodDecorator(httpMethod: HttpMethod, isPublic: boolean) {
         path,
         public: isPublic,
         ...(options?.version !== undefined ? { version: options.version } : {}),
+        ...(options?.authStack !== undefined ? { authStack: options.authStack } : {}),
       });
     };
   };
