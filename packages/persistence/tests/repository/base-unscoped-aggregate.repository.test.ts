@@ -37,6 +37,7 @@ describe('BaseUnscopedAggregateRepository', () => {
     const ctx = new FakeExecutionContextProvider({
       actorType: 'user',
       correlationId: 'c1',
+      executionAttemptId: 'attempt-1',
       session: { scopeId: 's1', userId: 'u1' },
     });
     const dao = new AggDao(adapter, ctx);

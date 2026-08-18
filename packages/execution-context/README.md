@@ -53,9 +53,18 @@ await provider.runWithContext(ctx, async () => {
 
 ### Types
 - `ExecutionContext` — the base shape (`actorType`, `correlationId`,
-  and an optional `session` of type `AuthSession`). `session` is present
-  iff the operation ran inside an authenticated scope; anonymous, system,
-  and job contexts leave it undefined.
+  `executionAttemptId`, and an optional `session` of type `AuthSession`).
+  `session` is present iff the operation ran inside an authenticated scope;
+  anonymous, system, and job contexts leave it undefined.
+- `correlationId` vs. `executionAttemptId` — `correlationId` identifies the
+  logical operation and can span retries (a consumer that retries a
+  request may deliberately reuse it). `executionAttemptId` identifies this
+  physical attempt: every `ExecutionContextFactory` method mints a fresh
+  one, and it is never accepted as caller input, so a retry can't smuggle
+  in a stale value. Named `executionAttemptId` rather than the shorter
+  `attemptId` to stay visually distinct from the unrelated numeric
+  `attempt` retry counter already logged by `@quilla-be-kit/messaging`'s
+  event consumer.
 - `AuthSession` — the authenticated-caller identity (`{ scopeId, userId }`).
   Extensible by intersection for richer session data (roles, session id,
   authenticatedAt, etc.).
@@ -73,7 +82,11 @@ await provider.runWithContext(ctx, async () => {
   `correlationId` via `node:crypto.randomUUID()` when not supplied — so a
   context established at process boot or at a background-job tick carries
   a traceable id without the caller minting one. Pass an explicit
-  `correlationId` to propagate one inbound from HTTP/events.
+  `correlationId` to propagate one inbound from HTTP/events. All three
+  factory methods always mint a fresh `executionAttemptId` via
+  `randomUUID()` — it has no corresponding input parameter on any method,
+  since accepting one would defeat its purpose of identifying a single
+  physical attempt.
 
   `createSystemContext` accepts `'system'` or `'job'` as `actorType`:
   - `'system'` — process-level operations with no scheduled-job framing:

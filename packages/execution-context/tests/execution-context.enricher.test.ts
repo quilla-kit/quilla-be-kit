@@ -11,6 +11,7 @@ describe('ExecutionContextEnricher', () => {
       {
         actorType: 'user',
         correlationId: 'corr-1',
+        executionAttemptId: 'attempt-1',
         session: { scopeId: 'scope-1', userId: 'user-1' },
       },
       async () => {
@@ -20,6 +21,7 @@ describe('ExecutionContextEnricher', () => {
             userId: 'user-1',
             actorType: 'user',
             correlationId: 'corr-1',
+            executionAttemptId: 'attempt-1',
           },
         });
       },
@@ -35,6 +37,7 @@ describe('ExecutionContextEnricher', () => {
       {
         actorType: 'user',
         correlationId: 'corr-1',
+        executionAttemptId: 'attempt-1',
         session: { scopeId: 'scope-1', userId: 'user-1' },
       },
       async () => {
@@ -49,14 +52,18 @@ describe('ExecutionContextEnricher', () => {
     const provider = new AsyncExecutionContextProvider();
     const enricher = new ExecutionContextEnricher(provider);
 
-    await provider.runWithContext({ actorType: 'system', correlationId: 'corr-1' }, async () => {
-      expect(enricher.enrich()).toEqual({
-        context: {
-          actorType: 'system',
-          correlationId: 'corr-1',
-        },
-      });
-    });
+    await provider.runWithContext(
+      { actorType: 'system', correlationId: 'corr-1', executionAttemptId: 'attempt-1' },
+      async () => {
+        expect(enricher.enrich()).toEqual({
+          context: {
+            actorType: 'system',
+            correlationId: 'corr-1',
+            executionAttemptId: 'attempt-1',
+          },
+        });
+      },
+    );
   });
 
   it('returns an empty contribution when provider is outside a scope', () => {

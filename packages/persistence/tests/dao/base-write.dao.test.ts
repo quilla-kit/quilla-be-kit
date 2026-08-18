@@ -29,6 +29,7 @@ describe('BaseWriteDao', () => {
     ctxProvider = new FakeExecutionContextProvider({
       actorType: 'user',
       correlationId: 'corr-1',
+      executionAttemptId: 'attempt-1',
       session: { scopeId: 'scope-1', userId: 'user-42' },
     });
     dao = new UserDao(adapter, ctxProvider);

@@ -5,6 +5,7 @@ export type LogContext = {
   readonly userId?: string;
   readonly actorType?: string;
   readonly correlationId?: string;
+  readonly executionAttemptId?: string;
 };
 
 export type SerializedError = {

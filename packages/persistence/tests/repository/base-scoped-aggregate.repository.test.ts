@@ -47,6 +47,7 @@ describe('BaseScopedAggregateRepository', () => {
     ctxProvider = new FakeExecutionContextProvider({
       actorType: 'user',
       correlationId: 'c1',
+      executionAttemptId: 'attempt-1',
       session: { scopeId: 's1', userId: 'u1' },
     });
     dao = new AggDao(adapter, ctxProvider);

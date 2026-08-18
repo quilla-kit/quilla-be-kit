@@ -26,6 +26,7 @@ export const executionContextFactory: ExecutionContextFactory = {
     return {
       actorType,
       correlationId: randomUUID(),
+      executionAttemptId: randomUUID(),
     };
   },
 
@@ -33,6 +34,7 @@ export const executionContextFactory: ExecutionContextFactory = {
     return {
       actorType: 'anonymous',
       correlationId: input?.correlationId ?? randomUUID(),
+      executionAttemptId: randomUUID(),
     };
   },
 
@@ -50,6 +52,7 @@ export const executionContextFactory: ExecutionContextFactory = {
     return {
       actorType: metadata.actorType,
       correlationId: metadata.correlationId,
+      executionAttemptId: randomUUID(),
       ...(session ? { session } : {}),
     };
   },
