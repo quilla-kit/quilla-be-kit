@@ -2,9 +2,16 @@ import {
   ConflictError,
   ExternalError,
   ForbiddenError,
+  GoneError,
   InternalError,
   NotFoundError,
+  NotImplementedError,
+  PaymentRequiredError,
+  PreconditionFailedError,
+  RateLimitError,
+  TimeoutError,
   UnauthorizedError,
+  UnavailableError,
   ValidationError,
 } from '@quilla-be-kit/errors';
 import { QuillaError } from '@quilla-be-kit/errors';
@@ -12,9 +19,9 @@ import { describe, expect, it } from 'vitest';
 import { DefaultErrorResolver } from '../../src/error/default.resolver.js';
 import { HTTP_STATUS, type HttpStatusAware } from '../../src/error/http-status-aware.interface.js';
 
-class GoneError extends QuillaError implements HttpStatusAware {
-  readonly code: string = 'GONE';
-  readonly [HTTP_STATUS] = 410;
+class TeapotError extends QuillaError implements HttpStatusAware {
+  readonly code: string = 'TEAPOT';
+  readonly [HTTP_STATUS] = 418;
 }
 
 class BrandedNotFoundError extends NotFoundError implements HttpStatusAware {
@@ -50,6 +57,13 @@ describe('DefaultErrorResolver', () => {
     [new ConflictError({ message: 'conflict' }), 409],
     [new ExternalError({ message: 'bad gateway' }), 502],
     [new InternalError({ message: 'internal' }), 500],
+    [new PaymentRequiredError({ message: 'payment required' }), 402],
+    [new GoneError({ message: 'gone' }), 410],
+    [new PreconditionFailedError({ message: 'precondition failed' }), 412],
+    [new RateLimitError({ message: 'slow down' }), 429],
+    [new NotImplementedError({ message: 'not implemented' }), 501],
+    [new UnavailableError({ message: 'unavailable' }), 503],
+    [new TimeoutError({ message: 'timed out' }), 504],
   ])('%o → %i', (err, expectedCode) => {
     const result = resolver.resolve(err);
     expect(result.httpCode).toBe(expectedCode);
@@ -69,7 +83,7 @@ describe('DefaultErrorResolver', () => {
   });
 
   it('uses a declared HTTP_STATUS brand', () => {
-    expect(resolver.resolve(new GoneError({ message: 'gone' })).httpCode).toBe(410);
+    expect(resolver.resolve(new TeapotError({ message: 'teapot' })).httpCode).toBe(418);
   });
 
   it('lets the brand outrank the category chain', () => {
@@ -78,6 +92,13 @@ describe('DefaultErrorResolver', () => {
 
   it('still maps an unbranded subclass by its category', () => {
     expect(resolver.resolve(new UserNotFoundError({ message: 'no user' })).httpCode).toBe(404);
+  });
+
+  it('maps a subclass of a new category by inheritance', () => {
+    class ResourceRetiredError extends GoneError {
+      override readonly code: string = 'RESOURCE_RETIRED';
+    }
+    expect(resolver.resolve(new ResourceRetiredError({ message: 'retired' })).httpCode).toBe(410);
   });
 
   it('ignores a plain httpCode field that was never branded', () => {

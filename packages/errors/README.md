@@ -25,8 +25,29 @@ import {
   InternalError,    // INTERNAL     — known internal failure
   ExternalError,    // EXTERNAL     — downstream service failed
   UnknownError,     // UNKNOWN      — unrecognized thrown value (extends InternalError)
+
+  GoneError,              // GONE                — existed, permanently retired
+  PreconditionFailedError,// PRECONDITION_FAILED — caller's precondition no longer holds
+  PaymentRequiredError,   // PAYMENT_REQUIRED    — billing / quota gate
+  RateLimitError,         // RATE_LIMIT          — caller is going too fast
+  NotImplementedError,    // NOT_IMPLEMENTED     — recognized operation, no implementation
+  UnavailableError,       // UNAVAILABLE         — dependency down or shedding load
+  TimeoutError,           // TIMEOUT             — operation exceeded its deadline
 } from '@quilla-be-kit/errors';
 ```
+
+Every category is transport-neutral: each means something to a queue consumer,
+a CLI, or an RPC service, not only to an HTTP handler. Pick the one that
+describes what went wrong, then subclass it when you need a narrower `code`:
+
+```ts
+export class ResourceRetiredError extends GoneError {
+  override readonly code: string = 'RESOURCE_RETIRED';
+}
+```
+
+Consumers that serve HTTP get a status for free — see
+[Classification](#classification).
 
 ## Usage
 
@@ -85,12 +106,13 @@ Use `QuillaError.is(e)` as the cross-realm-safe boundary check, then
 ```ts
 function isRetriable(e: unknown): boolean {
   if (!QuillaError.is(e)) return false;
-  if (e instanceof ValidationError)   return false;  // caller's input won't change
-  if (e instanceof UnauthorizedError) return false;
-  if (e instanceof ForbiddenError)    return false;
-  if (e instanceof NotFoundError)     return false;
-  if (e instanceof ExternalError)     return true;   // upstream may recover
-  return false;
+  if (e instanceof TimeoutError)     return true;   // deadline, not a verdict
+  if (e instanceof UnavailableError) return true;   // dependency may come back
+  if (e instanceof RateLimitError)   return true;   // after a backoff
+  if (e instanceof ExternalError)    return true;   // upstream may recover
+  return false;                                     // Validation, NotFound,
+                                                    // Gone, Forbidden, … are
+                                                    // terminal for this caller
 }
 ```
 
