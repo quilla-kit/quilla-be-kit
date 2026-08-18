@@ -1,5 +1,12 @@
 # @quilla-be-kit/persistence
 
+## 1.0.0
+
+### Patch Changes
+
+- Updated dependencies [af8e523]
+  - @quilla-be-kit/errors@0.3.0
+
 ## 0.2.0
 
 ### Minor Changes

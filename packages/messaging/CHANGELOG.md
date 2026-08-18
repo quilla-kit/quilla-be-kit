@@ -1,5 +1,12 @@
 # @quilla-be-kit/messaging
 
+## 0.6.1
+
+### Patch Changes
+
+- Updated dependencies [af8e523]
+  - @quilla-be-kit/errors@0.3.0
+
 ## 0.6.0
 
 ### Minor Changes
