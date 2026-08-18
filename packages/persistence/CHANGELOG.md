@@ -1,5 +1,12 @@
 # @quilla-be-kit/persistence
 
+## 2.0.0
+
+### Patch Changes
+
+- Updated dependencies [603c3af]
+  - @quilla-be-kit/execution-context@0.3.0
+
 ## 1.0.0
 
 ### Patch Changes
