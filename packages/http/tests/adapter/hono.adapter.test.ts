@@ -5,6 +5,7 @@ import { type HonoServeHandle, HonoServer } from '../../src/adapter/hono/hono.se
 import { Controller, Get, GetPublic, Post, ValidateRequest } from '../../src/decorator/index.js';
 import type { ErrorResolver, ResolvedHttpError } from '../../src/error/error-resolver.interface.js';
 import { DefaultRequestDeserializer } from '../../src/request/default.deserializer.js';
+import { HttpAttributes } from '../../src/request/http-attributes.js';
 import type { HttpMiddleware } from '../../src/request/http-middleware.type.js';
 import type { HttpRequest } from '../../src/request/http-request.interface.js';
 import type {
@@ -48,7 +49,8 @@ class UsersController {
 
 function buildServer(options: {
   validator?: RequestValidator;
-  authMiddlewares?: AuthMiddlewareStack;
+  authStacks?: Readonly<Record<string, AuthMiddlewareStack>>;
+  defaultAuthStack?: string;
   controllers?: readonly object[];
   cors?: { origins: string[] };
   conventions?: HttpConventions;
@@ -60,7 +62,9 @@ function buildServer(options: {
   const router = new Router({
     controllers: options.controllers ?? [new UsersController()],
     executionContext: { provider },
-    ...(options.authMiddlewares ? { authMiddlewares: options.authMiddlewares } : {}),
+    ...(options.authStacks
+      ? { authStacks: options.authStacks, defaultAuthStack: options.defaultAuthStack }
+      : {}),
   });
 
   let capturedFetch: ((req: Request) => Promise<Response>) | undefined;
@@ -151,7 +155,8 @@ describe('HonoServer adapter', () => {
     };
 
     const { fetch } = buildServer({
-      authMiddlewares: { tokenVerification: tokenMw, sessionLoad: sessionMw },
+      authStacks: { bearer: { credentialVerification: tokenMw, sessionLoad: sessionMw } },
+      defaultAuthStack: 'bearer',
     });
 
     await fetch(new Request('http://localhost/users/42'));
@@ -160,6 +165,84 @@ describe('HonoServer adapter', () => {
     calls.length = 0;
     await fetch(new Request('http://localhost/users/healthz'));
     expect(calls).toEqual([]);
+  });
+
+  it('dispatches each route family through only its own auth stack', async () => {
+    const calls: string[] = [];
+    const record =
+      (tag: string): HttpMiddleware =>
+      async (_req, next) => {
+        calls.push(tag);
+        await next();
+      };
+
+    @Controller('/human')
+    class HumanController {
+      @Get('/me')
+      async me(_req: HttpRequest): Promise<HttpResponse> {
+        return { httpCode: 200, payload: { ok: true } };
+      }
+      @GetPublic('/healthz')
+      async health(_req: HttpRequest): Promise<HttpResponse> {
+        return { httpCode: 200, payload: { ok: true } };
+      }
+    }
+
+    @Controller('/machine', { authStack: 'apiKey' })
+    class MachineController {
+      @Get('/tools')
+      async tools(_req: HttpRequest): Promise<HttpResponse> {
+        return { httpCode: 200, payload: { ok: true } };
+      }
+    }
+
+    const { fetch } = buildServer({
+      controllers: [new HumanController(), new MachineController()],
+      authStacks: {
+        bearer: { credentialVerification: record('bearer') },
+        apiKey: { credentialVerification: record('apiKey') },
+      },
+      defaultAuthStack: 'bearer',
+    });
+
+    await fetch(new Request('http://localhost/human/me'));
+    expect(calls).toEqual(['bearer']);
+
+    calls.length = 0;
+    await fetch(new Request('http://localhost/machine/tools'));
+    expect(calls).toEqual(['apiKey']);
+
+    calls.length = 0;
+    await fetch(new Request('http://localhost/human/healthz'));
+    expect(calls).toEqual([]);
+  });
+
+  it('exposes the resolved auth stack name on the request', async () => {
+    let observed: string | undefined;
+
+    @Controller('/machine', { authStack: 'apiKey' })
+    class MachineController {
+      @Get('/tools')
+      async tools(req: HttpRequest): Promise<HttpResponse> {
+        observed = req.getAttribute<string>(HttpAttributes.AUTH_STACK);
+        return { httpCode: 200, payload: { ok: true } };
+      }
+    }
+
+    const passthrough: HttpMiddleware = async (_req, next) => {
+      await next();
+    };
+    const { fetch } = buildServer({
+      controllers: [new MachineController()],
+      authStacks: {
+        bearer: { credentialVerification: passthrough },
+        apiKey: { credentialVerification: passthrough },
+      },
+      defaultAuthStack: 'bearer',
+    });
+
+    await fetch(new Request('http://localhost/machine/tools'));
+    expect(observed).toBe('apiKey');
   });
 
   it('serves routes without executionContext wired; getExecutionContext throws a clear error when called', async () => {

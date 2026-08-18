@@ -6,4 +6,9 @@ export type HttpModuleMeta = {
   readonly middlewares?: readonly HttpMiddleware[];
   readonly prefix?: string;
   readonly version?: string;
+  /**
+   * Module-level default auth stack, overridden by a controller- or route-level
+   * `authStack`. Must name a stack declared in `RouterOptions.authStacks`.
+   */
+  readonly authStack?: string;
 };

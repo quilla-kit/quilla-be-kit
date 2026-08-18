@@ -17,15 +17,27 @@ export type RouterExecutionContextOptions = {
   readonly correlationIdHeader?: string;
 };
 
-export type RouterOptions = {
+/**
+ * `S` is inferred from the keys of `authStacks`, which constrains
+ * `defaultAuthStack` to a declared name. Route-, controller-, and module-level
+ * `authStack` cannot be typed this way — decorators and module metadata are
+ * evaluated independently of Router construction — so those are validated at
+ * construction instead.
+ *
+ * Defaults to `string`, not `never`: inference from an inline `authStacks`
+ * literal still narrows `S` to the declared keys, while a consumer who names
+ * the type (`const options: RouterOptions = ...`) degrades to "any name"
+ * rather than "no name is valid".
+ */
+export type RouterOptions<S extends string = string> = {
   readonly controllers?: readonly (object | ControllerRegistration)[];
   readonly modules?: readonly Component<HttpModuleMeta>[];
 
   /**
    * Optional — when provided, Router installs a system-owned bootstrap that
-   * runs on every route. Required iff `authMiddlewares` is set (Router
-   * throws at construction otherwise). Handlers that never read
-   * `ExecutionContext` can skip this.
+   * runs on every route. Required iff `authStacks` is set (Router throws at
+   * construction otherwise). Handlers that never read `ExecutionContext` can
+   * skip this.
    */
   readonly executionContext?: RouterExecutionContextOptions;
 
@@ -33,9 +45,18 @@ export type RouterOptions = {
   readonly globalMiddlewares?: readonly HttpMiddleware[];
 
   /**
-   * Typed, phase-ordered auth stack. Runs only on non-public routes, after
-   * `globalMiddlewares`. `tokenVerification` always runs first, then
-   * `sessionLoad` if present.
+   * Named, phase-ordered auth stacks. A route resolves to exactly one stack,
+   * which runs only when the route is non-public, after `globalMiddlewares`.
+   *
+   * Omit entirely for a service with no authentication. An empty record throws
+   * at construction — it would leave every non-public route unauthenticated
+   * while looking configured.
    */
-  readonly authMiddlewares?: AuthMiddlewareStack;
+  readonly authStacks?: Readonly<Record<S, AuthMiddlewareStack>>;
+
+  /**
+   * Stack applied to routes that declare none. Required whenever `authStacks`
+   * is present, and constrained to its keys.
+   */
+  readonly defaultAuthStack?: NoInfer<S>;
 };

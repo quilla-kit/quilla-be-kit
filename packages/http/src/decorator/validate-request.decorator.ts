@@ -4,7 +4,7 @@ import type { HttpRequest } from '../request/http-request.interface.js';
 import type { HttpResponse } from '../request/http-response.type.js';
 import type { RequestSource } from '../validator/request-source.type.js';
 import type { RequestValidator } from '../validator/request-validator.interface.js';
-import { updateLastRoute } from './route.metadata.js';
+import { addRoutePatch } from './route.metadata.js';
 
 type ControllerMethod = (this: unknown, request: HttpRequest) => Promise<HttpResponse>;
 
@@ -26,7 +26,7 @@ export function ValidateRequest(schema: unknown, sources: readonly RequestSource
       throw new Error('@ValidateRequest can only be applied to methods');
     }
 
-    updateLastRoute(context.metadata as Record<string | symbol, unknown>, context.name as string, {
+    addRoutePatch(context.metadata as Record<string | symbol, unknown>, context.name as string, {
       validation: { schema, sources },
     });
 
