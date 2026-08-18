@@ -9,6 +9,7 @@ import {
   ValidationError,
 } from '@quilla-be-kit/errors';
 import type { ErrorResolver, ResolvedHttpError } from './error-resolver.interface.js';
+import { getDeclaredHttpStatus } from './http-status-aware.interface.js';
 
 export class DefaultErrorResolver implements ErrorResolver {
   resolve(err: unknown): ResolvedHttpError {
@@ -38,6 +39,9 @@ export class DefaultErrorResolver implements ErrorResolver {
   }
 
   private mapToHttpCode(err: QuillaError): number {
+    const declared = getDeclaredHttpStatus(err);
+    if (declared !== undefined) return declared;
+
     if (err instanceof ValidationError) return 400;
     if (err instanceof UnauthorizedError) return 401;
     if (err instanceof ForbiddenError) return 403;
