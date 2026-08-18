@@ -1,6 +1,6 @@
 {
   "name": "@quilla-be-kit/observability",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "Observability primitives: ILogger, StructuredLogger, NoopLogger, formatters, and log enrichers.",
   "license": "MIT",
   "author": "Max Martinez",

@@ -1,5 +1,13 @@
 # @quilla-be-kit/http
 
+## 0.10.1
+
+### Patch Changes
+
+- Updated dependencies [603c3af]
+  - @quilla-be-kit/execution-context@0.3.0
+  - @quilla-be-kit/observability@0.3.0
+
 ## 0.10.0
 
 ### Minor Changes
