@@ -6,6 +6,9 @@ optional PII obfuscation for the `data` bucket.
 Zero runtime dependencies. Uses only Node's built-in Web Crypto
 (`crypto.subtle`) when obfuscation is enabled.
 
+For the plugin seams in detail — enricher ordering and merge rules, the emit
+pipeline, observers, formatters — see [Logger internals](https://github.com/quilla-kit/quilla-be-kit/blob/main/packages/observability/src/logger/README.md).
+
 ## Why this package exists
 
 Every `@quilla-be-kit/*` service-side package needs a logger with a consistent
@@ -20,8 +23,9 @@ ships:
   and `PrettyFormatter` (ANSI-colored dev output).
 - `LogObserver` plugin hooks for shipping entries to Datadog / Splunk / Loki /
   test captures.
-- `LogEntryEnricher` plugin hooks for contributing `context`
-  (`scopeId` / `userId` / `actorType` / `correlationId`) and `extra` fields.
+- `LogEntryEnricher` plugin hooks for contributing `context` (`scopeId` /
+  `userId` / `actorType` / `correlationId` / `executionAttemptId`) and
+  free-form `extra` fields.
 - A two-bucket payload: `data` (PII, obfuscated when enabled) and `meta`
   (operational, always plain).
 - `RecursiveObfuscator` with HMAC-SHA256 (stable pseudonym) or AES-GCM
@@ -75,6 +79,59 @@ scoped.info('ok');
 // Every entry emitted through `scoped` carries { requestId: 'r-1' } in meta.
 // Per-call meta wins on key collisions; child withMeta accumulates on top of parent.
 ```
+
+## Enrichers
+
+An enricher contributes fields to every entry without the call site knowing
+about them — request correlation, scope, build info, trace ids. Register them
+once on the factory; every logger it creates inherits them, children included.
+
+```ts
+import type { LogEnricherContribution, LogEntryEnricher } from '@quilla-be-kit/observability';
+
+class BuildInfoEnricher implements LogEntryEnricher {
+  constructor(private readonly buildSha: string) {}
+
+  enrich(): LogEnricherContribution {
+    return { extra: { buildSha: this.buildSha } };
+  }
+}
+
+const factory = createLoggerFactory({
+  config: { service: 'my-backend', level: 'info', mode: 'json' },
+  enrichers: [new BuildInfoEnricher(process.env.BUILD_SHA!)],
+});
+```
+
+`enrich()` is synchronous and runs once per emitted entry — not once at
+`create()` — so it observes the state active at the moment of the log call.
+That is what lets an AsyncLocalStorage-backed enricher pick up per-request
+context. Keep it a field read, never I/O.
+
+Contributions land in one of two places:
+
+- **`context`** is typed as `Partial<LogContext>` — the shared correlation
+  vocabulary (`scopeId`, `userId`, `actorType`, `correlationId`,
+  `executionAttemptId`) that every `@quilla-be-kit` package agrees on.
+- **`extra`** is an open record with its own top-level field, for
+  consumer-specific ambient values.
+
+Multiple enrichers merge in registration order, last wins on key collisions.
+A throwing enricher is caught and skipped — the entry still emits.
+
+For per-request scope and correlation, use `ExecutionContextEnricher` from
+[`@quilla-be-kit/execution-context`](https://github.com/quilla-kit/quilla-be-kit/tree/main/packages/execution-context),
+which bridges the active `ExecutionContext` onto every log line:
+
+```ts
+const factory = createLoggerFactory({
+  config: { service: 'my-backend', level: 'info', mode: 'json' },
+  enrichers: [new ExecutionContextEnricher(provider)],
+});
+```
+
+Ordering, merge rules, `context` vs `extra` guidance, and the rest of the
+emit pipeline are documented in [Logger internals](https://github.com/quilla-kit/quilla-be-kit/blob/main/packages/observability/src/logger/README.md).
 
 ## With obfuscation (PII protection)
 

@@ -37,7 +37,7 @@ import { createLoggerFactory } from '@quilla-be-kit/observability';
 const provider = new AsyncExecutionContextProvider();
 
 const loggerFactory = createLoggerFactory({
-  config: { level: 'info', mode: 'json' },
+  config: { service: 'my-backend', level: 'info', mode: 'json' },
   enrichers: [new ExecutionContextEnricher(provider)],
 });
 
@@ -102,9 +102,12 @@ await provider.runWithContext(ctx, async () => {
   `executionContextFactory` if omitted. Pass a custom factory when you've
   extended `ExecutionContext` with new fields.
 - `ExecutionContextEnricher` — `LogEntryEnricher` that reads from a provider
-  and returns the current context's fields as a log contribution. Returns an
-  empty contribution when the provider is outside a scope (bootstrap logs,
-  pre-request logs) — never throws.
+  and returns the current context's fields as a log contribution. Contributes
+  `scopeId` and `userId` (from `ctx.session`, only when a session is present),
+  plus `actorType`, `correlationId`, and `executionAttemptId`. All land in the
+  log entry's `context` field, flat. Returns an empty contribution when the
+  provider is outside a scope (bootstrap logs, pre-request logs) — never
+  throws.
 
 ### Values
 - `executionContextFactory` — default `ExecutionContextFactory` implementation.
