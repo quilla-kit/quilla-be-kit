@@ -332,6 +332,36 @@ describe('PgWriteDbAdapter', () => {
     });
   });
 
+  describe('count', () => {
+    it('runs a filtered COUNT and coerces the bigint string result', async () => {
+      db.resultQueue = [{ rows: [{ count: '3' }], rowCount: 1 }];
+      const result = await adapter.count({
+        table: 'users',
+        where: { name: 'Alice' },
+      });
+      expect(result).toBe(3);
+      expect(db.calls[0]?.sql).toBe('SELECT COUNT(*) AS count FROM users WHERE name = $1::TEXT');
+      expect(db.calls[0]?.params).toEqual(['Alice']);
+    });
+
+    it('returns 0 when no row is returned', async () => {
+      db.resultQueue = [{ rows: [], rowCount: 0 }];
+      const result = await adapter.count({
+        table: 'users',
+        where: { name: 'Nobody' },
+      });
+      expect(result).toBe(0);
+    });
+
+    it('omits the WHERE clause when no filter is given', async () => {
+      db.resultQueue = [{ rows: [{ count: '10' }], rowCount: 1 }];
+      const result = await adapter.count({ table: 'users' });
+      expect(result).toBe(10);
+      expect(db.calls[0]?.sql).toBe('SELECT COUNT(*) AS count FROM users');
+      expect(db.calls[0]?.params).toEqual([]);
+    });
+  });
+
   describe('info-schema cache', () => {
     it('queries information_schema once per table, regardless of call count', async () => {
       const spy = vi.spyOn(db, 'query');

@@ -13,9 +13,11 @@ import { AUDIT_COLUMNS, INSERT_EXCLUDED_KEYS, UPDATE_EXCLUDED_KEYS } from './aud
  * `find*` — returns raw `TRow` (DB-level); the repository layer wraps
  * these into `load*` for aggregate loading.
  *
- * Unlocked reads (`findOne` / `findMany` / `existsBy`) accept optional
- * `trx` for pre-create uniqueness checks. Locked reads (`findOneForUpdate`
- * / `findManyForUpdate`) require `trx` — they're for read-before-update.
+ * Unlocked reads (`findOne` / `findMany` / `existsBy` / `countBy`) accept
+ * optional `trx` for pre-create uniqueness checks and precondition guards.
+ * `countBy`'s `where` is optional — omit it to count every row in the
+ * table. Locked reads (`findOneForUpdate` / `findManyForUpdate`) require
+ * `trx` — they're for read-before-update.
  *
  * `updateMany` issues a single `UPDATE ... FROM (VALUES ...)` statement
  * via the adapter — no per-row optimistic lock. Callers needing
@@ -59,6 +61,13 @@ export abstract class BaseWriteDao<TRow extends { id: string }> {
 
   async existsBy(where: FilterQuery<TRow>, trx?: DatabaseTransaction): Promise<boolean> {
     return this.adapter.exists<TRow>({ table: this.tableName, where }, trx);
+  }
+
+  async countBy(where?: FilterQuery<TRow>, trx?: DatabaseTransaction): Promise<number> {
+    return this.adapter.count<TRow>(
+      { table: this.tableName, ...(where !== undefined ? { where } : {}) },
+      trx,
+    );
   }
 
   async findOneForUpdate(where: FilterQuery<TRow>, trx: DatabaseTransaction): Promise<TRow | null> {

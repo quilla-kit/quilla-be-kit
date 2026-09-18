@@ -4,6 +4,7 @@ import type { Database } from '../database/database.interface.js';
 import type { FilterQuery } from '../db-adapter/filter-query.type.js';
 import type { SelectOptions } from '../db-adapter/read-db-adapter.interface.js';
 import type {
+  CountOptions,
   DeleteOptions,
   ExistsOptions,
   InsertOptions,
@@ -168,6 +169,19 @@ export class PgWriteDbAdapter implements WriteDbAdapter {
     const sql = `SELECT 1 FROM ${opts.table} WHERE ${where.sql} LIMIT 1`;
     const result = await this.db.query(sql, where.values, trx);
     return result.rows.length > 0;
+  }
+
+  async count<T>(opts: CountOptions<T>, trx?: DatabaseTransaction): Promise<number> {
+    const types = await this.columnTypes.get(opts.table);
+    let sql = `SELECT COUNT(*) AS count FROM ${opts.table}`;
+    let values: unknown[] = [];
+    if (opts.where && Object.keys(opts.where).length > 0) {
+      const where = buildWhere(opts.where, types);
+      values = where.values;
+      sql += ` WHERE ${where.sql}`;
+    }
+    const result = await this.db.query(sql, values, trx);
+    return Number(result.rows[0]?.count ?? 0);
   }
 
   private async executeSelect<T>(

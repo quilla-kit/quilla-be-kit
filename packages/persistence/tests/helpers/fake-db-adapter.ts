@@ -6,6 +6,7 @@ import type {
   SelectOptions,
 } from '../../src/db-adapter/read-db-adapter.interface.js';
 import type {
+  CountOptions,
   DeleteOptions,
   ExistsOptions,
   InsertOptions,
@@ -41,6 +42,7 @@ export class FakeWriteDbAdapter implements WriteDbAdapter {
   findCalls: Call<SelectOptions<unknown>>[] = [];
   findForUpdateCalls: { opts: SelectOptions<unknown>; trx: DatabaseTransaction }[] = [];
   existsCalls: Call<ExistsOptions<unknown>>[] = [];
+  countCalls: Call<CountOptions<unknown>>[] = [];
 
   insertResults: DatabaseResult[] = [];
   updateResults: DatabaseResult[] = [];
@@ -49,6 +51,7 @@ export class FakeWriteDbAdapter implements WriteDbAdapter {
   findResults: unknown[][] = [];
   findForUpdateResults: unknown[][] = [];
   existsResults: boolean[] = [];
+  countResults: number[] = [];
 
   insert = vi.fn(
     async (opts: InsertOptions, trx?: DatabaseTransaction): Promise<DatabaseResult> => {
@@ -94,5 +97,10 @@ export class FakeWriteDbAdapter implements WriteDbAdapter {
   exists = vi.fn(async <T>(opts: ExistsOptions<T>, trx?: DatabaseTransaction): Promise<boolean> => {
     this.existsCalls.push({ opts: opts as ExistsOptions<unknown>, trx });
     return this.existsResults.shift() ?? false;
+  });
+
+  count = vi.fn(async <T>(opts: CountOptions<T>, trx?: DatabaseTransaction): Promise<number> => {
+    this.countCalls.push({ opts: opts as CountOptions<unknown>, trx });
+    return this.countResults.shift() ?? 0;
   });
 }
