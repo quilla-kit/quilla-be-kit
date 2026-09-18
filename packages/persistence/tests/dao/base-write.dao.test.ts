@@ -277,6 +277,26 @@ describe('BaseWriteDao', () => {
       expect(result).toBe(true);
     });
 
+    it('countBy delegates to adapter.count', async () => {
+      adapter.countResults = [3];
+      const result = await dao.countBy({ name: 'a' });
+      expect(adapter.countCalls[0]?.opts).toEqual({
+        table: 'users',
+        where: { name: 'a' },
+      });
+      expect(result).toBe(3);
+    });
+
+    it('countBy omits where when called with no filter', async () => {
+      adapter.countResults = [10];
+      const result = await dao.countBy();
+      expect(adapter.countCalls[0]?.opts).toEqual({
+        table: 'users',
+        where: undefined,
+      });
+      expect(result).toBe(10);
+    });
+
     it('find* methods accept optional trx for read-within-write-trx', async () => {
       adapter.findResults = [[{ id: 'u1', name: 'a' }]];
       await dao.findOne({ id: 'u1' }, trx);

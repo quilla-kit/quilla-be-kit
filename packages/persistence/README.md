@@ -58,13 +58,17 @@ pnpm add pg
   `UnitOfWorkContext` (via AsyncLocalStorage) and reuses the trx.
 - **CQRS isolation at the type level.** `ReadDbAdapter` exposes only
   `select`; `WriteDbAdapter` exposes `insert`/`update`/`delete`/`find`/
-  `findForUpdate`/`exists`. A single physical class can implement both
-  interfaces for wiring convenience, but DAO-facing types enforce the
+  `findForUpdate`/`exists`/`count`. A single physical class can implement
+  both interfaces for wiring convenience, but DAO-facing types enforce the
   boundary. **Read DAOs never accept a `trx` parameter** — reads don't
   participate in write transactions.
-- **Pre-create uniqueness checks use the write side's unlocked reads**
-  (`findOne` / `existsBy` on `BaseWriteDao`), not the read side. Locked
-  reads (`findOneForUpdate`) are for read-before-update only.
+- **Pre-create uniqueness checks and precondition guards use the write
+  side's unlocked reads** (`findOne` / `existsBy` / `countBy` on
+  `BaseWriteDao`), not the read side. `countBy` is a filtered
+  `SELECT COUNT(*)` — use it instead of `findMany(...).length` when only the
+  count is needed (e.g. "don't deactivate the last active admin"); omit
+  `where` to count every row in the table. Locked reads (`findOneForUpdate`)
+  are for read-before-update only.
 
 ## Vocabulary
 
@@ -128,6 +132,15 @@ await uow.transaction(async (ctx) => {
     throw new DuplicateEmailError({ email: input.email });
   }
   await userRepo.create(newUser, ctx);
+});
+
+// Precondition guard — filtered COUNT instead of findMany(...).length:
+await uow.transaction(async (ctx) => {
+  const activeAdmins = await userDao.countBy({ role: 'ADMIN', active: true }, ctx.trx);
+  if (activeAdmins <= 1) {
+    throw new LastActiveAdminError();
+  }
+  await userRepo.update(deactivatedAdmin, ctx);
 });
 
 // Read-side projections — one DAO exposes many query methods, each

@@ -46,6 +46,11 @@ export type ExistsOptions<T> = {
   readonly where: FilterQuery<T>;
 };
 
+export type CountOptions<T> = {
+  readonly table: string;
+  readonly where?: FilterQuery<T>;
+};
+
 /**
  * Write-side adapter. Owns a `Database` reference internally (for schema
  * introspection and pool access), builds SQL with dialect-specific
@@ -71,4 +76,6 @@ export interface WriteDbAdapter {
   findForUpdate<T>(opts: SelectOptions<T>, trx: DatabaseTransaction): Promise<readonly T[]>;
 
   exists<T>(opts: ExistsOptions<T>, trx?: DatabaseTransaction): Promise<boolean>;
+
+  count<T>(opts: CountOptions<T>, trx?: DatabaseTransaction): Promise<number>;
 }
