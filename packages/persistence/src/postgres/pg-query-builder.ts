@@ -2,11 +2,18 @@ import type { ColumnResolver } from '../query/column-resolver.interface.js';
 import type { SortOption } from '../query/list-query.type.js';
 import type { QueryProduct } from '../query/query-product.type.js';
 import type {
+  FromTarget,
   OrderByOptions,
   PaginateOptions,
   SqlQueryBuilder,
 } from '../query/sql-query-builder.interface.js';
-import { buildFilterClause, parseFilterKey } from './pg-sql.js';
+import {
+  type IdentifierQuoter,
+  NO_QUOTING,
+  QUOTED,
+  buildFilterClause,
+  parseFilterKey,
+} from './pg-sql.js';
 
 const IDENT_RE = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
 const QUALIFIED_IDENT_RE = /^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)?$/;
@@ -40,24 +47,53 @@ const EMPTY_STATE: BuilderState = {
   pagination: null,
 };
 
+export type PgSqlQueryBuilderOptions = {
+  readonly quoteIdentifiers?: boolean;
+};
+
 export class PgSqlQueryBuilder<TRow = unknown> implements SqlQueryBuilder<TRow> {
+  private readonly quoter: IdentifierQuoter;
+
   constructor(
     private readonly resolver: ColumnResolver,
+    private readonly options: PgSqlQueryBuilderOptions = {},
     private readonly state: BuilderState = EMPTY_STATE,
-  ) {}
+  ) {
+    this.quoter = options.quoteIdentifiers ? QUOTED : NO_QUOTING;
+  }
 
   select(columns: readonly string[]): SqlQueryBuilder<TRow> {
     for (const c of columns) validateSelectColumn(c);
     return this.fork({ columns: [...columns] });
   }
 
-  from(table: string): SqlQueryBuilder<TRow> {
-    if (!FROM_RE.test(table)) {
+  from(target: string | FromTarget): SqlQueryBuilder<TRow> {
+    if (typeof target === 'string') {
+      if (!FROM_RE.test(target)) {
+        throw new Error(
+          `SqlQueryBuilder.from: invalid identifier ${JSON.stringify(target)}. Accepts "table", "schema.table", "table alias", or "table AS alias".`,
+        );
+      }
+      return this.fork({ table: target });
+    }
+    // Parts are already separated, so each is quoted on its own — unlike
+    // `QUOTED.table`, which has to split `schema.table` out of one string.
+    const name =
+      target.schema !== undefined
+        ? `${this.fromIdentifier(target.schema)}.${this.fromIdentifier(target.table)}`
+        : this.fromIdentifier(target.table);
+    const table =
+      target.alias !== undefined ? `${name} AS ${this.fromIdentifier(target.alias)}` : name;
+    return this.fork({ table });
+  }
+
+  private fromIdentifier(value: string): string {
+    if (!this.options.quoteIdentifiers && !IDENT_RE.test(value)) {
       throw new Error(
-        `SqlQueryBuilder.from: invalid identifier ${JSON.stringify(table)}. Accepts "table", "schema.table", "table alias", or "table AS alias".`,
+        `SqlQueryBuilder.from: invalid identifier ${JSON.stringify(value)}. Without quoteIdentifiers, each part must match ${IDENT_RE}.`,
       );
     }
-    return this.fork({ table });
+    return this.quoter.column(value);
   }
 
   join(clause: string): SqlQueryBuilder<TRow> {
@@ -133,7 +169,7 @@ export class PgSqlQueryBuilder<TRow = unknown> implements SqlQueryBuilder<TRow> 
   }
 
   private fork(patch: Partial<BuilderState>): PgSqlQueryBuilder<TRow> {
-    return new PgSqlQueryBuilder<TRow>(this.resolver, { ...this.state, ...patch });
+    return new PgSqlQueryBuilder<TRow>(this.resolver, this.options, { ...this.state, ...patch });
   }
 
   private buildColumnsSql(): string {
@@ -154,7 +190,10 @@ export class PgSqlQueryBuilder<TRow = unknown> implements SqlQueryBuilder<TRow> 
       );
     }
     const resolved = this.resolver.resolve(column);
-    return resolved === column ? resolved : `${resolved} AS "${column}"`;
+    const rendered = this.quoter.column(resolved);
+    // The alias is always quoted, whatever the quoter: unquoted, Postgres
+    // folds `AS createdAt` to `createdat` and the domain key stops round-tripping.
+    return resolved === column ? rendered : `${rendered} AS ${QUOTED.column(column)}`;
   }
 
   private resolveOrPassThrough(key: string): string {
@@ -162,7 +201,7 @@ export class PgSqlQueryBuilder<TRow = unknown> implements SqlQueryBuilder<TRow> 
       validateQualifiedIdentifier(key, 'column reference');
       return key;
     }
-    return this.resolver.resolve(key);
+    return this.quoter.column(this.resolver.resolve(key));
   }
 
   private buildWhereSql(params: unknown[]): { whereSql: string } {
@@ -194,7 +233,7 @@ export class PgSqlQueryBuilder<TRow = unknown> implements SqlQueryBuilder<TRow> 
     if (!isBareIdent) {
       validateQualifiedIdentifier(field, 'column reference');
     }
-    const column = isBareIdent ? this.resolver.resolve(field) : field;
+    const column = isBareIdent ? this.quoter.column(this.resolver.resolve(field)) : field;
     return buildFilterClause(column, operator, value, (v) => pushParam(params, v));
   }
 

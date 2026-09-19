@@ -12,8 +12,8 @@ export abstract class BaseWriteDao<TRow extends { id: string }> extends KeyedWri
   override async deleteMany(
     ids: readonly (string | Pick<TRow, 'id'>)[],
     trx?: DatabaseTransaction,
-  ): Promise<void> {
-    await super.deleteMany(
+  ): Promise<number> {
+    return super.deleteMany(
       ids.map((id) => (typeof id === 'string' ? ({ id } as Pick<TRow, 'id'>) : id)),
       trx,
     );

@@ -130,6 +130,11 @@ describe('PgWriteDbAdapter', () => {
       expect(db.calls[0]?.sql).toContain('RETURNING id, created_at');
     });
 
+    it("emits the wildcard for returning: 'all' when quoting is off", async () => {
+      await adapter.insert({ table: 'users', rows: [{ id: 'u1', name: 'a' }], returning: 'all' });
+      expect(db.calls[0]?.sql).toContain('RETURNING *');
+    });
+
     it('passes trx through to Database.query', async () => {
       const trx = {} as DatabaseTransaction;
       await adapter.insert({ table: 'users', rows: [{ id: 'u1', name: 'a' }] }, trx);
@@ -459,6 +464,27 @@ describe('PgWriteDbAdapter (audit, keys, quoting)', () => {
       expect(db.calls[0]?.sql).toBe(
         `INSERT INTO "app"."Orders" ("org_id", "Note", "created_at", "updated_at") VALUES ($1::UUID, $2::TEXT, date_trunc('milliseconds', CURRENT_TIMESTAMP), date_trunc('milliseconds', CURRENT_TIMESTAMP)) RETURNING "org_id"`,
       );
+    });
+
+    it("emits the wildcard for returning: 'all'", async () => {
+      const db = new StubDatabase(columns);
+      const adapter = new PgWriteDbAdapter(db, { quoteIdentifiers: true });
+      await adapter.insert({ table: 'app.Orders', rows: [{ org_id: 'o1' }], returning: 'all' });
+      expect(db.calls[0]?.sql).toContain('RETURNING *');
+      expect(db.calls[0]?.sql).not.toContain('RETURNING "*"');
+    });
+
+    it('returns nothing and runs no statement when there is nothing to set', async () => {
+      const db = new StubDatabase(columns);
+      const adapter = new PgWriteDbAdapter(db, { quoteIdentifiers: true });
+      const result = await adapter.update({
+        table: 'app.Orders',
+        set: {},
+        where: { org_id: 'o1' },
+        audit: {},
+      });
+      expect(result).toEqual({ rows: [], rowCount: 0 });
+      expect(db.calls).toHaveLength(0);
     });
 
     it('quotes SET, WHERE and the optimistic-lock column', async () => {

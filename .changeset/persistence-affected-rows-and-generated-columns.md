@@ -1,0 +1,14 @@
+---
+'@quilla-be-kit/persistence': major
+---
+
+Write DAOs report what they affected, read back what the database produced, and stop reading an execution context they don't need. The read-side query builder can now quote identifiers.
+
+**Breaking (adapter authors):** `InsertOptions.returning` and `UpdateOptions.returning` are now `Returning = 'all' | readonly string[]` instead of `readonly string[]`. "All columns" is structural rather than the magic column name `'*'`, so an adapter implementing `returning` must handle the `'all'` case and every dialect spells the wildcard its own way. Adapters that ignore `returning` are unaffected.
+
+**Breaking:** `KeyedWriteDao.update`, `updateMany`, `delete` and `deleteMany` return `Promise<number>` (rows the adapter reported affected) instead of `Promise<void>`, and `BaseWriteDao.deleteMany` widens in lockstep. Call sites are unaffected — a discarded return value is legal — but a subclass that overrides any of the four with an explicit `Promise<void>` return type must widen it. Repositories are deliberately unchanged: `KeyedBasicRepository`, `BaseBasicRepository` and `BaseAggregateRepository` still return `Promise<void>`, because an affected-row count is a storage fact rather than a domain verb.
+
+- The execution context is read only when the resolved audit policy declares an `insertedBy` or `updatedBy` column, so DAOs under `auditPolicy: 'none'` — or declaring timestamps only — no longer require an active `runWithContext` scope. `update`/`updateMany` read it only for `updatedBy`.
+- `generatedColumns` on `KeyedWriteDao` declares database-produced columns (identity/serial keys, `GENERATED ALWAYS AS`, trigger-maintained). They are excluded from the INSERT column list and the UPDATE `SET` clause while still addressing rows as key columns. New `createReturning` / `createManyReturning` read the stored rows back; `KeyedBasicRepository` gains both too.
+- `PgSqlQueryBuilder` takes `{ quoteIdentifiers }` as its second constructor argument and quotes everything the `ColumnResolver` produces — `select`, `filters`, `orderBy`, `groupBy` and `distinctOn` — so overrides mapping a domain key to a mixed-case or space-containing column emit valid SQL. Previously that output was interpolated raw. Also adds a structured `from({ schema?, table, alias? })` on `SqlQueryBuilder` with the new `FromTarget` type, for table names the string form cannot express. Default is off and byte-identical to previous output; qualified references, `where` and `join` fragments stay caller-owned and unquoted, and input keys are validated exactly as before in both modes.
+- Fix: `PgWriteDbAdapter.update` emitted `UPDATE t SET WHERE ...` when a caller had nothing to set. It now returns `rowCount: 0` without running a statement, matching what `updateMany` already did.

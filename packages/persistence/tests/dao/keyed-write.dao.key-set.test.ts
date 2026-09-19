@@ -78,6 +78,10 @@ describe('KeyedWriteDao key-set operations', () => {
       expect(adapter.deleteCalls).toHaveLength(0);
     });
 
+    it('returns the affected row count from the single statement', async () => {
+      await expect(new LineDao(adapter, ctx).deleteMany(keys, trx)).resolves.toBe(2);
+    });
+
     it('locks in one adapter call', async () => {
       const rows = await new LineDao(adapter, ctx).findManyForUpdateByKeys(keys, trx);
       expect(findByKeysForUpdate).toHaveBeenCalledWith(
@@ -94,6 +98,11 @@ describe('KeyedWriteDao key-set operations', () => {
       await new LineDao(adapter, ctx).deleteMany(keys, trx);
       expect(adapter.deleteCalls.map((c) => c.opts.where)).toEqual(keys);
       expect(adapter.deleteCalls[0]?.trx).toBe(trx);
+    });
+
+    it('sums the affected row counts across the per-key loop', async () => {
+      adapter.deleteResults.push({ rows: [], rowCount: 1 }, { rows: [], rowCount: 1 });
+      await expect(new LineDao(adapter, ctx).deleteMany(keys, trx)).resolves.toBe(2);
     });
 
     it('falls back to one locked read per key and concatenates results', async () => {
