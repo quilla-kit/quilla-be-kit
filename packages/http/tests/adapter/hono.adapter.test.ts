@@ -482,6 +482,13 @@ describe('HonoServer binary and stream responses', () => {
   });
 });
 
+const fixedErrorResolver = (httpCode: number, message: string): ErrorResolver => ({
+  resolve: (): ResolvedHttpError => ({
+    httpCode,
+    body: { error: { name: 'about:blank', message } },
+  }),
+});
+
 describe('HonoServer conventions', () => {
   it('reshapes the success envelope via a custom responseSerializer', async () => {
     const dataEnvelope: ResponseSerializer = {
@@ -500,22 +507,85 @@ describe('HonoServer conventions', () => {
   });
 
   it('reshapes the error body and status via a custom errorResolver', async () => {
-    const problemDetails: ErrorResolver = {
-      resolve(_err: unknown): ResolvedHttpError {
-        return {
-          httpCode: 422,
-          body: { error: { name: 'about:blank', message: 'overridden' } },
-        };
-      },
-    };
-
-    const { fetch } = buildServer({ conventions: { errorResolver: problemDetails } });
+    const { fetch } = buildServer({
+      conventions: { errorResolver: fixedErrorResolver(422, 'overridden') },
+    });
     const res = await fetch(new Request('http://localhost/users/missing'));
 
     expect(res.status).toBe(422);
     const body = (await res.json()) as { error: { name: string; message: string } };
     expect(body.error.name).toBe('about:blank');
     expect(body.error.message).toBe('overridden');
+  });
+
+  it('answers an unknown route with the kit error shape', async () => {
+    const { fetch } = buildServer({});
+    const res = await fetch(new Request('http://localhost/nope'));
+
+    expect(res.status).toBe(404);
+    expect(res.headers.get('content-type')).toContain('application/json');
+    expect(await res.json()).toEqual({
+      error: { name: 'RouteNotFoundError', message: 'Route not found' },
+    });
+  });
+
+  it('answers a known path under an unregistered method the same way', async () => {
+    const { fetch } = buildServer({});
+    const res = await fetch(new Request('http://localhost/users/42', { method: 'DELETE' }));
+
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { error: { name: string } };
+    expect(body.error.name).toBe('RouteNotFoundError');
+  });
+
+  it('routes the unknown-route response through a custom errorResolver', async () => {
+    const { fetch } = buildServer({
+      conventions: { errorResolver: fixedErrorResolver(418, 'nope') },
+    });
+    const res = await fetch(new Request('http://localhost/nope'));
+
+    expect(res.status).toBe(418);
+    const body = (await res.json()) as { error: { message: string } };
+    expect(body.error.message).toBe('nope');
+  });
+
+  it('routes error bodies through a custom responseSerializer', async () => {
+    const wrapped: ResponseSerializer = {
+      serialize: (r: HttpJsonResponse) => ({ failure: r.error }),
+    };
+
+    const { fetch } = buildServer({ conventions: { responseSerializer: wrapped } });
+
+    const thrown = await fetch(new Request('http://localhost/users/missing'));
+    expect(thrown.status).toBe(404);
+    expect(await thrown.json()).toEqual({
+      failure: { name: 'NotFoundError', message: 'user not found' },
+    });
+
+    const unmatched = await fetch(new Request('http://localhost/nope'));
+    expect(await unmatched.json()).toEqual({
+      failure: { name: 'RouteNotFoundError', message: 'Route not found' },
+    });
+  });
+
+  it('emits a bodyless error response when the serializer returns undefined', async () => {
+    const empty: ResponseSerializer = { serialize: () => undefined };
+
+    const { fetch } = buildServer({ conventions: { responseSerializer: empty } });
+    const res = await fetch(new Request('http://localhost/nope'));
+
+    expect(res.status).toBe(404);
+    expect(await res.text()).toBe('');
+  });
+
+  it('still applies CORS headers to an unknown route', async () => {
+    const { fetch } = buildServer({ cors: { origins: ['https://app.test'] } });
+    const res = await fetch(
+      new Request('http://localhost/nope', { headers: { Origin: 'https://app.test' } }),
+    );
+
+    expect(res.status).toBe(404);
+    expect(res.headers.get('access-control-allow-origin')).toBe('https://app.test');
   });
 
   it('preserves the default wire shape when conventions are omitted', async () => {

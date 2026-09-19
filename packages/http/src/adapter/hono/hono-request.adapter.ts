@@ -54,11 +54,12 @@ export class HonoRequestAdapter implements RequestAdapter {
       const c = frameworkContext as Context;
       const request = await this.toHttpRequest(c);
       const response = await handler(request);
-      return this.writeHonoResponse(c, response);
+      return this.writeResponse(c, response);
     };
   }
 
-  private writeHonoResponse(c: Context, response: HttpResponse): Response {
+  /** Writes a kit `HttpResponse` onto the Hono context — the one place the wire body is decided. */
+  writeResponse(c: Context, response: HttpResponse): Response {
     if ('stream' in response) {
       const { httpCode, headers, stream } = response;
       return new Response(stream, { status: httpCode, headers: headers ?? {} });

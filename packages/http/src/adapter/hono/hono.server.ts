@@ -4,6 +4,7 @@ import type { Context, Next } from 'hono';
 import { cors } from 'hono/cors';
 import { DefaultErrorResolver } from '../../error/default.resolver.js';
 import type { ErrorResolver } from '../../error/error-resolver.interface.js';
+import { RouteNotFoundError } from '../../error/route-not-found.error.js';
 import { DefaultRequestDeserializer } from '../../request/default.deserializer.js';
 import { DefaultResponseSerializer } from '../../request/default.serializer.js';
 import { HttpAttributes } from '../../request/http-attributes.js';
@@ -61,9 +62,13 @@ export class HonoServer implements WebServer {
 
     this.app.onError((err, c) => {
       this.options.logger?.error('HTTP error', err instanceof Error ? err : undefined);
-      const { httpCode, body } = this.errorResolver.resolve(err);
-      return c.json(body, httpCode as never);
+      return this.renderError(c, err);
     });
+
+    // An unmatched route is the one response no handler produces; resolving it
+    // like any other error keeps it on the configured conventions rather than
+    // Hono's plain-text default.
+    this.app.notFound((c) => this.renderError(c, new RouteNotFoundError()));
 
     if (this.options.cors) {
       const { origins, exposeHeaders } = this.options.cors;
@@ -105,6 +110,11 @@ export class HonoServer implements WebServer {
     await this.handle.close();
     this.handle = undefined;
     this.options.logger?.info('HTTP server closed');
+  }
+
+  private renderError(c: Context, err: unknown): Response {
+    const { httpCode, body } = this.errorResolver.resolve(err);
+    return this.requestAdapter.writeResponse(c, { ...body, httpCode });
   }
 
   private registerRoute(route: NormalizedRoute): void {
