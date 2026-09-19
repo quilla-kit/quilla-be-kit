@@ -8,10 +8,21 @@ export type OptimisticLock = {
   readonly expected: unknown;
 };
 
+/**
+ * Timestamp columns the adapter stamps with the database clock. Absent
+ * (the whole `audit` field omitted) means the kit's `created_at` /
+ * `updated_at`; `{}` means stamp nothing.
+ */
+export type AuditTimestamps = {
+  readonly createdAt?: string;
+  readonly updatedAt?: string;
+};
+
 export type InsertOptions = {
   readonly table: string;
   readonly rows: readonly Record<string, unknown>[];
   readonly returning?: readonly string[];
+  readonly audit?: AuditTimestamps;
 };
 
 export type UpdateOptions<T> = {
@@ -20,12 +31,13 @@ export type UpdateOptions<T> = {
   readonly where: FilterQuery<T>;
   readonly optimisticLock?: OptimisticLock;
   readonly returning?: readonly string[];
+  readonly audit?: AuditTimestamps;
 };
 
 /**
  * Bulk update via a single `UPDATE ... FROM (VALUES ...)` statement. Each
- * row in `rows` must include `id` (used as the join key) plus the same set
- * of columns to update — heterogeneous keys across rows are unsupported
+ * row in `rows` must include every `keyColumns` entry (default `['id']`,
+ * the join key) plus the same set of columns to update — heterogeneous keys across rows are unsupported
  * (the VALUES table requires a fixed schema). No optimistic locking: bulk
  * update is meant to follow `findManyForUpdate` so row-level locks held
  * inside the transaction already serialize concurrent writers.
@@ -33,6 +45,8 @@ export type UpdateOptions<T> = {
 export type UpdateManyOptions = {
   readonly table: string;
   readonly rows: readonly Record<string, unknown>[];
+  readonly keyColumns?: readonly string[];
+  readonly audit?: AuditTimestamps;
 };
 
 export type DeleteOptions<T> = {

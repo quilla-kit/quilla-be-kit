@@ -11,6 +11,43 @@ import {
 
 export type ColumnTypeMap = Record<string, string>;
 
+/**
+ * Renders identifiers into SQL. `NO_QUOTING` reproduces the historical
+ * unquoted output; `QUOTED` double-quotes every identifier so mixed-case,
+ * reserved-word and otherwise non-plain names are safe. Names handed to a
+ * quoter are always raw, never pre-quoted.
+ */
+export type IdentifierQuoter = {
+  column(name: string): string;
+  table(name: string): string;
+};
+
+const quoteIdentifier = (name: string): string => `"${name.replaceAll('"', '""')}"`;
+
+/** Splits `schema.table` into its parts; any other shape is a single unqualified name. */
+export function splitQualifiedTable(table: string): { schema?: string; name: string } {
+  const parts = table.split('.');
+  if (parts.length === 2 && parts[0] && parts[1]) {
+    return { schema: parts[0], name: parts[1] };
+  }
+  return { name: table };
+}
+
+export const NO_QUOTING: IdentifierQuoter = {
+  column: (name) => name,
+  table: (name) => name,
+};
+
+export const QUOTED: IdentifierQuoter = {
+  column: quoteIdentifier,
+  table: (name) => {
+    const { schema, name: table } = splitQualifiedTable(name);
+    return schema === undefined
+      ? quoteIdentifier(table)
+      : `${quoteIdentifier(schema)}.${quoteIdentifier(table)}`;
+  },
+};
+
 const KNOWN_OPERATORS: ReadonlySet<FilterOperator> = new Set(ALL_FILTER_OPERATORS);
 
 /**
@@ -95,8 +132,9 @@ export function mapPostgresType(dataType: string | undefined): string {
       return 'UUID';
     case 'integer':
     case 'smallint':
-    case 'bigint':
       return 'INTEGER';
+    case 'bigint':
+      return 'BIGINT';
     case 'boolean':
       return 'BOOLEAN';
     case 'timestamp without time zone':
@@ -122,6 +160,8 @@ export function mapPostgresType(dataType: string | undefined): string {
       return 'UUID[]';
     case '_int4':
       return 'INTEGER[]';
+    case '_int8':
+      return 'BIGINT[]';
     case '_text':
     case '_varchar':
       return 'TEXT[]';
@@ -139,12 +179,15 @@ export function mapPostgresType(dataType: string | undefined): string {
  *
  * `startIndex` is the placeholder offset — pass the number of params
  * already consumed upstream (e.g. by a SET clause in UPDATE). Read-side
- * callers pass `0`.
+ * callers pass `0`. `quoteColumn` renders each column identifier (default:
+ * as-is). Filter keys use `__` as the operator delimiter, so a column whose
+ * own name contains `__` cannot be addressed through a `FilterQuery`.
  */
 export function buildWhere<T>(
   filters: FilterQuery<T>,
   types: ColumnTypeMap,
   startIndex = 0,
+  quoteColumn: (name: string) => string = NO_QUOTING.column,
 ): { sql: string; values: unknown[] } {
   const entries = Object.entries(filters as Record<string, unknown>);
   if (entries.length === 0) {
@@ -157,7 +200,7 @@ export function buildWhere<T>(
     const operator = parsedOperator === 'eq' && Array.isArray(rawValue) ? 'in' : parsedOperator;
     const isArrayOperator = operator === 'in' || operator === 'notIn';
 
-    return buildFilterClause(field, operator, rawValue, (value) => {
+    return buildFilterClause(quoteColumn(field), operator, rawValue, (value) => {
       const pgType = mapPostgresType(types[field]);
       values.push(value);
       const idx = startIndex + values.length;
@@ -176,14 +219,19 @@ export async function runSelect<T>(
   db: Database,
   opts: SelectOptions<T>,
   types: ColumnTypeMap,
-  flags: { forUpdate: boolean; trx?: DatabaseTransaction | undefined },
+  flags: {
+    forUpdate: boolean;
+    trx?: DatabaseTransaction | undefined;
+    quoter?: IdentifierQuoter | undefined;
+  },
 ): Promise<DatabaseResult> {
+  const quoter = flags.quoter ?? NO_QUOTING;
   const columns = opts.columns?.length ? opts.columns.join(', ') : '*';
-  let sql = `SELECT ${columns} FROM ${opts.table}`;
+  let sql = `SELECT ${columns} FROM ${quoter.table(opts.table)}`;
 
   const values: unknown[] = [];
   if (opts.where && Object.keys(opts.where).length > 0) {
-    const where = buildWhere(opts.where, types);
+    const where = buildWhere(opts.where, types, 0, quoter.column);
     values.push(...where.values);
     sql += ` WHERE ${where.sql}`;
   }
@@ -207,9 +255,12 @@ export async function runSelect<T>(
 const INFO_SCHEMA_SQL = `SELECT column_name, data_type, udt_name
        FROM information_schema.columns
        WHERE table_name = $1`;
+const INFO_SCHEMA_QUALIFIED_SQL = `${INFO_SCHEMA_SQL} AND table_schema = $2`;
 
 /**
- * Caches column types per table across the life of a process. Shared by
+ * Caches column types per table across the life of a process. A
+ * `schema.table` name is resolved against that schema only; any other name
+ * matches by table name across schemas. Shared by
  * `PgWriteDbAdapter` and `PgReadDbAdapter` so a given table's metadata is
  * fetched at most once, regardless of which adapter gets there first.
  */
@@ -222,7 +273,11 @@ export class PgColumnTypeCache {
     const cached = this.cache.get(table);
     if (cached) return cached;
 
-    const result = await this.db.query(INFO_SCHEMA_SQL, [table]);
+    const { schema, name } = splitQualifiedTable(table);
+    const result =
+      schema === undefined
+        ? await this.db.query(INFO_SCHEMA_SQL, [table])
+        : await this.db.query(INFO_SCHEMA_QUALIFIED_SQL, [name, schema]);
     const types: ColumnTypeMap = {};
     for (const row of result.rows) {
       const name = String(row.column_name);

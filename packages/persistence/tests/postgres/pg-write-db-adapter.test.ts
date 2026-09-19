@@ -31,7 +31,8 @@ class StubDatabase implements Database {
     trx?: DatabaseTransaction,
   ): Promise<DatabaseResult> {
     if (sql.includes('information_schema.columns')) {
-      const tableName = String(params[0]);
+      const tableName =
+        params.length > 1 ? `${String(params[1])}.${String(params[0])}` : String(params[0]);
       const cols = this.columns[tableName] ?? {};
       return {
         rows: Object.entries(cols).map(([column_name, data_type]) => ({
@@ -383,6 +384,133 @@ describe('PgWriteDbAdapter', () => {
         sql.includes('information_schema.columns'),
       );
       expect(infoSchemaCalls).toHaveLength(1);
+    });
+  });
+});
+
+describe('PgWriteDbAdapter (audit, keys, quoting)', () => {
+  const columns = {
+    users: { id: 'uuid', name: 'text' },
+    'app.Orders': { org_id: 'uuid', line_no: 'integer', qty: 'integer', Note: 'text' },
+  };
+
+  it('stamps only the declared audit timestamps', async () => {
+    const db = new StubDatabase(columns);
+    const adapter = new PgWriteDbAdapter(db);
+    await adapter.insert({
+      table: 'users',
+      rows: [{ id: 'u1', name: 'a' }],
+      audit: { updatedAt: 'modified_at' },
+    });
+    expect(db.calls[0]?.sql).toBe(
+      "INSERT INTO users (id, name, modified_at) VALUES ($1::UUID, $2::TEXT, date_trunc('milliseconds', CURRENT_TIMESTAMP))",
+    );
+  });
+
+  it('stamps nothing with an empty audit and emits no updated_at on update', async () => {
+    const db = new StubDatabase(columns);
+    const adapter = new PgWriteDbAdapter(db);
+    await adapter.update({ table: 'users', set: { name: 'b' }, where: { id: 'u1' }, audit: {} });
+    expect(db.calls[0]?.sql).toBe('UPDATE users SET name = $1::TEXT WHERE id = $2::UUID');
+  });
+
+  it('emits DEFAULT VALUES for a single row with no columns', async () => {
+    const db = new StubDatabase(columns);
+    const adapter = new PgWriteDbAdapter(db);
+    await adapter.insert({ table: 'users', rows: [{}], audit: {} });
+    expect(db.calls[0]?.sql).toBe('INSERT INTO users DEFAULT VALUES');
+  });
+
+  it('joins updateMany on every key column', async () => {
+    const db = new StubDatabase(columns);
+    const adapter = new PgWriteDbAdapter(db);
+    await adapter.updateMany({
+      table: 'app.Orders',
+      keyColumns: ['org_id', 'line_no'],
+      audit: {},
+      rows: [{ qty: 1, org_id: 'o1', line_no: 2 }],
+    });
+    expect(db.calls[0]?.sql).toBe(
+      'UPDATE app.Orders AS t SET qty = data.qty FROM (VALUES ($1::INTEGER, $2::UUID, $3::INTEGER)) AS data(qty, org_id, line_no) WHERE t.org_id = data.org_id AND t.line_no = data.line_no',
+    );
+  });
+
+  it('rejects an updateMany row missing a key column', async () => {
+    const db = new StubDatabase(columns);
+    const adapter = new PgWriteDbAdapter(db);
+    await expect(
+      adapter.updateMany({
+        table: 'app.Orders',
+        keyColumns: ['org_id', 'line_no'],
+        rows: [{ qty: 1, org_id: 'o1' }],
+      }),
+    ).rejects.toThrow(/missing key column "line_no"/);
+  });
+
+  describe('quoteIdentifiers', () => {
+    it('quotes schema-qualified tables and every emitted column', async () => {
+      const db = new StubDatabase(columns);
+      const adapter = new PgWriteDbAdapter(db, { quoteIdentifiers: true });
+      await adapter.insert({
+        table: 'app.Orders',
+        rows: [{ org_id: 'o1', Note: 'x' }],
+        returning: ['org_id'],
+      });
+      expect(db.calls[0]?.sql).toBe(
+        `INSERT INTO "app"."Orders" ("org_id", "Note", "created_at", "updated_at") VALUES ($1::UUID, $2::TEXT, date_trunc('milliseconds', CURRENT_TIMESTAMP), date_trunc('milliseconds', CURRENT_TIMESTAMP)) RETURNING "org_id"`,
+      );
+    });
+
+    it('quotes SET, WHERE and the optimistic-lock column', async () => {
+      const db = new StubDatabase(columns);
+      const adapter = new PgWriteDbAdapter(db, { quoteIdentifiers: true });
+      await adapter.update({
+        table: 'app.Orders',
+        set: { Note: 'y' },
+        where: { org_id: 'o1' },
+        audit: { updatedAt: 'Modified' },
+        optimisticLock: { column: 'Modified', expected: new Date('2024-01-01T00:00:00.000Z') },
+      });
+      expect(db.calls[0]?.sql).toBe(
+        `UPDATE "app"."Orders" SET "Note" = $1::TEXT, "Modified" = date_trunc('milliseconds', CURRENT_TIMESTAMP) WHERE "org_id" = $2::UUID AND "Modified" = date_trunc('milliseconds', $3::timestamptz)`,
+      );
+    });
+
+    it('quotes delete, exists, count and find', async () => {
+      const db = new StubDatabase(columns);
+      const adapter = new PgWriteDbAdapter(db, { quoteIdentifiers: true });
+      await adapter.delete({ table: 'app.Orders', where: { org_id: 'o1' } });
+      db.resultQueue.push({ rows: [], rowCount: 0 });
+      await adapter.exists({ table: 'app.Orders', where: { Note: 'x' } });
+      await adapter.count({ table: 'app.Orders' });
+      await adapter.find({ table: 'app.Orders', where: { org_id: 'o1' }, limit: 1 });
+      expect(db.calls.map((c) => c.sql)).toEqual([
+        'DELETE FROM "app"."Orders" WHERE "org_id" = $1::UUID',
+        'SELECT 1 FROM "app"."Orders" WHERE "Note" = $1::TEXT LIMIT 1',
+        'SELECT COUNT(*) AS count FROM "app"."Orders"',
+        'SELECT * FROM "app"."Orders" WHERE "org_id" = $1::UUID LIMIT 1',
+      ]);
+    });
+
+    it('quotes the updateMany join and aliases', async () => {
+      const db = new StubDatabase(columns);
+      const adapter = new PgWriteDbAdapter(db, { quoteIdentifiers: true });
+      await adapter.updateMany({
+        table: 'app.Orders',
+        keyColumns: ['org_id'],
+        audit: {},
+        rows: [{ org_id: 'o1', Note: 'z' }],
+      });
+      expect(db.calls[0]?.sql).toBe(
+        'UPDATE "app"."Orders" AS t SET "Note" = data."Note" FROM (VALUES ($1::TEXT, $2::UUID)) AS data("Note", "org_id") WHERE t."org_id" = data."org_id"',
+      );
+    });
+
+    it('leaves output unquoted by default', async () => {
+      const db = new StubDatabase(columns);
+      const adapter = new PgWriteDbAdapter(db);
+      await adapter.count({ table: 'users' });
+      expect(db.calls[0]?.sql).toBe('SELECT COUNT(*) AS count FROM users');
     });
   });
 });

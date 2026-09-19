@@ -1,9 +1,9 @@
+import type { AuditPolicy, ResolvedAudit } from './audit-policy.type.js';
+
 /**
- * Canonical names for the audit and timestamp columns the toolkit manages.
- * Referenced by `BaseWriteDao` (excluded-keys filtering, audit injection)
- * and by `PgWriteDbAdapter` (timestamp SQL literals). Change these here
- * if your schema uses different column names — callers derive their
- * strings from this constant rather than hard-coding them.
+ * Canonical names of the audit and timestamp columns under the default
+ * `'kit'` audit policy. Tables that name them differently, or lack them,
+ * declare an `AuditPolicy` on the DAO instead.
  */
 export const AUDIT_COLUMNS = {
   createdAt: 'created_at',
@@ -14,16 +14,15 @@ export const AUDIT_COLUMNS = {
 
 export type AuditColumn = (typeof AUDIT_COLUMNS)[keyof typeof AUDIT_COLUMNS];
 
-/** Keys stripped from `insert` inputs — the DB generates these. */
-export const INSERT_EXCLUDED_KEYS: ReadonlySet<string> = new Set([
-  AUDIT_COLUMNS.createdAt,
-  AUDIT_COLUMNS.updatedAt,
-]);
+const FIELDS = Object.keys(AUDIT_COLUMNS) as (keyof typeof AUDIT_COLUMNS)[];
 
-/** Keys stripped from `update` SET clauses — immutable post-insert or DB-generated. */
-export const UPDATE_EXCLUDED_KEYS: ReadonlySet<string> = new Set<string>([
-  'id',
-  AUDIT_COLUMNS.createdAt,
-  AUDIT_COLUMNS.updatedAt,
-  AUDIT_COLUMNS.insertedBy,
-]);
+/** Reduces an `AuditPolicy` to the columns it actually declares. */
+export function resolveAuditPolicy(policy: AuditPolicy): ResolvedAudit {
+  if (policy === 'none') return {};
+  const columns: Record<string, string> = {};
+  for (const field of FIELDS) {
+    const declared = policy === 'kit' ? AUDIT_COLUMNS[field] : policy[field];
+    if (typeof declared === 'string') columns[field] = declared;
+  }
+  return columns;
+}

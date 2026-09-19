@@ -10,5 +10,8 @@ export type {
   UpdateOptions,
   DeleteOptions,
   ExistsOptions,
+  CountOptions,
+  UpdateManyOptions,
+  AuditTimestamps,
   OptimisticLock,
 } from './write-db-adapter.interface.js';
