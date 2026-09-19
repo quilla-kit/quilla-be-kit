@@ -265,12 +265,25 @@ Being explicit means callers never need to mutate the aggregate's
 
 ### Tables that don't match the kit's shape
 
-`BaseWriteDao` assumes a string `id` key and the four conventional audit
-columns. Three seams let a DAO describe a different table without changing
-the defaults.
+The write side is configured, not forked. Everything below is opt-in; a DAO,
+repository or adapter written against earlier versions needs no changes.
 
-**Key columns — `KeyedWriteDao`.** Extend it with the columns that identify a
-row (single or composite). `BaseWriteDao` is exactly the `['id']` case.
+#### Which base do I use?
+
+| Your table / need | DAO | Repository |
+| --- | --- | --- |
+| String `id` key, kit audit columns | `BaseWriteDao` | `BaseBasicRepository` (rows) or the aggregate repositories (aggregates) |
+| Any other key: renamed, composite, or none | `KeyedWriteDao` + `keyColumns` | `KeyedBasicRepository` |
+| Different or missing audit columns | either DAO + `auditPolicy` | either |
+| Mixed-case / reserved-word names, `schema.table` | either DAO, `PgWriteDbAdapter` with `quoteIdentifiers: true` | either |
+
+The aggregate repositories stay `id`-keyed on purpose: an aggregate's identity
+is `Entity.id`, which is a different concept from a row key.
+
+#### Key columns — `KeyedWriteDao`
+
+Extend it with the columns that identify a row (single or composite).
+`BaseWriteDao` is exactly the `['id']` case.
 
 ```ts
 import { KeyedWriteDao } from '@quilla-be-kit/persistence';
@@ -282,17 +295,38 @@ class OrderLineDao extends KeyedWriteDao<OrderLineRow, 'order_id' | 'line_no'> {
 
 await dao.findOneByKey({ order_id: 'o1', line_no: 2 });
 await dao.delete({ order_id: 'o1', line_no: 2 });
-await dao.deleteMany([{ order_id: 'o1', line_no: 1 }, { order_id: 'o1', line_no: 2 }], trx);
 ```
 
 `update`/`updateMany`/`delete`/`deleteMany`/`findOneByKey` address rows by
-`keyColumns` and never put them in a `SET` clause. `updateMany` joins on every
-key column. `deleteMany` is one statement for a single key column and one
-`DELETE` per key for a composite key — wrap it in a transaction. With
-`keyColumns = []` the table is **insert-only**: the keyed methods throw.
+`keyColumns` and never put them in a `SET` clause; `updateMany` joins on every
+key column. With `keyColumns = []` the table is **insert-only**: the keyed
+methods throw.
 
-**Audit policy — `auditPolicy`.** Declares which audit/timestamp columns the
-table has:
+#### Key sets — batches of keys
+
+`deleteMany(keys, trx?)` and `findManyForUpdateByKeys(keys, trx)` take a list of
+key objects.
+
+- **Single key column:** one statement using `= ANY(...)`, as before.
+- **Composite key:** one statement when the adapter provides the optional
+  `deleteByKeys` / `findByKeysForUpdate` methods (`PgWriteDbAdapter` does, as
+  `DELETE ... WHERE EXISTS (... unnest(...))` with one array parameter per key
+  column). Otherwise the DAO runs one statement per key. Pass a `trx` when
+  you rely on all-or-nothing behaviour — the per-key fallback is only atomic
+  inside a transaction.
+- Result and lock order are unspecified on the single-statement path (the per-key
+  fallback locks in the order you pass), duplicate keys collapse, empty input is
+  a no-op.
+- Key columns of array types aren't supported for composite key sets (the
+  adapter throws).
+
+`findManyForUpdateByKeys` exists because `FilterQuery` combines conditions
+with AND only: `findManyForUpdate({ a: [..], b: [..] })` matches the cross
+product of the values, not the pairs, and would lock rows you didn't ask for.
+
+#### Audit policy — `auditPolicy`
+
+Declares which audit/timestamp columns the table has:
 
 ```ts
 class CodeDao extends KeyedWriteDao<CodeRow, 'code'> {
@@ -313,35 +347,69 @@ alone (a real `created_at` column under `'none'` is ordinary data). The
 optimistic lock applies only when an `updatedAt` column is declared, and the
 expected value is read from the row property named by that column. A
 composite key is joined into `OptimisticLockError`'s `id` (comma-separated)
-and also passed as `context.key`.
+and also passed as `context.key`. The `prepareInsertRow` / `prepareUpdateRow` /
+`stripKeys` hooks are `protected` for finer control.
 
-The adapter never reads the policy: the DAO hands it just the timestamp
-columns per call (`audit: { createdAt?, updatedAt? }` on `InsertOptions`,
-`UpdateOptions` and `UpdateManyOptions`), so one `PgWriteDbAdapter` serves
-tables with different shapes. Omitting `audit` on a direct adapter call keeps
-stamping `created_at`/`updated_at`; `audit: {}` stamps nothing. Custom
-`WriteDbAdapter` implementations receive the same fields. The
-`prepareInsertRow` / `prepareUpdateRow` / `stripKeys` hooks are `protected`
-for subclasses that need finer control.
+#### Identifier quoting
 
-**Identifier quoting.** By default `PgWriteDbAdapter` emits identifiers
-unquoted, exactly as before. Pass `quoteIdentifiers: true` to double-quote
-every table and column it emits and to accept `schema.table` names (column
-types are then resolved against that schema):
+`PgWriteDbAdapter` emits identifiers unquoted by default. Pass
+`quoteIdentifiers: true` to double-quote every table and column it emits and
+to accept `schema.table` names (column types are then resolved for that
+schema):
 
 ```ts
 const adapter = new PgWriteDbAdapter(db, { quoteIdentifiers: true });
 // or, sharing a type cache: { columnTypeCache, quoteIdentifiers: true }
 ```
 
-Names you pass in must be raw, never pre-quoted. Caller-supplied
-`SelectOptions.columns` and `orderBy` are passed through as given, since they
-may be expressions. `FilterQuery` keys use `__` as the operator delimiter, so
-a column whose own name contains `__` can't be addressed through a filter.
+Pass raw names, never pre-quoted ones. Caller-supplied `SelectOptions.columns`
+and `orderBy` are passed through as given, since they may be expressions.
+`FilterQuery` keys use `__` as the operator delimiter, so a column whose own
+name contains `__` can't be addressed through a filter.
 
-`buildWhere`, `mapPostgresType`, `NO_QUOTING`/`QUOTED` (from `/postgres`) and
-the `CountOptions`, `UpdateManyOptions`, `AuditTimestamps` types are exported
-for custom `WriteDbAdapter` implementations.
+#### Repositories for keyed rows — `KeyedBasicRepository`
+
+The repository twin of `KeyedWriteDao`: `create`/`createMany`/`update`/
+`updateMany`/`delete`/`deleteMany` with key objects, and the optimistic-lock
+value under whatever column the DAO's `auditPolicy` declares.
+
+```ts
+class OrderLineRepository extends KeyedBasicRepository<OrderLineRow, 'order_id' | 'line_no'> {}
+
+const repo = new OrderLineRepository(new OrderLineDao(adapter, contextProvider));
+
+await uow.transaction(async (ctx) => {
+  const lines = await dao.findManyForUpdateByKeys(
+    [{ order_id: 'o1', line_no: 1 }, { order_id: 'o1', line_no: 2 }],
+    ctx.trx,
+  );
+  await repo.deleteMany(lines, ctx.trx);
+});
+```
+
+`BaseBasicRepository` is the `id`-keyed case and keeps its existing signatures.
+
+#### For adapter authors
+
+`WriteDbAdapter` is the extension point for other databases or your own
+adapter. Everything new is optional, so an adapter implementing only the
+original eight methods keeps working:
+
+- `audit?: { createdAt?, updatedAt? }` on `InsertOptions`, `UpdateOptions` and
+  `UpdateManyOptions` — the timestamp columns to stamp with the database clock.
+  Omitted means `created_at`/`updated_at`; `{}` means stamp nothing.
+- `keyColumns?` on `UpdateManyOptions` — join columns (default `['id']`).
+- `deleteByKeys?(opts, trx?)` and `findByKeysForUpdate?(opts, trx)` — take a
+  `KeySet` (`{ keyColumns, keys }`) and act on all matching rows in one
+  statement. Implement them if your database can; otherwise leave them out and
+  the DAO falls back to one call per key.
+
+The Postgres building blocks are exported from `/postgres` for reuse:
+`buildWhere` (takes an optional column-quoting function), `buildKeySet`,
+`keyPredicate`, `mapPostgresType`, `NO_QUOTING`/`QUOTED` and the
+`IdentifierQuoter` and `ColumnTypeMap` types; `CountOptions`,
+`UpdateManyOptions`, `AuditTimestamps` and the key-set option types are
+exported from the main entry.
 
 ### Filtering on write DAOs
 
@@ -922,7 +990,7 @@ src/
 ├── query/        QueryProduct, PaginatedResult, StandardListQuery, FieldDescriptor,
 │                 ColumnResolver + DefaultColumnResolver, SqlQueryBuilder
 ├── query-schema/ createQueryParametersSchema (Zod adapter — sub-path export)
-├── repository/   BaseBasic/Aggregate/Scoped/Unscoped repositories + mapper
+├── repository/   BaseBasic/KeyedBasic/Aggregate/Scoped/Unscoped repositories + mapper
 ├── unit-of-work/ UnitOfWork, UnitOfWorkContext, OutboxWriter
 ├── errors/       CrossScopeAccessError, OptimisticLockError
 └── postgres/     PgDatabase, PgTransaction, PgWriteDbAdapter, PgReadDbAdapter,

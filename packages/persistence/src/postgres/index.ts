@@ -5,7 +5,9 @@ export { PgReadDbAdapter } from './pg-read-db-adapter.js';
 export { PgSqlQueryBuilder } from './pg-query-builder.js';
 export {
   PgColumnTypeCache,
+  buildKeySet,
   buildWhere,
+  keyPredicate,
   mapPostgresType,
   NO_QUOTING,
   QUOTED,

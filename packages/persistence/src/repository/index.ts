@@ -1,4 +1,5 @@
 export { BaseBasicRepository } from './base-basic.repository.js';
+export { KeyedBasicRepository } from './keyed-basic.repository.js';
 export { BaseAggregateRepository } from './base-aggregate.repository.js';
 export { BaseScopedAggregateRepository } from './base-scoped-aggregate.repository.js';
 export { BaseUnscopedAggregateRepository } from './base-unscoped-aggregate.repository.js';
