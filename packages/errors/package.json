@@ -13,11 +13,7 @@
   "bugs": {
     "url": "https://github.com/quilla-kit/quilla-be-kit/issues"
   },
-  "keywords": [
-    "errors",
-    "error-handling",
-    "typescript"
-  ],
+  "keywords": ["errors", "error-handling", "typescript"],
   "type": "module",
   "engines": {
     "node": ">=22"
@@ -31,11 +27,7 @@
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "files": [
-    "dist",
-    "README.md",
-    "LICENSE"
-  ],
+  "files": ["dist", "README.md", "LICENSE"],
   "publishConfig": {
     "access": "public",
     "provenance": true

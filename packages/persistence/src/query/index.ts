@@ -20,6 +20,7 @@ export {
 export type { ColumnResolver } from './column-resolver.interface.js';
 export { DefaultColumnResolver, type DefaultColumnResolverOptions } from './default.resolver.js';
 export type {
+  FromTarget,
   OrderByOptions,
   PaginateOptions,
   SqlQueryBuilder,

@@ -27,3 +27,18 @@ export class FakeExecutionContextProvider implements ExecutionContextProvider {
     return fn();
   }
 }
+
+/** Reproduces a provider called outside any `runWithContext` scope. */
+export class ThrowingExecutionContextProvider implements ExecutionContextProvider {
+  readonly factory: ExecutionContextFactory = executionContextFactory;
+  calls = 0;
+
+  getContext(): ExecutionContext {
+    this.calls += 1;
+    throw new Error('ExecutionContext not available');
+  }
+
+  runWithContext<T>(_ctx: ExecutionContext, fn: () => Promise<T>): Promise<T> {
+    return fn();
+  }
+}

@@ -11,6 +11,17 @@ export type PaginateOptions = PaginationOptions & {
 };
 
 /**
+ * Structured `FROM` target. Each part is a raw name, never pre-quoted —
+ * builders configured to quote identifiers escape them, which is what makes
+ * mixed-case, space-containing and reserved-word names addressable.
+ */
+export type FromTarget = {
+  readonly schema?: string;
+  readonly table: string;
+  readonly alias?: string;
+};
+
+/**
  * Fluent SQL builder for read-side queries. Implementations are immutable:
  * every chained call returns a new builder instance, so a base builder
  * can be forked without accidental state sharing.
@@ -26,7 +37,10 @@ export type PaginateOptions = PaginationOptions & {
  * (`[a-zA-Z_][a-zA-Z0-9_]*`, with `.` permitted for `table.column` and
  * optional `AS alias` suffixes). This is defense-in-depth: user input
  * must never reach these seams — it flows through `.where(sql, ...params)`
- * or `.filters({...})`, both of which parameterise.
+ * or `.filters({...})`, both of which parameterise. Quoting changes what an
+ * implementation *emits*, never what it accepts: non-plain column names are
+ * reached through the `ColumnResolver`, and non-plain table names through
+ * the `FromTarget` form of `from`.
  */
 export interface SqlQueryBuilder<TRow = unknown> {
   /**
@@ -38,9 +52,12 @@ export interface SqlQueryBuilder<TRow = unknown> {
   select(columns: readonly string[]): SqlQueryBuilder<TRow>;
 
   /**
-   * Target table. Validated as an identifier; accepts `schema.table`.
+   * Target table. The string form is validated as an identifier, accepts
+   * `schema.table` and an optional `AS alias`, and is emitted verbatim.
+   * The `FromTarget` form takes the parts separately, so a builder that
+   * quotes identifiers can address names the string form cannot express.
    */
-  from(table: string): SqlQueryBuilder<TRow>;
+  from(target: string | FromTarget): SqlQueryBuilder<TRow>;
 
   /**
    * Raw JOIN clause, emitted verbatim. Use parameterised `where` for

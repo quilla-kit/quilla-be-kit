@@ -18,10 +18,18 @@ export type AuditTimestamps = {
   readonly updatedAt?: string;
 };
 
+/**
+ * Which columns a write hands back. `'all'` is the whole stored row — every
+ * dialect spells that differently, so it stays structural rather than a
+ * magic column name. An array names columns. When set, the adapter returns
+ * one row per written row, in input order.
+ */
+export type Returning = 'all' | readonly string[];
+
 export type InsertOptions = {
   readonly table: string;
   readonly rows: readonly Record<string, unknown>[];
-  readonly returning?: readonly string[];
+  readonly returning?: Returning;
   readonly audit?: AuditTimestamps;
 };
 
@@ -30,7 +38,7 @@ export type UpdateOptions<T> = {
   readonly set: Record<string, unknown>;
   readonly where: FilterQuery<T>;
   readonly optimisticLock?: OptimisticLock;
-  readonly returning?: readonly string[];
+  readonly returning?: Returning;
   readonly audit?: AuditTimestamps;
 };
 

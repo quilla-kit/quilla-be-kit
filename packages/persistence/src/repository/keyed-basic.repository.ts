@@ -19,6 +19,18 @@ export abstract class KeyedBasicRepository<TRow extends object, TKey extends key
     await this.writeDao.createMany(rows, trx);
   }
 
+  /** Inserts and reads the stored rows back, including database-produced columns. */
+  async createReturning(row: TRow, trx?: DatabaseTransaction): Promise<TRow> {
+    return this.writeDao.createReturning(row, trx);
+  }
+
+  async createManyReturning(
+    rows: readonly TRow[],
+    trx?: DatabaseTransaction,
+  ): Promise<readonly TRow[]> {
+    return this.writeDao.createManyReturning(rows, trx);
+  }
+
   async update(
     row: TRow & Readonly<Record<string, unknown>>,
     trx?: DatabaseTransaction,

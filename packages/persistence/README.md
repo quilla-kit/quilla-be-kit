@@ -350,6 +350,87 @@ composite key is joined into `OptimisticLockError`'s `id` (comma-separated)
 and also passed as `context.key`. The `prepareInsertRow` / `prepareUpdateRow` /
 `stripKeys` hooks are `protected` for finer control.
 
+The execution context is read **only** when the policy declares an
+`insertedBy` or `updatedBy` column. A DAO under `'none'` — or one declaring
+timestamps only — never calls the provider, so it runs in jobs, scripts,
+migrations and tests with no `runWithContext` scope. `update`/`updateMany`
+read the context only for `updatedBy`, so the `CodeDao` above reads it on
+insert and not on update.
+
+#### Database-produced columns — `generatedColumns`
+
+Declares columns the database fills in: identity/serial keys,
+`GENERATED ALWAYS AS` columns, and anything a trigger maintains.
+
+```ts
+class TicketDao extends KeyedWriteDao<TicketRow, 'ticket_no'> {
+  protected readonly tableName = 'tickets';
+  protected readonly keyColumns = ['ticket_no'] as const;
+  protected override readonly generatedColumns = ['ticket_no', 'search_vector'];
+}
+```
+
+Declared columns are excluded from the INSERT column list **and** from the
+UPDATE `SET` clause, while still addressing rows as key columns — so an
+identity primary key works end to end. To read the stored row back, including
+the values the database produced:
+
+```ts
+const ticket = await dao.createReturning({ ticket_no: 0, title: 'Broken link' });
+ticket.ticket_no; // 4711, assigned by the sequence
+
+const tickets = await dao.createManyReturning(rows);
+```
+
+`KeyedBasicRepository` (and so `BaseBasicRepository`) exposes the same
+`createReturning` / `createManyReturning`.
+
+**What this does NOT do:**
+
+- It does not change `TRow`'s type. You still pass a value for a generated
+  column unless your row type declares it optional — it is stripped before the
+  INSERT either way. `BaseWriteDao<TRow extends { id: string }>` requires a
+  `string` `id`, so tables with a generated key are better served by extending
+  `KeyedWriteDao` directly with the key declared optional.
+- It does not verify the column exists, or that the database actually
+  generates it.
+- `create` and `createMany` still return `void` — use the `*Returning`
+  variants when you need the row back. `createManyReturning([])` returns `[]`
+  without touching the database.
+- Aggregate repositories have no `createReturning`: aggregate identity is
+  client-generated (`Entity.id`), so a database-assigned key contradicts the
+  model.
+- An adapter that ignores `returning` causes a thrown `Error`, not an empty
+  result.
+- If every settable column ends up excluded, `update` reports `0` rather than
+  running a statement — `PgWriteDbAdapter` no-ops an empty `SET`, the same
+  answer `updateMany` already gave.
+
+#### Affected-row counts
+
+`update`, `updateMany`, `delete` and `deleteMany` return the number of rows
+the adapter reported affected:
+
+```ts
+const removed = await dao.deleteMany(['a', 'b', 'c']);
+if (removed === 0) { /* nothing matched */ }
+```
+
+**What this does NOT do:**
+
+- Counts stop at the DAO. `KeyedBasicRepository`, `BaseBasicRepository` and
+  `BaseAggregateRepository` still return `void` — how many rows a statement
+  touched is a storage fact, not a domain verb.
+- `create`/`createMany` return `void`; their count is deterministic.
+- On a locked `update`/`delete` the count is never `0` — a zero-row match
+  throws `OptimisticLockError` instead, so `if (await dao.update(row) === 0)`
+  is unreachable there.
+- An adapter that omits `rowCount` reports `0`.
+- `PgWriteDbAdapter` reports `0` from `update`/`updateMany` when there is
+  nothing to set: no statement runs.
+- `deleteMany`'s per-key fallback sums what the database reported, which
+  counts rows, not distinct keys.
+
 #### Identifier quoting
 
 `PgWriteDbAdapter` emits identifiers unquoted by default. Pass
@@ -365,7 +446,13 @@ const adapter = new PgWriteDbAdapter(db, { quoteIdentifiers: true });
 Pass raw names, never pre-quoted ones. Caller-supplied `SelectOptions.columns`
 and `orderBy` are passed through as given, since they may be expressions.
 `FilterQuery` keys use `__` as the operator delimiter, so a column whose own
-name contains `__` can't be addressed through a filter.
+name contains `__` can't be addressed through a filter. `returning` is either
+`'all'` (the whole stored row) or a list of column names — "all columns" is
+structural rather than a magic column name, so every dialect can spell it its
+own way.
+
+The read side takes the same option — see
+[Quoting on the read side](#quoting-on-the-read-side).
 
 #### Repositories for keyed rows — `KeyedBasicRepository`
 
@@ -825,7 +912,7 @@ new RoleReadDao({
 Or, more commonly, bake the overrides into a **shell base class** once and every read DAO in your project inherits them (see the "Adopting the toolkit: build a shell" section in the root [README](../../README.md)):
 
 ```ts
-export abstract class RelmoBaseReadDao extends BaseReadDao {
+export abstract class AppBaseReadDao extends BaseReadDao {
   constructor(adapter: ReadDbAdapter) {
     super({
       adapter,
@@ -836,7 +923,50 @@ export abstract class RelmoBaseReadDao extends BaseReadDao {
 }
 ```
 
-Then `extends RelmoBaseReadDao` everywhere and every query translates `scopeId` → `tenant_id` automatically.
+Then `extends AppBaseReadDao` everywhere and every query translates `scopeId` → `tenant_id` automatically.
+
+### Quoting on the read side
+
+`PgSqlQueryBuilder` emits identifiers unquoted by default. Pass
+`quoteIdentifiers: true` and it double-quotes everything the resolver
+produces, which is what makes mixed-case, space-containing and reserved-word
+columns addressable:
+
+```ts
+new RoleReadDao({
+  adapter: readAdapter,
+  builderFactory: (r) => new PgSqlQueryBuilder(r, { quoteIdentifiers: true }),
+  columnResolver: new DefaultColumnResolver({ overrides: { noteId: 'Note Id' } }),
+});
+
+// .filters({ noteId: 'x' })  →  WHERE "Note Id" = $1
+// .select(['noteId'])        →  SELECT "Note Id" AS "noteId"
+```
+
+Quoted table names come from the structured `from` form, which takes the
+parts separately so no string has to be parsed:
+
+```ts
+this.qb<Row>().from({ schema: 'legacy', table: 'Case Notes', alias: 'n' });
+// FROM "legacy"."Case Notes" AS "n"
+```
+
+**What this does NOT do:**
+
+- Quoting changes what the builder *emits*, never what it *accepts*. Input
+  keys are held to the same identifier rules in both modes — you reach a
+  non-plain column through a `ColumnResolver` override, and a non-plain table
+  through `from({ ... })`, not by passing the raw name as a key.
+- Qualified references (`u.id`, both in `select` and as filter keys) stay
+  caller-owned and unquoted in both modes, as do `where()` and `join()`
+  fragments.
+- The string form of `from` (`'users u'`) stays unquoted even with the option
+  on.
+- Resolver *output* is never validated. With quoting **off**, an override
+  emitting a non-plain name still produces invalid SQL — that is what the
+  option fixes. With quoting **on**, output must be a raw column name: a
+  resolver that deliberately emits an expression (`lower(name)`) would be
+  quoted into a broken identifier.
 
 ### HTTP query string → validated DTO → read DAO
 

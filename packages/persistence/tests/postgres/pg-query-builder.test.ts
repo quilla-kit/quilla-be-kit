@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { PgSqlQueryBuilder } from '../../src/postgres/pg-query-builder.js';
 import { DefaultColumnResolver } from '../../src/query/default.resolver.js';
 
-const resolver = new DefaultColumnResolver({ overrides: { scopeId: 'tenant_id' } });
+const resolver = new DefaultColumnResolver({
+  overrides: { scopeId: 'tenant_id', noteId: 'Note Id', oddName: 'Note"Id' },
+});
 const qb = () => new PgSqlQueryBuilder(resolver);
 
 describe('PgSqlQueryBuilder — select + from', () => {
@@ -197,5 +199,97 @@ describe('PgSqlQueryBuilder — immutability', () => {
 describe('PgSqlQueryBuilder — build prerequisites', () => {
   it('throws when .from is missing', () => {
     expect(() => qb().select(['id']).build()).toThrow(/\.from\(table\) is required/);
+  });
+});
+
+const quoted = () => new PgSqlQueryBuilder(resolver, { quoteIdentifiers: true });
+
+describe('PgSqlQueryBuilder — quoteIdentifiers', () => {
+  it('quotes a resolved column that is not a plain identifier', () => {
+    const q = quoted().from('users').filters({ noteId: 'x' }).build();
+    expect(q.sql).toBe('SELECT * FROM users WHERE "Note Id" = $1');
+    expect(q.params).toEqual(['x']);
+  });
+
+  it('emits invalid SQL for the same override when quoting is off', () => {
+    const q = qb().from('users').filters({ noteId: 'x' }).build();
+    expect(q.sql).toBe('SELECT * FROM users WHERE Note Id = $1');
+  });
+
+  it('quotes a suffixed filter key', () => {
+    const q = quoted().from('users').filters({ noteId__isNotNull: true }).build();
+    expect(q.sql).toBe('SELECT * FROM users WHERE "Note Id" IS NOT NULL');
+  });
+
+  it('quotes select columns and their aliases', () => {
+    const q = quoted().select(['id', 'createdAt', 'noteId']).from('users').build();
+    expect(q.sql).toBe(
+      'SELECT "id", "created_at" AS "createdAt", "Note Id" AS "noteId" FROM users',
+    );
+  });
+
+  it('quotes orderBy, groupBy and distinctOn', () => {
+    const q = quoted()
+      .select(['noteId'])
+      .from('users')
+      .groupBy(['noteId'])
+      .orderBy([{ noteId: 'desc' }])
+      .paginate({ page: 1, pageSize: 10, distinctOn: ['noteId'] })
+      .build();
+    expect(q.sql).toContain('GROUP BY "Note Id"');
+    expect(q.sql).toContain('ORDER BY "Note Id" DESC');
+    expect(q.sql).toContain('DISTINCT ON ("Note Id")');
+  });
+
+  it('escapes embedded double quotes in resolver output', () => {
+    const q = quoted().from('users').filters({ oddName: 1 }).build();
+    expect(q.sql).toBe('SELECT * FROM users WHERE "Note""Id" = $1');
+  });
+
+  it('leaves qualified references unquoted', () => {
+    const q = quoted().select(['u.id']).from('users u').filters({ 'u.id': 1 }).build();
+    expect(q.sql).toBe('SELECT u.id FROM users u WHERE u.id = $1');
+  });
+
+  it('still rejects non-identifier input keys', () => {
+    expect(() => quoted().from('users').filters({ 'no te__gte': 1 }).build()).toThrow(
+      /invalid field name/,
+    );
+    expect(() => quoted().select(['id; DROP TABLE users']).from('users').build()).toThrow(
+      /invalid column/,
+    );
+  });
+
+  it('preserves the option across forks', () => {
+    const base = quoted().from('users');
+    const q = base
+      .filters({ noteId: 'x' })
+      .orderBy([{ noteId: 'asc' }])
+      .build();
+    expect(q.sql).toBe('SELECT * FROM users WHERE "Note Id" = $1 ORDER BY "Note Id" ASC');
+  });
+});
+
+describe('PgSqlQueryBuilder — structured from', () => {
+  it('composes schema, table and alias unquoted', () => {
+    const q = qb().from({ schema: 'app', table: 'orders', alias: 'o' }).build();
+    expect(q.sql).toBe('SELECT * FROM app.orders AS o');
+  });
+
+  it('quotes every part when configured to', () => {
+    const q = quoted().from({ schema: 'app', table: 'Case Notes', alias: 'n' }).build();
+    expect(q.sql).toBe('SELECT * FROM "app"."Case Notes" AS "n"');
+  });
+
+  it('omits the schema and alias when absent', () => {
+    expect(quoted().from({ table: 'Orders' }).build().sql).toBe('SELECT * FROM "Orders"');
+  });
+
+  it('rejects a non-plain part when quoting is off', () => {
+    expect(() => qb().from({ table: 'Case Notes' }).build()).toThrow(/invalid identifier/);
+  });
+
+  it('leaves the string form unquoted even when quoting is on', () => {
+    expect(quoted().from('users u').build().sql).toBe('SELECT * FROM users u');
   });
 });

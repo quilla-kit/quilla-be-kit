@@ -88,6 +88,22 @@ describe('KeyedBasicRepository', () => {
     expect(adapter.insertCalls).toHaveLength(2);
     expect(adapter.updateManyCalls[0]?.opts.keyColumns).toEqual(['order_id', 'line_no']);
   });
+
+  it('does not propagate the DAO affected-row counts', async () => {
+    const repo = new LineRepo(new LineDao(adapter, ctx));
+    adapter.updateResults.push({ rows: [], rowCount: 1 });
+    adapter.deleteResults.push({ rows: [], rowCount: 1 });
+    await expect(repo.update({ order_id: 'o1', line_no: 1, qty: 5 }, trx)).resolves.toBeUndefined();
+    await expect(repo.deleteMany([{ order_id: 'o1', line_no: 1 }], trx)).resolves.toBeUndefined();
+  });
+
+  it('reads a generated row back through createReturning', async () => {
+    const repo = new LineRepo(new LineDao(adapter, ctx));
+    adapter.insertResults.push({ rows: [{ order_id: 'o1', line_no: 9, qty: 1 }], rowCount: 1 });
+    const row = await repo.createReturning({ order_id: 'o1', line_no: 0, qty: 1 }, trx);
+    expect(row).toEqual({ order_id: 'o1', line_no: 9, qty: 1 });
+    expect(adapter.insertCalls[0]?.opts.returning).toBe('all');
+  });
 });
 
 describe('BaseBasicRepository compatibility', () => {

@@ -140,7 +140,19 @@ describe('BaseWriteDao', () => {
     it('does not throw when rowCount is 0 but no optimistic lock was requested', async () => {
       adapter.updateResults = [{ rows: [], rowCount: 0 }];
 
-      await expect(dao.update({ id: 'u1', name: 'x' }, trx)).resolves.toBeUndefined();
+      await expect(dao.update({ id: 'u1', name: 'x' }, trx)).resolves.toBe(0);
+    });
+
+    it('returns the affected row count', async () => {
+      adapter.updateResults = [{ rows: [], rowCount: 3 }];
+
+      await expect(dao.update({ id: 'u1', name: 'x' }, trx)).resolves.toBe(3);
+    });
+
+    it('reports 0 when the adapter omits rowCount', async () => {
+      adapter.updateResults = [{ rows: [] }];
+
+      await expect(dao.update({ id: 'u1', name: 'x' }, trx)).resolves.toBe(0);
     });
   });
 
@@ -233,19 +245,24 @@ describe('BaseWriteDao', () => {
     it('does not throw when rowCount is 0 but no optimistic lock was requested', async () => {
       adapter.deleteResults = [{ rows: [], rowCount: 0 }];
 
-      await expect(dao.delete({ id: 'u1' }, trx)).resolves.toBeUndefined();
+      await expect(dao.delete({ id: 'u1' }, trx)).resolves.toBe(0);
     });
   });
 
   describe('deleteMany', () => {
     it('no-ops on empty array', async () => {
-      await dao.deleteMany([]);
+      await expect(dao.deleteMany([])).resolves.toBe(0);
       expect(adapter.delete).not.toHaveBeenCalled();
     });
 
     it('passes ids array as where clause', async () => {
       await dao.deleteMany(['u1', 'u2']);
       expect(adapter.deleteCalls[0]?.opts.where).toEqual({ id: ['u1', 'u2'] });
+    });
+
+    it('returns the affected row count from the single filter delete', async () => {
+      adapter.deleteResults = [{ rows: [], rowCount: 2 }];
+      await expect(dao.deleteMany(['u1', 'u2'])).resolves.toBe(2);
     });
   });
 

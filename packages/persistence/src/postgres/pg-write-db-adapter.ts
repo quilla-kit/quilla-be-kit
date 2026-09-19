@@ -11,6 +11,7 @@ import type {
   ExistsOptions,
   InsertOptions,
   KeySetOptions,
+  Returning,
   UpdateManyOptions,
   UpdateOptions,
   WriteDbAdapter,
@@ -128,6 +129,11 @@ export class PgWriteDbAdapter implements WriteDbAdapter {
     const { updatedAt } = opts.audit ?? KIT_TIMESTAMPS;
     if (updatedAt !== undefined) {
       setClauses.push(`${this.quoter.column(updatedAt)} = ${TIMESTAMP_LITERAL}`);
+    }
+
+    // Nothing to SET would emit `UPDATE t SET WHERE ...`; same answer as updateMany.
+    if (setClauses.length === 0) {
+      return { rows: [], rowCount: 0 };
     }
 
     const where = buildWhere(opts.where, types, values.length, this.quoter.column);
@@ -282,11 +288,10 @@ export class PgWriteDbAdapter implements WriteDbAdapter {
   }
 }
 
-function buildReturning(
-  returning: readonly string[] | undefined,
-  quoter: IdentifierQuoter,
-): string {
-  if (!returning || returning.length === 0) return '';
+function buildReturning(returning: Returning | undefined, quoter: IdentifierQuoter): string {
+  if (returning === undefined) return '';
+  if (returning === 'all') return ' RETURNING *';
+  if (returning.length === 0) return '';
   return ` RETURNING ${returning.map(quoter.column).join(', ')}`;
 }
 
