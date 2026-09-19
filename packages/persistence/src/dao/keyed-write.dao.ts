@@ -1,7 +1,11 @@
 import type { ExecutionContextProvider } from '@quilla-be-kit/execution-context';
 import type { DatabaseTransaction } from '../database/database-transaction.interface.js';
 import type { FilterQuery } from '../db-adapter/filter-query.type.js';
-import type { AuditTimestamps, WriteDbAdapter } from '../db-adapter/write-db-adapter.interface.js';
+import type {
+  AuditTimestamps,
+  KeySet,
+  WriteDbAdapter,
+} from '../db-adapter/write-db-adapter.interface.js';
 import { OptimisticLockError } from '../errors/optimistic-lock.error.js';
 import { resolveAuditPolicy } from './audit-columns.js';
 import type { AuditPolicy, ResolvedAudit } from './audit-policy.type.js';
@@ -160,15 +164,16 @@ export abstract class KeyedWriteDao<TRow extends object, TKey extends keyof TRow
   async deleteMany(keys: readonly Pick<TRow, TKey>[], trx?: DatabaseTransaction): Promise<void> {
     this.requireKey('deleteMany');
     if (keys.length === 0) return;
+    // Single key stays on the filter path so the emitted SQL is unchanged from BaseWriteDao.
     if (this.keyColumns.length === 1) {
-      const column = this.keyColumns[0] as TKey;
       await this.adapter.delete<TRow>(
-        {
-          table: this.tableName,
-          where: { [column]: keys.map((key) => key[column]) } as FilterQuery<TRow>,
-        },
+        { table: this.tableName, where: this.singleKeyWhere(keys) },
         trx,
       );
+      return;
+    }
+    if (this.adapter.deleteByKeys) {
+      await this.adapter.deleteByKeys({ table: this.tableName, ...this.keySet(keys) }, trx);
       return;
     }
     for (const key of keys) {
@@ -177,6 +182,32 @@ export abstract class KeyedWriteDao<TRow extends object, TKey extends keyof TRow
         trx,
       );
     }
+  }
+
+  async findManyForUpdateByKeys(
+    keys: readonly Pick<TRow, TKey>[],
+    trx: DatabaseTransaction,
+  ): Promise<readonly TRow[]> {
+    this.requireKey('findManyForUpdateByKeys');
+    if (keys.length === 0) return [];
+    if (this.keyColumns.length === 1) {
+      return this.adapter.findForUpdate<TRow>(
+        { table: this.tableName, where: this.singleKeyWhere(keys) },
+        trx,
+      );
+    }
+    if (this.adapter.findByKeysForUpdate) {
+      return this.adapter.findByKeysForUpdate<TRow>(
+        { table: this.tableName, ...this.keySet(keys) },
+        trx,
+      );
+    }
+    const rows: TRow[] = [];
+    for (const key of keys) {
+      const where = this.keyWhere('findManyForUpdateByKeys', key);
+      rows.push(...(await this.adapter.findForUpdate<TRow>({ table: this.tableName, where }, trx)));
+    }
+    return rows;
   }
 
   protected requireKey(operation: string): void {
@@ -215,6 +246,15 @@ export abstract class KeyedWriteDao<TRow extends object, TKey extends keyof TRow
       }
     }
     return out;
+  }
+
+  private singleKeyWhere(keys: readonly object[]): FilterQuery<TRow> {
+    const column = this.keyColumns[0] as string;
+    return { [column]: keys.map((key) => (key as Row)[column]) } as FilterQuery<TRow>;
+  }
+
+  private keySet(keys: readonly object[]): KeySet {
+    return { keyColumns: this.keyColumns, keys: keys as readonly Row[] };
   }
 
   private pickKey(source: object): Row {

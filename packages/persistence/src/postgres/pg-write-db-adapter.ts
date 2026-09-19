@@ -10,6 +10,7 @@ import type {
   DeleteOptions,
   ExistsOptions,
   InsertOptions,
+  KeySetOptions,
   UpdateManyOptions,
   UpdateOptions,
   WriteDbAdapter,
@@ -19,9 +20,12 @@ import {
   NO_QUOTING,
   PgColumnTypeCache,
   QUOTED,
+  buildKeySet,
   buildWhere,
+  keyPredicate,
   mapPostgresType,
   runSelect,
+  serializeValue,
 } from './pg-sql.js';
 
 const TIMESTAMP_LITERAL = `date_trunc('milliseconds', CURRENT_TIMESTAMP)`;
@@ -188,7 +192,7 @@ export class PgWriteDbAdapter implements WriteDbAdapter {
     }
 
     const dataColumns = [...setKeys, ...keyColumns].map(q).join(', ');
-    const join = keyColumns.map((key) => `t.${q(key)} = data.${q(key)}`).join(' AND ');
+    const join = keyPredicate('t', 'data', keyColumns, q);
     const sql = `UPDATE ${this.quoter.table(opts.table)} AS t SET ${setClauses.join(', ')} FROM (VALUES ${rowPlaceholders.join(', ')}) AS data(${dataColumns}) WHERE ${join}`;
 
     return this.db.query(sql, values, trx);
@@ -211,6 +215,30 @@ export class PgWriteDbAdapter implements WriteDbAdapter {
 
     const sql = `DELETE FROM ${this.quoter.table(opts.table)} WHERE ${whereSql}`;
     return this.db.query(sql, values, trx);
+  }
+
+  async deleteByKeys(opts: KeySetOptions, trx?: DatabaseTransaction): Promise<DatabaseResult> {
+    if (opts.keys.length === 0) {
+      return { rows: [], rowCount: 0 };
+    }
+    const types = await this.columnTypes.get(opts.table);
+    const keySet = buildKeySet(types, this.quoter, opts);
+    const sql = `DELETE FROM ${this.quoter.table(opts.table)} AS t WHERE ${keySet.sql}`;
+    return this.db.query(sql, keySet.values, trx);
+  }
+
+  async findByKeysForUpdate<T>(
+    opts: KeySetOptions,
+    trx: DatabaseTransaction,
+  ): Promise<readonly T[]> {
+    if (opts.keys.length === 0) {
+      return [];
+    }
+    const types = await this.columnTypes.get(opts.table);
+    const keySet = buildKeySet(types, this.quoter, opts);
+    const sql = `SELECT t.* FROM ${this.quoter.table(opts.table)} AS t WHERE ${keySet.sql} FOR UPDATE`;
+    const result = await this.db.query(sql, keySet.values, trx);
+    return result.rows as readonly T[];
   }
 
   async find<T>(opts: SelectOptions<T>, trx?: DatabaseTransaction): Promise<readonly T[]> {
@@ -265,13 +293,4 @@ function buildReturning(
 function stampColumns(audit: AuditTimestamps | undefined): string[] {
   const { createdAt, updatedAt } = audit ?? KIT_TIMESTAMPS;
   return [createdAt, updatedAt].filter((column): column is string => column !== undefined);
-}
-
-function serializeValue(dataType: string | undefined, value: unknown): unknown {
-  if (value === null || value === undefined) return value;
-  const lower = dataType?.toLowerCase();
-  if (lower === 'jsonb' || lower === 'json') {
-    return typeof value === 'string' ? value : JSON.stringify(value);
-  }
-  return value;
 }

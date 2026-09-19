@@ -3,6 +3,7 @@ import type { DatabaseTransaction } from '../database/database-transaction.inter
 import type { Database } from '../database/database.interface.js';
 import type { FilterQuery } from '../db-adapter/filter-query.type.js';
 import type { SelectOptions } from '../db-adapter/read-db-adapter.interface.js';
+import type { KeySet } from '../db-adapter/write-db-adapter.interface.js';
 import {
   ALL_FILTER_OPERATORS,
   FILTER_DELIMITER,
@@ -211,6 +212,56 @@ export function buildWhere<T>(
   return { sql: clauses.join(' AND '), values };
 }
 
+/** `l."a" = r."a" AND l."b" = r."b"` — the join condition for a (composite) key. */
+export function keyPredicate(
+  left: string,
+  right: string,
+  keyColumns: readonly string[],
+  quoteColumn: (name: string) => string = NO_QUOTING.column,
+): string {
+  return keyColumns
+    .map((key) => `${left}.${quoteColumn(key)} = ${right}.${quoteColumn(key)}`)
+    .join(' AND ');
+}
+
+/**
+ * Renders a `KeySet` as a parameterised `EXISTS (... unnest(...) ...)`
+ * predicate over the table aliased `tableAlias` (default `t`). One array
+ * parameter is bound per key column, so the parameter count doesn't grow with
+ * the number of keys. `EXISTS` keeps duplicate keys from duplicating rows.
+ * Array-typed key columns are rejected (`unnest` would flatten them).
+ */
+export function buildKeySet(
+  types: ColumnTypeMap,
+  quoter: IdentifierQuoter,
+  { keyColumns, keys }: KeySet,
+  tableAlias = 't',
+): { sql: string; values: unknown[][] } {
+  if (keyColumns.length === 0) {
+    throw new Error('key set requires at least one key column');
+  }
+  for (const column of keyColumns) {
+    if (types[column]?.startsWith('_')) {
+      throw new Error(`key column "${column}" is an array type and cannot be used in a key set`);
+    }
+  }
+  const params = keyColumns
+    .map((column, i) => `$${i + 1}::${mapPostgresType(types[column])}[]`)
+    .join(', ');
+  const values = keyColumns.map((column) =>
+    keys.map((key) => {
+      if (!(column in key)) {
+        throw new Error(`key is missing key column "${column}"`);
+      }
+      return serializeValue(types[column], key[column]);
+    }),
+  );
+  const columns = keyColumns.map(quoter.column).join(', ');
+  const predicate = keyPredicate(tableAlias, 'k', keyColumns, quoter.column);
+  const sql = `EXISTS (SELECT 1 FROM unnest(${params}) AS k(${columns}) WHERE ${predicate})`;
+  return { sql, values };
+}
+
 /**
  * Assembles a parameterised `SELECT` statement for the shared read path
  * (used by both `PgWriteDbAdapter.find*` and `PgReadDbAdapter.select`).
@@ -250,6 +301,15 @@ export async function runSelect<T>(
   }
 
   return db.query(sql, values, flags.trx);
+}
+
+export function serializeValue(dataType: string | undefined, value: unknown): unknown {
+  if (value === null || value === undefined) return value;
+  const lower = dataType?.toLowerCase();
+  if (lower === 'jsonb' || lower === 'json') {
+    return typeof value === 'string' ? value : JSON.stringify(value);
+  }
+  return value;
 }
 
 const INFO_SCHEMA_SQL = `SELECT column_name, data_type, udt_name

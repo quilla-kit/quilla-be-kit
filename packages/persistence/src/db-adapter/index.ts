@@ -13,5 +13,7 @@ export type {
   CountOptions,
   UpdateManyOptions,
   AuditTimestamps,
+  KeySet,
+  KeySetOptions,
   OptimisticLock,
 } from './write-db-adapter.interface.js';

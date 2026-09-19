@@ -514,3 +514,112 @@ describe('PgWriteDbAdapter (audit, keys, quoting)', () => {
     });
   });
 });
+
+describe('PgWriteDbAdapter (key sets)', () => {
+  const columns = {
+    order_line: { order_id: 'uuid', line_no: 'integer', qty: 'integer' },
+    'app.Order Line': { order_id: 'uuid', line_no: 'integer' },
+    tagged: { id: 'uuid', tags: '_text', payload: 'jsonb' },
+  };
+  const keys = [
+    { order_id: 'o1', line_no: 1 },
+    { order_id: 'o2', line_no: 2 },
+  ];
+  const keyColumns = ['order_id', 'line_no'];
+  const dateSql = (db: StubDatabase) => db.calls[0]?.sql;
+
+  it('deletes by key set with one array parameter per key column', async () => {
+    const db = new StubDatabase(columns);
+    await new PgWriteDbAdapter(db).deleteByKeys({ table: 'order_line', keyColumns, keys });
+    expect(dateSql(db)).toBe(
+      'DELETE FROM order_line AS t WHERE EXISTS (SELECT 1 FROM unnest($1::UUID[], $2::INTEGER[]) AS k(order_id, line_no) WHERE t.order_id = k.order_id AND t.line_no = k.line_no)',
+    );
+    expect(db.calls[0]?.params).toEqual([
+      ['o1', 'o2'],
+      [1, 2],
+    ]);
+  });
+
+  it('locks by key set', async () => {
+    const db = new StubDatabase(columns);
+    db.resultQueue.push({ rows: [{ order_id: 'o1', line_no: 1, qty: 3 }], rowCount: 1 });
+    const trx = {} as DatabaseTransaction;
+    const rows = await new PgWriteDbAdapter(db).findByKeysForUpdate(
+      { table: 'order_line', keyColumns, keys },
+      trx,
+    );
+    expect(dateSql(db)).toBe(
+      'SELECT t.* FROM order_line AS t WHERE EXISTS (SELECT 1 FROM unnest($1::UUID[], $2::INTEGER[]) AS k(order_id, line_no) WHERE t.order_id = k.order_id AND t.line_no = k.line_no) FOR UPDATE',
+    );
+    expect(db.calls[0]?.trx).toBe(trx);
+    expect(rows).toEqual([{ order_id: 'o1', line_no: 1, qty: 3 }]);
+  });
+
+  it('quotes identifiers and schema-qualified tables', async () => {
+    const db = new StubDatabase(columns);
+    await new PgWriteDbAdapter(db, { quoteIdentifiers: true }).deleteByKeys({
+      table: 'app.Order Line',
+      keyColumns,
+      keys,
+    });
+    expect(dateSql(db)).toBe(
+      'DELETE FROM "app"."Order Line" AS t WHERE EXISTS (SELECT 1 FROM unnest($1::UUID[], $2::INTEGER[]) AS k("order_id", "line_no") WHERE t."order_id" = k."order_id" AND t."line_no" = k."line_no")',
+    );
+  });
+
+  it('does nothing for an empty key set', async () => {
+    const db = new StubDatabase(columns);
+    const adapter = new PgWriteDbAdapter(db);
+    expect(await adapter.deleteByKeys({ table: 'order_line', keyColumns, keys: [] })).toEqual({
+      rows: [],
+      rowCount: 0,
+    });
+    expect(
+      await adapter.findByKeysForUpdate(
+        { table: 'order_line', keyColumns, keys: [] },
+        {} as DatabaseTransaction,
+      ),
+    ).toEqual([]);
+    expect(db.calls).toHaveLength(0);
+  });
+
+  it('rejects a key missing a key column', async () => {
+    const db = new StubDatabase(columns);
+    await expect(
+      new PgWriteDbAdapter(db).deleteByKeys({
+        table: 'order_line',
+        keyColumns,
+        keys: [{ order_id: 'o1' }],
+      }),
+    ).rejects.toThrow(/missing key column "line_no"/);
+  });
+
+  it('rejects an empty keyColumns list', async () => {
+    const db = new StubDatabase(columns);
+    await expect(
+      new PgWriteDbAdapter(db).deleteByKeys({ table: 'order_line', keyColumns: [], keys }),
+    ).rejects.toThrow(/at least one key column/);
+  });
+
+  it('rejects array-typed key columns', async () => {
+    const db = new StubDatabase(columns);
+    await expect(
+      new PgWriteDbAdapter(db).deleteByKeys({
+        table: 'tagged',
+        keyColumns: ['tags'],
+        keys: [{ tags: ['a'] }],
+      }),
+    ).rejects.toThrow(/array type/);
+  });
+
+  it('serializes json key values like set values', async () => {
+    const db = new StubDatabase(columns);
+    await new PgWriteDbAdapter(db).deleteByKeys({
+      table: 'tagged',
+      keyColumns: ['payload'],
+      keys: [{ payload: { a: 1 } }],
+    });
+    expect(db.calls[0]?.params).toEqual([['{"a":1}']]);
+    expect(dateSql(db)).toContain('unnest($1::JSONB[])');
+  });
+});

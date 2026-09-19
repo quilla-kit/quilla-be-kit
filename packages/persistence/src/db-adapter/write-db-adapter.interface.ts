@@ -49,6 +49,18 @@ export type UpdateManyOptions = {
   readonly audit?: AuditTimestamps;
 };
 
+/**
+ * A set of rows addressed by key: every entry of `keys` carries a value for
+ * each of `keyColumns`. Row order in results is unspecified, duplicate keys
+ * collapse, and an empty `keys` is a no-op.
+ */
+export type KeySet = {
+  readonly keyColumns: readonly string[];
+  readonly keys: readonly Record<string, unknown>[];
+};
+
+export type KeySetOptions = KeySet & { readonly table: string };
+
 export type DeleteOptions<T> = {
   readonly table: string;
   readonly where: FilterQuery<T>;
@@ -92,4 +104,17 @@ export interface WriteDbAdapter {
   exists<T>(opts: ExistsOptions<T>, trx?: DatabaseTransaction): Promise<boolean>;
 
   count<T>(opts: CountOptions<T>, trx?: DatabaseTransaction): Promise<number>;
+
+  /**
+   * Optional: delete every row matching a set of (typically composite) keys
+   * in one statement. When absent, `KeyedWriteDao` deletes one key at a time.
+   */
+  deleteByKeys?(opts: KeySetOptions, trx?: DatabaseTransaction): Promise<DatabaseResult>;
+
+  /**
+   * Optional: lock and return every row matching a set of (typically
+   * composite) keys in one statement. When absent, `KeyedWriteDao` locks one
+   * key at a time.
+   */
+  findByKeysForUpdate?<T>(opts: KeySetOptions, trx: DatabaseTransaction): Promise<readonly T[]>;
 }
