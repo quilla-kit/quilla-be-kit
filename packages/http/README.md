@@ -322,6 +322,12 @@ Throws `ForbiddenError` on missing token or mismatch. An auth middleware (from `
 
 Merges data from the configured sources (`'body'`, `'params'`, `'query'`), injects `scopeId` and `userId` from `ExecutionContext.session` **only when the schema declares those keys and a session is active**, injects header-sourced fields (see below), validates against `schema` using the server's `RequestValidator`, and attaches the validated value to the request. Retrieve with `request.getValidatedInput<T>()`.
 
+**Sources merge in array order, and the last source wins.** A key present in more than one source
+takes the value from the source listed last, so `['body', 'params']` lets the path id override a
+body field of the same name, and `['params', 'body']` lets a request body overwrite the id from
+the URL. Order the array deliberately; `['body', 'params']` is the safer default. Session- and
+header-derived fields are injected *after* the merge, so they win over every source.
+
 Auth-injection requires two things:
 - A live `session` on the request's `ExecutionContext` (i.e. the route ran through auth middleware that established one — anonymous and system contexts get no injection).
 - The `RequestValidator` implements the optional `describeSchema(schema)` method (see [`RequestValidator` adapter](#requestvalidator-adapter) below). Without it, auth-injection is skipped entirely — a fail-safe default that keeps surprise fields out of schemas that didn't ask for them.
@@ -527,7 +533,7 @@ const router = new Router({
 - Controllers can be registered as plain instances (no extra metadata) or wrapped in `{ controller, prefix?, middlewares? }` for per-controller prefix + middlewares.
 - Routes are sorted by **specificity** (static segments > parametric > wildcard) so `/users/healthz` matches before `/users/:id`.
 - Path composition: `[module prefix] + [effective version] + [registration prefix] + [@Controller prefix] + [@Route path]`, normalized to a single leading slash and no trailing slash. The **effective version** is resource-first and resolves `route option ?? @Controller version ?? HttpModuleMeta.version ?? ''` — see [Versioning](#versioning).
-- Duplicate routes (same method + path) throw at construction time — you catch double-registrations at startup, not under load.
+- Duplicate routes throw at construction time — you catch double-registrations at startup, not under load. Collision is by **match shape**, not literal text, so `/a/:id` and `/a/:claimId` collide: they answer the same requests and one would silently shadow the other. Parameter names are erased, constraints are not (`/:id{[0-9]+}` and `/:slug` match different requests and coexist), and `*` and `:param` stay distinct — which of those two wins is a specificity question, not a double registration. The error names both declared paths and both declaration sites.
 - Routes **accumulate** down a class hierarchy; they never replace. A subclass that re-decorates an inherited handler with a different path leaves the parent's route live at both paths. A subclass that overrides a decorated handler *without* re-decorating inherits the parent's route metadata while shadowing the wrapper the parent's `@AuthorizeScope` / `@ValidateRequest` installed — so the metadata claims a guard that no longer runs. Re-declare the decorators on the override.
 
 ### Middleware chain order
@@ -680,7 +686,7 @@ strategies, each defaulting to a class that reproduces the built-in behavior byt
 ```ts
 type HttpConventions = {
   readonly errorResolver?: ErrorResolver;             // controls the error status + body
-  readonly responseSerializer?: ResponseSerializer;   // controls the JSON success/envelope body
+  readonly responseSerializer?: ResponseSerializer;   // controls every JSON body, success or error
   readonly requestDeserializer?: RequestDeserializer; // controls the inbound query keys
 };
 
@@ -700,6 +706,22 @@ status mapping — see [Error status mapping](#error-status-mapping)), `DefaultR
 (strips `httpCode`/`headers`, keeps `payload` / `error` / `metadata`, and returns `undefined`
 for an empty body so it becomes a bodyless response), and `DefaultRequestDeserializer` (an
 identity pass unless configured with `paginationKeys`).
+
+Every JSON response the server emits goes through these, including the two no handler produces:
+
+- **An unknown route** resolves a `RouteNotFoundError` through the `ErrorResolver`, so a 404 for a
+  bad path is the same wire *shape* as a 404 your code threw. There is no `notFound` option —
+  supplying an error resolver is the seam. `RouteNotFoundError` extends `NotFoundError`, so it
+  still maps to 404 by default, but a custom resolver can `instanceof` it to tell an unmatched
+  path apart from a handler reporting a missing entity (a distinct Problem Details `type`, a
+  separate metric). Its default body carries `error.name: "RouteNotFoundError"`.
+- **Error bodies** go through the `ResponseSerializer` as well as success bodies, so a custom
+  envelope applies to both. A serializer returning `undefined` yields a bodyless error response,
+  the same as on the success path.
+
+Unknown routes are **not** logged: a request for a path that doesn't exist is a client mistake,
+and routing it through `logger.error` makes scanners noisy enough to bury real failures. Binary
+and stream responses still never touch the serializer.
 
 #### Error status mapping
 

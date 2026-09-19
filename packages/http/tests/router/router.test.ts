@@ -12,6 +12,11 @@ function makeExecutionContext(): { provider: AsyncExecutionContextProvider } {
   return { provider: new AsyncExecutionContextProvider() };
 }
 
+const build =
+  (...controllers: object[]) =>
+  () =>
+    new Router({ executionContext: makeExecutionContext(), controllers });
+
 @Controller('/users')
 class UsersController {
   @Get('/')
@@ -299,6 +304,103 @@ describe('Router', () => {
             controllers: [new A(), new B()],
           }),
       ).toThrow(/Duplicate route/);
+    });
+
+    it('throws when two routes differ only in parameter name', () => {
+      @Controller('/a')
+      class A {
+        @Get('/:id')
+        async byId(_req: HttpRequest): Promise<HttpResponse> {
+          return { httpCode: 200 };
+        }
+      }
+      @Controller('/a')
+      class B {
+        @Get('/:claimId')
+        async byClaimId(_req: HttpRequest): Promise<HttpResponse> {
+          return { httpCode: 200 };
+        }
+      }
+      const construct = build(new A(), new B());
+      // The message names both declared paths, not the normalized shape.
+      expect(construct).toThrow(/:id/);
+      expect(construct).toThrow(/:claimId/);
+      expect(construct).toThrow(/matches the same requests as/);
+    });
+
+    it('allows the same shape under different methods', () => {
+      @Controller('/a')
+      class A {
+        @Get('/:id')
+        async get(_req: HttpRequest): Promise<HttpResponse> {
+          return { httpCode: 200 };
+        }
+        @Post('/:userId')
+        async post(_req: HttpRequest): Promise<HttpResponse> {
+          return { httpCode: 201 };
+        }
+      }
+      expect(build(new A())).not.toThrow();
+    });
+
+    it('does not confuse a static segment with a parameter', () => {
+      @Controller('/a')
+      class A {
+        @Get('/:id')
+        async byId(_req: HttpRequest): Promise<HttpResponse> {
+          return { httpCode: 200 };
+        }
+        @Get('/healthz')
+        async healthz(_req: HttpRequest): Promise<HttpResponse> {
+          return { httpCode: 200 };
+        }
+      }
+      expect(build(new A())).not.toThrow();
+    });
+
+    it('keeps a parameter constraint part of the shape', () => {
+      @Controller('/a')
+      class A {
+        @Get('/:id{[0-9]+}')
+        async numeric(_req: HttpRequest): Promise<HttpResponse> {
+          return { httpCode: 200 };
+        }
+        @Get('/:slug')
+        async slug(_req: HttpRequest): Promise<HttpResponse> {
+          return { httpCode: 200 };
+        }
+      }
+      expect(build(new A())).not.toThrow();
+    });
+
+    it('collides when two constrained parameters share the constraint', () => {
+      @Controller('/a')
+      class A {
+        @Get('/:id{[0-9]+}')
+        async first(_req: HttpRequest): Promise<HttpResponse> {
+          return { httpCode: 200 };
+        }
+        @Get('/:num{[0-9]+}')
+        async second(_req: HttpRequest): Promise<HttpResponse> {
+          return { httpCode: 200 };
+        }
+      }
+      expect(build(new A())).toThrow(/Duplicate route/);
+    });
+
+    it('treats a wildcard and a parameter as distinct shapes', () => {
+      @Controller('/a')
+      class A {
+        @Get('/:id')
+        async byId(_req: HttpRequest): Promise<HttpResponse> {
+          return { httpCode: 200 };
+        }
+        @Get('/*')
+        async rest(_req: HttpRequest): Promise<HttpResponse> {
+          return { httpCode: 200 };
+        }
+      }
+      expect(build(new A())).not.toThrow();
     });
   });
 

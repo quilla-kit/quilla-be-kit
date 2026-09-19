@@ -181,7 +181,7 @@ function buildRoutes(
   chain: ChainContext,
 ): readonly NormalizedRoute[] {
   const normalized: NormalizedRoute[] = [];
-  const seen = new Map<string, string>();
+  const seen = new Map<string, { readonly site: string; readonly path: string }>();
   const stackViolations: string[] = [];
 
   for (const reg of registrations) {
@@ -201,12 +201,14 @@ function buildRoutes(
         def.path,
       );
       const site = `${controllerName}.${def.handlerMethodName}`;
-      const key = `${def.httpMethod} ${fullPath}`;
+      const key = `${def.httpMethod} ${matchShape(fullPath)}`;
       const existing = seen.get(key);
       if (existing) {
-        throw new Error(`Duplicate route: ${key} declared in both "${existing}" and "${site}"`);
+        throw new Error(
+          `Duplicate route: ${def.httpMethod} "${fullPath}" in "${site}" matches the same requests as "${existing.path}" in "${existing.site}"`,
+        );
       }
-      seen.set(key, site);
+      seen.set(key, { site, path: fullPath });
 
       if (def.public && def.authStack !== undefined) {
         stackViolations.push(
@@ -290,6 +292,16 @@ function buildHandler(
   }
   return (request) =>
     (methodRef as (req: HttpRequest) => Promise<HttpResponse>).call(controller, request);
+}
+
+/**
+ * Erases parameter *names* so two paths that match the same requests share a
+ * key, while keeping any constraint or optional suffix — `:id{[0-9]+}` and
+ * `:slug` match different requests and must stay distinct. Encodes the same
+ * path grammar as `computeSpecificity` below; keep the two in sync.
+ */
+function matchShape(path: string): string {
+  return path.replace(/\/:[A-Za-z0-9_]*/g, '/:');
 }
 
 function computeSpecificity(path: string): number {
