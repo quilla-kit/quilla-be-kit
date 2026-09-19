@@ -1,5 +1,12 @@
 # @quilla-be-kit/security
 
+## 0.2.14
+
+### Patch Changes
+
+- Updated dependencies [2a0b266]
+  - @quilla-be-kit/http@0.13.0
+
 ## 0.2.13
 
 ### Patch Changes
