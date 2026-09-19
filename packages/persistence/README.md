@@ -33,7 +33,9 @@ pnpm add pg
   resolve from `ExecutionContextProvider.getContext().session?.userId` on
   every write. Callers cannot pass them; rows with audit fields in them
   get stripped. Writes under system contexts (no session) persist
-  `null` audit.
+  `null` audit. Which columns exist, and what they are called, is the DAO's
+  `auditPolicy` (default `'kit'`) — see
+  [Tables that don't match the kit's shape](#tables-that-dont-match-the-kits-shape).
 - **Optimistic locking is opt-in via `updated_at`.** Include `updated_at`
   in the row passed to `update()`, or as `row.updated_at` passed to
   `delete()`, and the DAO asserts `rowCount === 1` — a zero-row match
@@ -260,6 +262,86 @@ await userRepo.delete(user, clientClaimedUpdatedAt, ctx);
 
 Being explicit means callers never need to mutate the aggregate's
 `updatedAt` in memory to influence the lock — the value flows in directly.
+
+### Tables that don't match the kit's shape
+
+`BaseWriteDao` assumes a string `id` key and the four conventional audit
+columns. Three seams let a DAO describe a different table without changing
+the defaults.
+
+**Key columns — `KeyedWriteDao`.** Extend it with the columns that identify a
+row (single or composite). `BaseWriteDao` is exactly the `['id']` case.
+
+```ts
+import { KeyedWriteDao } from '@quilla-be-kit/persistence';
+
+class OrderLineDao extends KeyedWriteDao<OrderLineRow, 'order_id' | 'line_no'> {
+  protected readonly tableName = 'order_line';
+  protected readonly keyColumns = ['order_id', 'line_no'] as const;
+}
+
+await dao.findOneByKey({ order_id: 'o1', line_no: 2 });
+await dao.delete({ order_id: 'o1', line_no: 2 });
+await dao.deleteMany([{ order_id: 'o1', line_no: 1 }, { order_id: 'o1', line_no: 2 }], trx);
+```
+
+`update`/`updateMany`/`delete`/`deleteMany`/`findOneByKey` address rows by
+`keyColumns` and never put them in a `SET` clause. `updateMany` joins on every
+key column. `deleteMany` is one statement for a single key column and one
+`DELETE` per key for a composite key — wrap it in a transaction. With
+`keyColumns = []` the table is **insert-only**: the keyed methods throw.
+
+**Audit policy — `auditPolicy`.** Declares which audit/timestamp columns the
+table has:
+
+```ts
+class CodeDao extends KeyedWriteDao<CodeRow, 'code'> {
+  protected readonly tableName = 'codes';
+  protected readonly keyColumns = ['code'] as const;
+  // 'kit' (default) | 'none' | a map; omit an entry or pass false when absent
+  protected override readonly auditPolicy: AuditPolicy = {
+    updatedAt: 'modified_at',
+    insertedBy: 'created_by',
+  };
+}
+```
+
+`created_at`/`updated_at`-style columns are stamped by the database clock;
+`inserted_by`/`updated_by`-style columns are stamped from the execution
+context. Only declared columns are written, and undeclared columns are left
+alone (a real `created_at` column under `'none'` is ordinary data). The
+optimistic lock applies only when an `updatedAt` column is declared, and the
+expected value is read from the row property named by that column. A
+composite key is joined into `OptimisticLockError`'s `id` (comma-separated)
+and also passed as `context.key`.
+
+The adapter never reads the policy: the DAO hands it just the timestamp
+columns per call (`audit: { createdAt?, updatedAt? }` on `InsertOptions`,
+`UpdateOptions` and `UpdateManyOptions`), so one `PgWriteDbAdapter` serves
+tables with different shapes. Omitting `audit` on a direct adapter call keeps
+stamping `created_at`/`updated_at`; `audit: {}` stamps nothing. Custom
+`WriteDbAdapter` implementations receive the same fields. The
+`prepareInsertRow` / `prepareUpdateRow` / `stripKeys` hooks are `protected`
+for subclasses that need finer control.
+
+**Identifier quoting.** By default `PgWriteDbAdapter` emits identifiers
+unquoted, exactly as before. Pass `quoteIdentifiers: true` to double-quote
+every table and column it emits and to accept `schema.table` names (column
+types are then resolved against that schema):
+
+```ts
+const adapter = new PgWriteDbAdapter(db, { quoteIdentifiers: true });
+// or, sharing a type cache: { columnTypeCache, quoteIdentifiers: true }
+```
+
+Names you pass in must be raw, never pre-quoted. Caller-supplied
+`SelectOptions.columns` and `orderBy` are passed through as given, since they
+may be expressions. `FilterQuery` keys use `__` as the operator delimiter, so
+a column whose own name contains `__` can't be addressed through a filter.
+
+`buildWhere`, `mapPostgresType`, `NO_QUOTING`/`QUOTED` (from `/postgres`) and
+the `CountOptions`, `UpdateManyOptions`, `AuditTimestamps` types are exported
+for custom `WriteDbAdapter` implementations.
 
 ### Filtering on write DAOs
 
@@ -836,7 +918,7 @@ The builder covers the common projection shapes. For one-off reads where the bui
 src/
 ├── database/     Database / DatabaseTransaction / DatabaseResult / DatabaseHealth
 ├── db-adapter/   FilterQuery, Read/Write DbAdapter interfaces + options
-├── dao/          BaseReadDao, BaseWriteDao
+├── dao/          BaseReadDao, BaseWriteDao, KeyedWriteDao, AuditPolicy
 ├── query/        QueryProduct, PaginatedResult, StandardListQuery, FieldDescriptor,
 │                 ColumnResolver + DefaultColumnResolver, SqlQueryBuilder
 ├── query-schema/ createQueryParametersSchema (Zod adapter — sub-path export)

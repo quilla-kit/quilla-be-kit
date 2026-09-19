@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { type ColumnTypeMap, buildWhere } from '../../src/postgres/pg-sql.js';
+import { type ColumnTypeMap, buildWhere, mapPostgresType } from '../../src/postgres/pg-sql.js';
 
 const types: ColumnTypeMap = {
   id: 'uuid',
@@ -107,5 +107,23 @@ describe('buildWhere', () => {
     const { sql, values } = buildWhere({ status: 'PENDING', expires_at__lt: now }, types);
     expect(sql).toBe('status = $1::TEXT AND expires_at < $2::TIMESTAMPTZ');
     expect(values).toEqual(['PENDING', now]);
+  });
+});
+
+describe('mapPostgresType', () => {
+  it('keeps 32-bit integers as INTEGER and widens bigint to BIGINT', () => {
+    expect(mapPostgresType('integer')).toBe('INTEGER');
+    expect(mapPostgresType('smallint')).toBe('INTEGER');
+    expect(mapPostgresType('bigint')).toBe('BIGINT');
+  });
+
+  it('maps integer and bigint array types', () => {
+    expect(mapPostgresType('_int4')).toBe('INTEGER[]');
+    expect(mapPostgresType('_int8')).toBe('BIGINT[]');
+  });
+
+  it('casts bigint filters and IN lists with BIGINT', () => {
+    const { sql } = buildWhere({ n: [1, 2] }, { n: 'bigint' });
+    expect(sql).toBe('n = ANY($1::BIGINT[])');
   });
 });
