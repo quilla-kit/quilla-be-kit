@@ -5,6 +5,7 @@ import type { HttpResponse } from '../request/http-response.type.js';
 import type { HeaderSourceMap } from '../validator/header-source.type.js';
 import type { RequestSource } from '../validator/request-source.type.js';
 import type { RequestValidator } from '../validator/request-validator.interface.js';
+import type { ValidatedRequest } from '../validator/validated-request.type.js';
 import { addRoutePatch } from './route.metadata.js';
 
 type ControllerMethod = (this: unknown, request: HttpRequest) => Promise<HttpResponse>;
@@ -24,13 +25,13 @@ const SOURCE_READERS: Record<RequestSource, (req: HttpRequest) => object> = {
 // route overrides it via the `headers` argument.
 const DEFAULT_HEADER_MAP: HeaderSourceMap = { updatedAt: 'If-Match' };
 
-export function ValidateRequest(
-  schema: unknown,
+export function ValidateRequest<S>(
+  schema: S,
   sources: readonly RequestSource[],
   headers?: HeaderSourceMap,
 ) {
   return (
-    originalMethod: ControllerMethod,
+    originalMethod: (this: unknown, request: ValidatedRequest<S>) => Promise<HttpResponse>,
     context: ClassMethodDecoratorContext,
   ): ControllerMethod => {
     if (context.kind !== 'method') {
@@ -89,7 +90,7 @@ export function ValidateRequest(
       }
 
       request.setAttribute(HttpAttributes.VALIDATED_INPUT, result.data);
-      return originalMethod.call(this, request);
+      return originalMethod.call(this, request as ValidatedRequest<S>);
     };
   };
 }

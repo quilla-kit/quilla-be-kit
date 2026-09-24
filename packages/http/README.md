@@ -57,6 +57,7 @@ import {
   GetPublic,
   AuthorizeScope,
   ValidateRequest,
+  type ValidatedRequest,
   Router,
   type HttpRequest,
   type HttpResponse,
@@ -87,8 +88,8 @@ class UsersController {
   @Post('/')
   @AuthorizeScope('user:write')
   @ValidateRequest(CreateUserRequestDto, ['body'])
-  async create(req: HttpRequest): Promise<HttpResponse> {
-    const input = req.getValidatedInput<CreateUserCommand>();
+  async create(req: ValidatedRequest<typeof CreateUserRequestDto>): Promise<HttpResponse> {
+    const input = req.getValidatedInput();
     // ... application logic
     return { httpCode: 201, payload: { id: 'new-id' } };
   }
@@ -320,7 +321,7 @@ Throws `ForbiddenError` on missing token or mismatch. An auth middleware (from `
 
 ### `@ValidateRequest(schema, sources, headers?)`
 
-Merges data from the configured sources (`'body'`, `'params'`, `'query'`), injects `scopeId` and `userId` from `ExecutionContext.session` **only when the schema declares those keys and a session is active**, injects header-sourced fields (see below), validates against `schema` using the server's `RequestValidator`, and attaches the validated value to the request. Retrieve with `request.getValidatedInput<T>()`.
+Merges data from the configured sources (`'body'`, `'params'`, `'query'`), injects `scopeId` and `userId` from `ExecutionContext.session` **only when the schema declares those keys and a session is active**, injects header-sourced fields (see below), validates against `schema` using the server's `RequestValidator`, and attaches the validated value to the request. Retrieve it with `request.getValidatedInput()` on a handler whose parameter is typed `ValidatedRequest<typeof Schema>`: the return type is derived from the schema, so it cannot drift from what the schema emits. `getValidatedInput` exists only on `ValidatedRequest`, never on a plain `HttpRequest`.
 
 **Sources merge in array order, and the last source wins.** A key present in more than one source
 takes the value from the source listed last, so `['body', 'params']` lets the path id override a
@@ -335,9 +336,27 @@ Auth-injection requires two things:
 ```ts
 @Post('/')
 @ValidateRequest(CreateUserRequestDto, ['body'])
-async create(req: HttpRequest): Promise<HttpResponse> {
-  const input = req.getValidatedInput<CreateUserCommand>();
-  // input is typed as CreateUserCommand — consumer asserts the runtime shape
+async create(req: ValidatedRequest<typeof CreateUserRequestDto>): Promise<HttpResponse> {
+  const input = req.getValidatedInput();
+  // input is z.output<typeof CreateUserRequestDto>, derived from the schema
+}
+```
+
+`ValidatedRequest<S>` derives the type from the schema's [Standard Schema](https://standardschema.dev) `~standard` marker (Zod 4, Valibot and ArkType provide it). `@ValidateRequest` checks the handler against the schema at compile time: annotating the parameter with a different schema's `ValidatedRequest`, or reading a field the schema does not emit, is a compile error. A schema without `~standard` (Joi, hand-rolled) yields `unknown`; narrow it yourself.
+
+Two things to keep in mind:
+
+- **Schema shape is the truth.** Helpers that reshape input change the output type. For example, `tenantScopedListQuery` nests `page` / `pageSize` / `sort` under `pagination`, so read `query.pagination.pageSize`, not `query.pageSize`. The compiler now flags the wrong one.
+- **The validator must return the schema's output.** The derived type is a claim about the schema; a custom `RequestValidator.validate` that returns a different shape than the schema infers makes the type lie.
+
+The compile-time check applies to handlers under `@ValidateRequest`. A handler typed as plain `HttpRequest` still compiles but cannot read the validated input. Custom method decorators that wrap handlers must be generic over the request type, as `@AuthorizeScope` is, or TypeScript will reject handlers typed `ValidatedRequest`:
+
+```ts
+function Audit() {
+  return <R extends HttpRequest>(
+    method: (this: unknown, request: R) => Promise<HttpResponse>,
+    context: ClassMethodDecoratorContext,
+  ) => method;
 }
 ```
 
@@ -355,8 +374,8 @@ const updateWidgetSchema = z.object({
 
 @Put('/:id')
 @ValidateRequest(updateWidgetSchema, ['body', 'params'])
-async update(req: HttpRequest): Promise<HttpResponse> {
-  const command = req.getValidatedInput<UpdateWidgetCommand>();
+async update(req: ValidatedRequest<typeof updateWidgetSchema>): Promise<HttpResponse> {
+  const command = req.getValidatedInput();
   // command.updatedAt is already the parsed value — no manual splicing needed,
   // and this works for DELETE routes with no body too.
 }
@@ -367,8 +386,8 @@ The optional third argument, `headers: Readonly<Record<string, string>>` (schema
 ```ts
 @Delete('/:id')
 @ValidateRequest(deleteWidgetSchema, ['params'], { expectedUpdatedAt: 'X-Expected-Version' })
-async delete(req: HttpRequest): Promise<HttpResponse> {
-  const command = req.getValidatedInput<DeleteWidgetCommand>();
+async delete(req: ValidatedRequest<typeof deleteWidgetSchema>): Promise<HttpResponse> {
+  const command = req.getValidatedInput();
   // command.expectedUpdatedAt sourced from X-Expected-Version instead of
   // the default updatedAt/If-Match pairing
 }

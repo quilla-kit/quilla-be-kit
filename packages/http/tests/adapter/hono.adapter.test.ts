@@ -20,6 +20,7 @@ import { Router } from '../../src/router/router.js';
 import type { CorsOptions } from '../../src/server/cors.type.js';
 import type { HttpConventions } from '../../src/server/http-conventions.type.js';
 import type { RequestValidator } from '../../src/validator/request-validator.interface.js';
+import type { ValidatedRequest } from '../../src/validator/validated-request.type.js';
 
 @Controller('/users')
 class UsersController {
@@ -42,8 +43,8 @@ class UsersController {
 
   @Post('/')
   @ValidateRequest({ name: 'string' }, ['body'])
-  async create(req: HttpRequest): Promise<HttpResponse> {
-    const input = req.getValidatedInput<{ name: string }>();
+  async create(req: ValidatedRequest<unknown>): Promise<HttpResponse> {
+    const input = req.getValidatedInput() as { name: string };
     return { httpCode: 201, payload: { created: input.name } };
   }
 }

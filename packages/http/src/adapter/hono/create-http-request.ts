@@ -1,6 +1,6 @@
 import type { ExecutionContextProvider } from '@quilla-be-kit/execution-context';
 import { HttpAttributes } from '../../request/http-attributes.js';
-import type { HttpRequest } from '../../request/http-request.interface.js';
+import type { ValidatedRequest } from '../../validator/validated-request.type.js';
 
 export type CreateHttpRequestInput = {
   readonly path: string;
@@ -17,7 +17,7 @@ export type CreateHttpRequestInput = {
 export function createHttpRequest(
   input: CreateHttpRequestInput,
   attributes: Map<string, unknown>,
-): HttpRequest {
+): ValidatedRequest<unknown> {
   return {
     getPath: () => input.path,
     getMethod: () => input.method,
@@ -60,12 +60,12 @@ export function createHttpRequest(
       attributes.set(key, value);
     },
     getAttribute: <T>(key: string) => attributes.get(key) as T | undefined,
-    getValidatedInput: <T>(): T => {
+    getValidatedInput: () => {
       const value = attributes.get(HttpAttributes.VALIDATED_INPUT);
       if (value === undefined) {
         throw new Error('No validated input. Apply @ValidateRequest to the route handler.');
       }
-      return value as T;
+      return value;
     },
   };
 }
