@@ -349,7 +349,32 @@ Two things to keep in mind:
 - **Schema shape is the truth.** Helpers that reshape input change the output type. For example, `tenantScopedListQuery` nests `page` / `pageSize` / `sort` under `pagination`, so read `query.pagination.pageSize`, not `query.pageSize`. The compiler now flags the wrong one.
 - **The validator must return the schema's output.** The derived type is a claim about the schema; a custom `RequestValidator.validate` that returns a different shape than the schema infers makes the type lie.
 
-The compile-time check applies to handlers under `@ValidateRequest`. A handler typed as plain `HttpRequest` still compiles but cannot read the validated input. Custom method decorators that wrap handlers must be generic over the request type, as `@AuthorizeScope` is, or TypeScript will reject handlers typed `ValidatedRequest`:
+#### Routes without validation
+
+A route without `@ValidateRequest` keeps taking a plain `HttpRequest`; nothing about it changes. `getValidatedInput` is not part of `HttpRequest`, so calling it on such a route is a compile error rather than a runtime throw. A handler typed as plain `HttpRequest` under `@ValidateRequest` still compiles, but cannot read the validated input.
+
+```ts
+@Get('/:id')
+async show(req: HttpRequest): Promise<HttpResponse> {
+  const id = req.getParams().id;   // full request access, no validation involved
+}
+```
+
+`ValidatedRequest<S>` is `HttpRequest` plus the typed accessor, so a validated handler keeps every other request method (`getBody`, `getHeader`, `getExecutionContext`, ...).
+
+#### Migrating from `getValidatedInput<T>()`
+
+Earlier versions exposed `getValidatedInput<T>()` on every `HttpRequest`. For each handler that calls it:
+
+1. Change the parameter from `req: HttpRequest` to `req: ValidatedRequest<typeof Schema>`, using the schema passed to `@ValidateRequest`.
+2. Call `req.getValidatedInput()` without a type argument and delete the hand-written `T`.
+3. Fix any compile errors: they mark places where the hand-written type disagreed with the schema.
+
+Hand-rolled `HttpRequest` fakes in tests must drop `getValidatedInput`.
+
+#### Custom decorators
+
+Custom method decorators that wrap handlers must be generic over the request type, as `@AuthorizeScope` is, or TypeScript will reject handlers typed `ValidatedRequest`:
 
 ```ts
 function Audit() {
