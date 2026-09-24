@@ -3,8 +3,8 @@ import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { ValidateRequest } from '../../src/decorator/index.js';
 import { HttpAttributes } from '../../src/request/http-attributes.js';
-import type { HttpRequest } from '../../src/request/http-request.interface.js';
 import type { HttpResponse } from '../../src/request/http-response.type.js';
+import type { ValidatedRequest } from '../../src/validator/index.js';
 import { createZodRequestValidator } from '../../src/validator/zod.js';
 
 const validator = createZodRequestValidator();
@@ -16,7 +16,7 @@ type FakeRequestInit = {
   readonly session?: { readonly scopeId: string; readonly userId: string };
 };
 
-function fakeRequest(init: FakeRequestInit = {}): HttpRequest {
+function fakeRequest(init: FakeRequestInit = {}): ValidatedRequest<unknown> {
   const attributes = new Map<string, unknown>();
   attributes.set(HttpAttributes.REQUEST_VALIDATOR, validator);
 
@@ -46,7 +46,7 @@ function fakeRequest(init: FakeRequestInit = {}): HttpRequest {
       attributes.set(key, value);
     },
     getAttribute: <T>(key: string) => attributes.get(key) as T | undefined,
-    getValidatedInput: <T>() => attributes.get(HttpAttributes.VALIDATED_INPUT) as T,
+    getValidatedInput: () => attributes.get(HttpAttributes.VALIDATED_INPUT),
   };
 }
 
@@ -60,7 +60,7 @@ describe('@ValidateRequest header-sourced injection', () => {
 
     class C extends Recorder {
       @ValidateRequest(schema, ['body'])
-      async handler(request: HttpRequest): Promise<HttpResponse> {
+      async handler(request: ValidatedRequest<unknown>): Promise<HttpResponse> {
         this.received = request.getValidatedInput();
         return { httpCode: 200 };
       }
@@ -79,7 +79,7 @@ describe('@ValidateRequest header-sourced injection', () => {
 
     class C extends Recorder {
       @ValidateRequest(schema, ['body'])
-      async handler(request: HttpRequest): Promise<HttpResponse> {
+      async handler(request: ValidatedRequest<unknown>): Promise<HttpResponse> {
         this.received = request.getValidatedInput();
         return { httpCode: 200 };
       }
@@ -96,7 +96,7 @@ describe('@ValidateRequest header-sourced injection', () => {
 
     class C extends Recorder {
       @ValidateRequest(schema, ['body'])
-      async handler(request: HttpRequest): Promise<HttpResponse> {
+      async handler(request: ValidatedRequest<unknown>): Promise<HttpResponse> {
         this.received = request.getValidatedInput();
         return { httpCode: 200 };
       }
@@ -118,7 +118,7 @@ describe('@ValidateRequest header-sourced injection', () => {
 
     class C extends Recorder {
       @ValidateRequest(schema, ['params'])
-      async handler(request: HttpRequest): Promise<HttpResponse> {
+      async handler(request: ValidatedRequest<unknown>): Promise<HttpResponse> {
         this.received = request.getValidatedInput();
         return { httpCode: 204 };
       }
@@ -137,7 +137,7 @@ describe('@ValidateRequest header-sourced injection', () => {
 
     class C extends Recorder {
       @ValidateRequest(schema, ['params'], { correlationId: 'X-Correlation-Id' })
-      async handler(request: HttpRequest): Promise<HttpResponse> {
+      async handler(request: ValidatedRequest<unknown>): Promise<HttpResponse> {
         this.received = request.getValidatedInput();
         return { httpCode: 200 };
       }
@@ -156,7 +156,7 @@ describe('@ValidateRequest header-sourced injection', () => {
 
     class C extends Recorder {
       @ValidateRequest(schema, ['params'], { updatedAt: 'X-Expected-Version' })
-      async handler(request: HttpRequest): Promise<HttpResponse> {
+      async handler(request: ValidatedRequest<unknown>): Promise<HttpResponse> {
         this.received = request.getValidatedInput();
         return { httpCode: 200 };
       }
@@ -178,7 +178,7 @@ describe('@ValidateRequest header-sourced injection', () => {
 
     class C extends Recorder {
       @ValidateRequest(schema, ['body'])
-      async handler(request: HttpRequest): Promise<HttpResponse> {
+      async handler(request: ValidatedRequest<unknown>): Promise<HttpResponse> {
         this.received = request.getValidatedInput();
         return { httpCode: 200 };
       }

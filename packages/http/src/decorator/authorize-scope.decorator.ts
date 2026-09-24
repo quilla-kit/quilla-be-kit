@@ -8,8 +8,8 @@ import { addRoutePatch } from './route.metadata.js';
 type ControllerMethod = (this: unknown, request: HttpRequest) => Promise<HttpResponse>;
 
 export function AuthorizeScope(scopes: string | readonly string[], mode: 'any' | 'all' = 'any') {
-  return (
-    originalMethod: ControllerMethod,
+  return <R extends HttpRequest>(
+    originalMethod: (this: unknown, request: R) => Promise<HttpResponse>,
     context: ClassMethodDecoratorContext,
   ): ControllerMethod => {
     if (context.kind !== 'method') {
@@ -39,7 +39,7 @@ export function AuthorizeScope(scopes: string | readonly string[], mode: 'any' |
         throw new ForbiddenError({ message: 'User is not authorized to perform this action.' });
       }
 
-      return originalMethod.call(this, request);
+      return originalMethod.call(this, request as R);
     };
   };
 }

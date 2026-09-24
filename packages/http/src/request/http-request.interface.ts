@@ -14,5 +14,4 @@ export interface HttpRequest {
   getExecutionContext(): ExecutionContext;
   setAttribute<T>(key: string, value: T): void;
   getAttribute<T>(key: string): T | undefined;
-  getValidatedInput<T>(): T;
 }

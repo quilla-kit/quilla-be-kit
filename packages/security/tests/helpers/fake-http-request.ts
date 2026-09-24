@@ -33,8 +33,5 @@ export function fakeHttpRequest(init: FakeRequestInit = {}): HttpRequest {
       attributes.set(key, value);
     },
     getAttribute: <T>(key: string) => attributes.get(key) as T | undefined,
-    getValidatedInput: <T>() => {
-      throw new Error('No validated input available on fake request');
-    },
   };
 }
