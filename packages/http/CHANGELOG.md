@@ -1,5 +1,11 @@
 # @quilla-be-kit/http
 
+## 0.14.1
+
+### Patch Changes
+
+- 1a0beb9: README: document routes without `@ValidateRequest` (they keep a plain `HttpRequest`; `getValidatedInput` is a compile error there) and add a migration guide from `getValidatedInput<T>()` to `ValidatedRequest<typeof Schema>`.
+
 ## 0.14.0
 
 ### Minor Changes
