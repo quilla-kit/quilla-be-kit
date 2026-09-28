@@ -37,16 +37,22 @@ graph; imported by `execution-context`, `persistence`, `messaging`, and
   `name` + `toJSON` shape. Same auto-defaults for `id` and `occurredAt` as
   `DomainEvent`. No `aggregateId` — integration events cross aggregate
   boundaries.
-- **`EnvelopedEvent<TEvent>`** — a `{ event, metadata }` pair, produced when
-  `UnitOfWork` drains aggregate events and stamps each with a shared
-  `EventMetadata` (correlation id, actor, scope) before handing them to the
-  outbox. Consumers rarely construct these directly.
+- **`EnvelopedEvent<TEvent>`** — a `{ event, metadata }` pair. `UnitOfWork`
+  does not stamp metadata itself: your `serialize` function builds it with
+  `EventMetadata.create(...)`, typically from the active execution context.
 - **`AnyEvent`** — `DomainEvent | IntegrationEvent`.
 
 ### Metadata and actor
 
 - **`EventMetadata`** — `kind`, `correlationId`, `actorType`, optional
-  `scopeId` / `userId`, `createdAt`. Construct via `EventMetadata.create(...)`.
+  `scopeId` / `userId`, optional `actorAttributes`, `createdAt`. Construct
+  via `EventMetadata.create(...)`.
+- **`actorAttributes`** — app-defined facts about the actor beyond
+  `scopeId` / `userId` (`ActorAttributes`: string, number or boolean values),
+  such as the `projectId` an API key is bound to. Requires both `scopeId` and
+  `userId`, and can't reuse those names. `toJSON` leaves the key out when
+  there are none. See
+  [Carrying extended session fields end to end](../execution-context/README.md#carrying-extended-session-fields-end-to-end).
 - **`EventKind`** — enum (`DOMAIN`, `INTEGRATION`).
 - **`ActorType`** — `'user' | 'system' | 'service' | 'anonymous' | 'job' | (string & {})`.
 
@@ -61,8 +67,10 @@ graph; imported by `execution-context`, `persistence`, `messaging`, and
   consumers decide whether it's a tenant, workspace, organization, or project.
 - **`toJSON` only; no `fromJSON`.** Deserialization is consumer-owned (they
   know their event types) — keeps this package dep-free and registry-free.
-- **No extensions bag on `EventMetadata`.** Strict, minimal shape. Consumers
-  who need extra metadata subclass.
+- **Strict `EventMetadata` shape with one typed extension point.** Extra
+  facts about the actor travel in `actorAttributes` (JSON primitives only,
+  `scopeId` and `userId` required). Anything else that isn't the actor's
+  identity belongs in the event payload.
 - **`drainDomainEvents`** — unambiguously destructive (returns all and
   clears). Override in aggregates with child aggregates.
 

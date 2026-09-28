@@ -77,3 +77,61 @@ describe('EventMetadata', () => {
     expect(meta.actorType).toBe('webhook');
   });
 });
+
+describe('EventMetadata actorAttributes', () => {
+  const when = new Date('2026-01-01T00:00:00.000Z');
+  const base = {
+    kind: EventKind.DOMAIN,
+    correlationId: 'corr-1',
+    actorType: 'user',
+    scopeId: 'scope-1',
+    userId: 'user-1',
+    createdAt: when,
+  } as const;
+
+  it('omits the key from JSON when absent, keeping the wire shape unchanged', () => {
+    const json = EventMetadata.create(base).toJSON();
+    expect(Object.keys(json)).toEqual([
+      'kind',
+      'correlationId',
+      'actorType',
+      'scopeId',
+      'userId',
+      'createdAt',
+    ]);
+  });
+
+  it('carries and serializes attributes when set', () => {
+    const meta = EventMetadata.create({ ...base, actorAttributes: { projectId: 'p-1' } });
+    expect(meta.actorAttributes).toEqual({ projectId: 'p-1' });
+    expect(meta.toJSON().actorAttributes).toEqual({ projectId: 'p-1' });
+  });
+
+  it('snapshots attributes so later mutation of the input has no effect', () => {
+    const input: Record<string, string> = { projectId: 'p-1' };
+    const meta = EventMetadata.create({ ...base, actorAttributes: input });
+    input.projectId = 'changed';
+    expect(meta.actorAttributes).toEqual({ projectId: 'p-1' });
+  });
+
+  it('rejects attributes without both scopeId and userId', () => {
+    expect(() =>
+      EventMetadata.create({
+        kind: EventKind.DOMAIN,
+        correlationId: 'corr-1',
+        actorType: 'job',
+        scopeId: 'scope-1',
+        actorAttributes: { projectId: 'p-1' },
+      }),
+    ).toThrow(/require both scopeId and userId/);
+  });
+
+  it.each(['scopeId', 'userId', 'constructor', 'prototype'])(
+    'rejects the reserved attribute key %s',
+    (key) => {
+      expect(() => EventMetadata.create({ ...base, actorAttributes: { [key]: 'x' } })).toThrow(
+        /reserved actorAttributes key/,
+      );
+    },
+  );
+});

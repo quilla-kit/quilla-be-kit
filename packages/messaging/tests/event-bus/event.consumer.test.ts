@@ -1,3 +1,7 @@
+import {
+  AsyncExecutionContextProvider,
+  type ExecutionContext,
+} from '@quilla-be-kit/execution-context';
 import { NoopLogger } from '@quilla-be-kit/observability';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
@@ -546,5 +550,67 @@ describe('EventConsumer', () => {
     consumer.subscribe([{ descriptor: UserCreated, handle: async () => {} }]);
 
     expect(consumer.registeredEventTypes).toEqual(['plain.type', 'order.placed', 'user.created']);
+  });
+});
+
+describe('EventConsumer execution context reconstruction', () => {
+  let bus: FakeEventBusConsumer;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    bus = new FakeEventBusConsumer();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  async function contextFor(metadata: Record<string, unknown>): Promise<ExecutionContext> {
+    const provider = new AsyncExecutionContextProvider();
+    let seen: ExecutionContext | undefined;
+    const consumer = new EventConsumer({
+      bus,
+      consumerName: 'test',
+      sourceService: 'svc-a',
+      logger: new NoopLogger(),
+      executionContext: { provider },
+    });
+    consumer.on('test.happened', async () => {
+      seen = provider.getContext();
+    });
+    // Metadata as it comes back from the bus: the parsed `EventMetadata.toJSON()` shape.
+    bus.enqueueBatch([makeBusEntry({ payload: { payload: {}, metadata } })]);
+
+    consumer.start();
+    await vi.advanceTimersByTimeAsync(1000);
+    await consumer.dispose();
+    if (!seen) throw new Error('handler did not run');
+    return seen;
+  }
+
+  it('rebuilds a system event with null ids as a session-less context', async () => {
+    const ctx = await contextFor({
+      kind: 'domain',
+      correlationId: 'corr-1',
+      actorType: 'system',
+      scopeId: null,
+      userId: null,
+      createdAt: '2026-01-01T00:00:00.000Z',
+    });
+    expect(ctx.session).toBeUndefined();
+    expect(ctx.correlationId).toBe('corr-1');
+  });
+
+  it('rebuilds extended session fields carried in actorAttributes', async () => {
+    const ctx = await contextFor({
+      kind: 'domain',
+      correlationId: 'corr-1',
+      actorType: 'user',
+      scopeId: 'scope-1',
+      userId: 'user-1',
+      actorAttributes: { projectId: 'p-1' },
+      createdAt: '2026-01-01T00:00:00.000Z',
+    });
+    expect(ctx.session).toEqual({ scopeId: 'scope-1', userId: 'user-1', projectId: 'p-1' });
   });
 });

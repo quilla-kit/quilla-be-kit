@@ -13,14 +13,7 @@
   "bugs": {
     "url": "https://github.com/quilla-kit/quilla-be-kit/issues"
   },
-  "keywords": [
-    "repository",
-    "unit-of-work",
-    "outbox",
-    "dao",
-    "ddd",
-    "typescript"
-  ],
+  "keywords": ["repository", "unit-of-work", "outbox", "dao", "ddd", "typescript"],
   "type": "module",
   "engines": {
     "node": ">=22"
@@ -42,11 +35,7 @@
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "files": [
-    "dist",
-    "README.md",
-    "LICENSE"
-  ],
+  "files": ["dist", "README.md", "LICENSE"],
   "publishConfig": {
     "access": "public",
     "provenance": true

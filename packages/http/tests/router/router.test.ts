@@ -1,12 +1,20 @@
 import { AsyncExecutionContextProvider } from '@quilla-be-kit/execution-context';
 import { describe, expect, it } from 'vitest';
-import { Controller, Get, GetPublic, Post } from '../../src/decorator/index.js';
+import {
+  Controller,
+  Get,
+  GetPublic,
+  Post,
+  PostPublic,
+  ValidateRequest,
+} from '../../src/decorator/index.js';
 import { HttpAttributes } from '../../src/request/http-attributes.js';
 import type { HttpMiddleware } from '../../src/request/http-middleware.type.js';
 import type { HttpRequest } from '../../src/request/http-request.interface.js';
 import type { HttpResponse } from '../../src/request/http-response.type.js';
 import type { AuthMiddlewareStack } from '../../src/router/auth-middleware-stack.type.js';
 import { Router } from '../../src/router/router.js';
+import { SESSION_KEYS_ATTRIBUTE } from '../../src/validator/input-injection.metadata.js';
 
 function makeExecutionContext(): { provider: AsyncExecutionContextProvider } {
   return { provider: new AsyncExecutionContextProvider() };
@@ -967,5 +975,206 @@ describe('Router', () => {
       });
       expect(undecorated.getRoutes().map((r) => r.fullPath)).toEqual(['/base/inherited']);
     });
+  });
+});
+
+describe('Router session keys', () => {
+  const passthrough: HttpMiddleware = async (_req, next) => {
+    await next();
+  };
+
+  async function stampedAttributes(router: Router, path: string): Promise<Map<string, unknown>> {
+    const route = router.getRoutes().find((r) => r.fullPath === path);
+    const stamp = route?.middlewareChain[1];
+    if (!stamp) throw new Error(`no stamp on ${path}`);
+    const attributes = new Map<string, unknown>();
+    await stamp(
+      { setAttribute: (k: string, v: unknown) => attributes.set(k, v) } as unknown as HttpRequest,
+      async () => {},
+    );
+    return attributes;
+  }
+
+  @Controller('/projects')
+  class ProjectsController {
+    @Get('/')
+    async list(_req: HttpRequest): Promise<HttpResponse> {
+      return { httpCode: 200 };
+    }
+    @GetPublic('/healthz')
+    async health(_req: HttpRequest): Promise<HttpResponse> {
+      return { httpCode: 200 };
+    }
+    @Get('/override', { authStack: 'apiKey' })
+    async override(_req: HttpRequest): Promise<HttpResponse> {
+      return { httpCode: 200 };
+    }
+  }
+
+  const stacks = {
+    bearer: { credentialVerification: passthrough, sessionLoad: passthrough },
+    apiKey: {
+      credentialVerification: passthrough,
+      sessionLoad: passthrough,
+      sessionKeys: ['projectId', 'scopeId', 'projectId'],
+    },
+  };
+
+  it('stamps the stack extra keys, deduplicated and without base keys, alongside the stack name', async () => {
+    const router = new Router({
+      executionContext: makeExecutionContext(),
+      controllers: [new ProjectsController()],
+      authStacks: stacks,
+      defaultAuthStack: 'bearer',
+    });
+
+    const machine = await stampedAttributes(router, '/projects/override');
+    expect(machine.get(HttpAttributes.AUTH_STACK)).toBe('apiKey');
+    expect(machine.get(SESSION_KEYS_ATTRIBUTE)).toEqual(['projectId']);
+
+    const human = await stampedAttributes(router, '/projects');
+    expect(human.get(SESSION_KEYS_ATTRIBUTE)).toEqual([]);
+  });
+
+  it('stamps keys for stacks selected by module and by inherited controller', async () => {
+    @Controller('/base', { authStack: 'apiKey' })
+    class BaseController {
+      @Get('/inherited')
+      async inherited(_req: HttpRequest): Promise<HttpResponse> {
+        return { httpCode: 200 };
+      }
+    }
+    class ChildController extends BaseController {}
+
+    const router = new Router({
+      executionContext: makeExecutionContext(),
+      controllers: [new ChildController()],
+      modules: [
+        {
+          name: 'mcp',
+          meta: { prefix: '/mcp', authStack: 'apiKey', controllers: [new ProjectsController()] },
+        },
+      ],
+      authStacks: stacks,
+      defaultAuthStack: 'bearer',
+    });
+
+    for (const path of ['/base/inherited', '/mcp/projects']) {
+      const attributes = await stampedAttributes(router, path);
+      expect(attributes.get(SESSION_KEYS_ATTRIBUTE)).toEqual(['projectId']);
+    }
+  });
+
+  it('leaves public routes unstamped', () => {
+    const router = new Router({
+      executionContext: makeExecutionContext(),
+      controllers: [new ProjectsController()],
+      authStacks: stacks,
+      defaultAuthStack: 'apiKey',
+    });
+    const health = router.getRoutes().find((r) => r.fullPath === '/projects/healthz');
+    expect(health?.middlewareChain).toHaveLength(1);
+  });
+
+  it('throws when a stack declares sessionKeys without sessionLoad', () => {
+    expect(
+      () =>
+        new Router({
+          executionContext: makeExecutionContext(),
+          controllers: [new ProjectsController()],
+          authStacks: {
+            bearer: { credentialVerification: passthrough },
+            apiKey: { credentialVerification: passthrough, sessionKeys: ['projectId'] },
+          },
+          defaultAuthStack: 'bearer',
+        }),
+    ).toThrow(/stack "apiKey" declares `sessionKeys` without `sessionLoad`/);
+  });
+
+  it.each(['', '__proto__', 'constructor', 'prototype'])(
+    'throws on the invalid session key %j',
+    (key) => {
+      expect(
+        () =>
+          new Router({
+            executionContext: makeExecutionContext(),
+            controllers: [new ProjectsController()],
+            authStacks: {
+              bearer: {
+                credentialVerification: passthrough,
+                sessionLoad: passthrough,
+                sessionKeys: [key],
+              },
+            },
+            defaultAuthStack: 'bearer',
+          }),
+      ).toThrow(/invalid session key/);
+    },
+  );
+
+  it.each([
+    {
+      label: 'a stack key sourced from the default If-Match header',
+      headers: undefined,
+      sessionKeys: ['updatedAt'],
+      message: /"ConflictController.create" sources "updatedAt" from a header/,
+    },
+    {
+      label: 'a base key mapped to a header',
+      headers: { scopeId: 'X-Scope-Id' },
+      sessionKeys: undefined,
+      message: /sources "scopeId" from a header, but stack "bearer" sources it from the session/,
+    },
+  ])('throws on $label for a session-loading stack', ({ headers, sessionKeys, message }) => {
+    @Controller('/conflict')
+    class ConflictController {
+      @Post('/')
+      @ValidateRequest({}, ['body'], headers)
+      async create(_req: HttpRequest): Promise<HttpResponse> {
+        return { httpCode: 201 };
+      }
+    }
+
+    expect(
+      () =>
+        new Router({
+          executionContext: makeExecutionContext(),
+          controllers: [new ConflictController()],
+          authStacks: {
+            bearer: {
+              credentialVerification: passthrough,
+              sessionLoad: passthrough,
+              ...(sessionKeys ? { sessionKeys } : {}),
+            },
+          },
+          defaultAuthStack: 'bearer',
+        }),
+    ).toThrow(message);
+  });
+
+  it('allows a header-sourced base key on public routes and on stacks without sessionLoad', () => {
+    @Controller('/tenant')
+    class TenantController {
+      @Post('/')
+      @ValidateRequest({}, ['body'], { scopeId: 'X-Scope-Id' })
+      async create(_req: HttpRequest): Promise<HttpResponse> {
+        return { httpCode: 201 };
+      }
+      @PostPublic('/signup')
+      @ValidateRequest({}, ['body'], { scopeId: 'X-Scope-Id' })
+      async signup(_req: HttpRequest): Promise<HttpResponse> {
+        return { httpCode: 201 };
+      }
+    }
+
+    expect(
+      () =>
+        new Router({
+          executionContext: makeExecutionContext(),
+          controllers: [new TenantController()],
+          authStacks: { bearer: { credentialVerification: passthrough } },
+          defaultAuthStack: 'bearer',
+        }),
+    ).not.toThrow();
   });
 });

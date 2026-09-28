@@ -72,3 +72,43 @@ describe('ExecutionContextEnricher', () => {
     expect(enricher.enrich()).toEqual({});
   });
 });
+
+describe('ExecutionContextEnricher sessionKeys', () => {
+  const ctx = {
+    actorType: 'user',
+    correlationId: 'corr-1',
+    executionAttemptId: 'attempt-1',
+    session: { scopeId: 'scope-1', userId: 'user-1', projectId: 'p-1', authMethod: 'api-key' },
+  } as const;
+
+  it('logs listed session fields under extra.session, leaving the typed context unchanged', async () => {
+    const provider = new AsyncExecutionContextProvider();
+    const enricher = new ExecutionContextEnricher(provider, {
+      sessionKeys: ['projectId', 'authMethod', 'missing', 'scopeId'],
+    });
+    await provider.runWithContext(ctx, async () => {
+      expect(enricher.enrich()).toEqual({
+        context: {
+          scopeId: 'scope-1',
+          userId: 'user-1',
+          actorType: 'user',
+          correlationId: 'corr-1',
+          executionAttemptId: 'attempt-1',
+        },
+        extra: { session: { projectId: 'p-1', authMethod: 'api-key' } },
+      });
+    });
+  });
+
+  it.each([
+    ['only inherited properties are listed', { sessionKeys: ['constructor', 'toString'] }],
+    ['none of the listed keys are present', { sessionKeys: ['missing'] }],
+    ['the option is omitted (unchanged output)', undefined],
+  ])('adds no extra when %s', async (_label, options) => {
+    const provider = new AsyncExecutionContextProvider();
+    const enricher = new ExecutionContextEnricher(provider, options);
+    await provider.runWithContext(ctx, async () => {
+      expect(enricher.enrich()).not.toHaveProperty('extra');
+    });
+  });
+});

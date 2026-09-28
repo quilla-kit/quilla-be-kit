@@ -110,3 +110,79 @@ describe('executionContextFactory.createFromEventMetadata', () => {
     expect(ctx.session).toBeUndefined();
   });
 });
+
+describe('executionContextFactory.createFromEventMetadata with parsed JSON and attributes', () => {
+  const roundTrip = (props: Parameters<typeof EventMetadata.create>[0]) =>
+    JSON.parse(JSON.stringify(EventMetadata.create(props).toJSON()));
+
+  it('reconstitutes a session-less context from JSON-shaped metadata with null ids', () => {
+    const json = roundTrip({
+      kind: EventKind.DOMAIN,
+      correlationId: 'corr-1',
+      actorType: 'system',
+    });
+    const ctx = executionContextFactory.createFromEventMetadata(json);
+    expect(ctx.session).toBeUndefined();
+    expect(ctx.actorType).toBe('system');
+  });
+
+  it('round-trips actorAttributes through JSON onto the session', () => {
+    const json = roundTrip({
+      kind: EventKind.DOMAIN,
+      correlationId: 'corr-1',
+      actorType: 'user',
+      scopeId: 'scope-1',
+      userId: 'user-1',
+      actorAttributes: { projectId: 'p-1', quota: 3 },
+    });
+    const ctx = executionContextFactory.createFromEventMetadata(json);
+    expect(ctx.session).toEqual({
+      scopeId: 'scope-1',
+      userId: 'user-1',
+      projectId: 'p-1',
+      quota: 3,
+    });
+  });
+
+  it('never lets attributes override the base keys', () => {
+    const ctx = executionContextFactory.createFromEventMetadata({
+      actorType: 'user',
+      correlationId: 'corr-1',
+      scopeId: 'scope-1',
+      userId: 'user-1',
+      actorAttributes: { scopeId: 'forged', userId: 'forged', projectId: 'p-1' },
+    });
+    expect(ctx.session).toEqual({ scopeId: 'scope-1', userId: 'user-1', projectId: 'p-1' });
+  });
+
+  it('drops non-primitive attribute values arriving from JSON', () => {
+    const ctx = executionContextFactory.createFromEventMetadata(
+      JSON.parse(
+        '{"actorType":"user","correlationId":"c","scopeId":"s","userId":"u","actorAttributes":{"projectId":"p-1","roles":["admin"],"nested":{"a":1},"none":null}}',
+      ),
+    );
+    expect(ctx.session).toEqual({ scopeId: 's', userId: 'u', projectId: 'p-1' });
+  });
+
+  it('ignores a __proto__ attribute from JSON without touching the session prototype', () => {
+    const ctx = executionContextFactory.createFromEventMetadata(
+      JSON.parse(
+        '{"actorType":"user","correlationId":"c","scopeId":"s","userId":"u","actorAttributes":{"__proto__":{"polluted":true},"projectId":"p-1"}}',
+      ),
+    );
+    expect(ctx.session).toEqual({ scopeId: 's', userId: 'u', projectId: 'p-1' });
+    expect(Object.getPrototypeOf(ctx.session)).toBe(Object.prototype);
+    expect((ctx.session as Record<string, unknown>).polluted).toBeUndefined();
+  });
+
+  it('drops attributes when the metadata has no session', () => {
+    const ctx = executionContextFactory.createFromEventMetadata({
+      actorType: 'job',
+      correlationId: 'corr-1',
+      scopeId: 'scope-1',
+      userId: null,
+      actorAttributes: { projectId: 'p-1' },
+    });
+    expect(ctx.session).toBeUndefined();
+  });
+});

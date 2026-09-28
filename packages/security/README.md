@@ -246,6 +246,8 @@ Do **not** reuse `authenticatedSessionMiddleware` for a second stack. It keys th
 
 Write a `sessionLoad` that checks *that credential's* revocation source — its own expiry and revoked flag — and enters a nested `runWithContext` with its own `actorType`. It **must** populate `ExecutionContext.session` (`scopeId` + `userId`): `@ValidateRequest` injects auth-derived `scopeId`/`userId` only when `session` is present, so a stack that sets `actorType` but omits `session` fails *open* — the handler runs with an undefined scope rather than being rejected.
 
+If the stack declares [`sessionKeys`](../http/README.md#session-keys) (for example `['projectId']` for a key bound to one project), its `sessionLoad` must also set those fields on `session`. `authenticatedSessionMiddleware` never does, so a stack using it with `sessionKeys` fails every request that declares the key with a 500.
+
 ### Stacks must not share a credential verifier or signing key
 
 `TokenService.verify(token)` takes no audience, and `TokenClaims` carries no `aud`, so a credential is verifiable by any verifier holding the same key. Per-route stack selection is the only thing keeping audiences apart — sharing a verifier between two stacks collapses that boundary, and unlike the revocation trap above it fails **open**. Give each stack its own verifier and key material. Scope strings must likewise be globally unique across stacks, since `@AuthorizeScope` reads one flat `token.scopes` namespace.

@@ -492,7 +492,11 @@ When `EventConsumer` is wired with an `executionContext.provider`, each
 handler dispatch is wrapped in `provider.runWithContext(...)` using a
 context **reconstructed from the event's `EventMetadata`** — same
 `correlationId`, `actorType`, `scopeId`, `userId` as the operation that
-produced the event. The same `correlationId` that flowed through the
+produced the event, plus any extended session fields carried in
+`actorAttributes` (see
+[Carrying extended session fields end to end](../execution-context/README.md#carrying-extended-session-fields-end-to-end)).
+A session is rebuilt only when the metadata carries both `scopeId` and
+`userId`; a system event comes back without one. The same `correlationId` that flowed through the
 originating HTTP request surfaces on log lines emitted by the handler,
 and `ExecutionContextProvider.getContext()` returns a valid context
 inside handler code without the consumer wiring any middleware.

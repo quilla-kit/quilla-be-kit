@@ -76,7 +76,10 @@ await provider.runWithContext(ctx, async () => {
   **`runWithContext(fn)` is async-only** — synchronous code cannot establish a
   scope; wrap it in `async () => {...}` at the boundary.
 - `ExecutionContextFactory` — `createSystemContext(actorType)`, `createBaselineContext`,
-  `createFromEventMetadata`. Reach it via `provider.factory` so consumers
+  `createFromEventMetadata`. `createFromEventMetadata` accepts an
+  `EventMetadata` instance or its parsed `toJSON()` form (`EventMetadataSource`):
+  it rebuilds a session only when both `scopeId` and `userId` are strings, and
+  adds the metadata's `actorAttributes` to it. Reach it via `provider.factory` so consumers
   take only one injectable (the provider) and stay internally consistent.
   `createSystemContext` and `createBaselineContext` auto-generate
   `correlationId` via `node:crypto.randomUUID()` when not supplied — so a
@@ -105,7 +108,9 @@ await provider.runWithContext(ctx, async () => {
   and returns the current context's fields as a log contribution. Contributes
   `scopeId` and `userId` (from `ctx.session`, only when a session is present),
   plus `actorType`, `correlationId`, and `executionAttemptId`. All land in the
-  log entry's `context` field, flat. Returns an empty contribution when the
+  log entry's `context` field, flat. Takes an optional
+  `{ sessionKeys }`: listed extended session fields are added under
+  `extra.session`. Returns an empty contribution when the
   provider is outside a scope (bootstrap logs, pre-request logs) — never
   throws.
 
@@ -121,14 +126,17 @@ operation is authenticated." Either session is present (authenticated) or
 it isn't (anonymous / system / job) — never half-populated. Every toolkit
 surface that reads auth-derived identity does this consistently:
 
-- `@ValidateRequest` injects `scopeId` / `userId` into validated payloads
-  only when `ctx.session` is defined and the schema declares those keys.
+- `@ValidateRequest` injects `scopeId` / `userId` (and an auth stack's
+  `sessionKeys`) into validated payloads only when `ctx.session` is defined
+  and the schema declares those keys.
 - `BaseWriteDao` reads `ctx.session?.userId` for `inserted_by` /
   `updated_by` audit columns; writes under system contexts land with
   `undefined` audit.
 - `ExecutionContextEnricher` flattens `ctx.session` to `scopeId` /
   `userId` fields on log entries — log shape stays flat even though the
   context groups, so dashboards and log queries keep their field names.
+- `createFromEventMetadata` rebuilds `ctx.session` in event consumers only
+  when the event metadata carries both `scopeId` and `userId`.
 
 Consumer code applies the same discipline: check `ctx.session` once, then
 read `scopeId` / `userId` off it. Avoid reconstituting half-states
@@ -199,6 +207,124 @@ Picking a richer base nudges every consumer toward a shape most of them
 don't need. The toolkit ships the minimal `AuthSession` as a contract for
 its own surfaces (audit, validation, enrichment) and lets consumers own
 the rest.
+
+### Carrying extended session fields end to end
+
+An extended session field (say `projectId` on an API-key session bound to one
+project) can be injected into validated input, logged and carried to event
+consumers. Each surface opts in separately, so you list the key wherever you
+want it to reach.
+
+**1. Load it into the session.** Declare the field on your session type (see
+[Extension pattern](#extension-pattern)), e.g. `readonly projectId?: string`
+on `AppAuthSession`. Your stack's `sessionLoad` sets it on `ctx.session`, next
+to `scopeId` and `userId`:
+
+```ts
+const machineSessionLoad: HttpMiddleware = async (request, next) => {
+  const key = request.getAttribute<ApiKeyToken>(HttpAttributes.VERIFIED_TOKEN);
+  const ctx = provider.getContext();
+  await provider.runWithContext(
+    {
+      ...ctx,
+      actorType: 'service',
+      session: { scopeId: key.scopeId, userId: key.userId, projectId: key.projectId },
+    },
+    next,
+  );
+};
+```
+
+**2. Declare it on the stack.** See
+[Session keys](../http/README.md#session-keys) in `@quilla-be-kit/http`:
+
+```ts
+authStacks: {
+  bearer: { credentialVerification: bearerAuth, sessionLoad: userSessionLoad },
+  apiKey: { credentialVerification: apiKeyAuth, sessionLoad: machineSessionLoad, sessionKeys: ['projectId'] },
+},
+```
+
+**3. Declare it in the schema.** On `apiKey` routes the value comes from the
+session; whatever the caller sent is discarded:
+
+```ts
+const ListDocuments = z.object({ projectId: z.string() });
+
+@Get('/documents')
+@ValidateRequest(ListDocuments, ['query'])
+async list(req: ValidatedRequest<typeof ListDocuments>) {
+  const { projectId } = req.getValidatedInput();   // always the session's projectId
+}
+```
+
+**4. Log it.** Listed fields go to `extra.session` on every log entry:
+
+```ts
+new ExecutionContextEnricher(provider, { sessionKeys: ['projectId'] });
+```
+
+**5. Carry it through events.** Your `UnitOfWork` `serialize` builds the
+event metadata, so you decide what an event carries. Put the extra fields in
+`actorAttributes`. Consumers wired with `executionContext: { provider }`
+receive them back on `ctx.session`:
+
+```ts
+serialize: (event) => {
+  const ctx = provider.getContext() as AppExecutionContext;
+  const metadata = EventMetadata.create({
+    kind: EventKind.DOMAIN,
+    correlationId: ctx.correlationId,
+    actorType: ctx.actorType,
+    ...(ctx.session && {
+      scopeId: ctx.session.scopeId,
+      userId: ctx.session.userId,
+      // Bearer sessions carry no projectId, so only add it when present.
+      ...(ctx.session.projectId !== undefined && {
+        actorAttributes: { projectId: ctx.session.projectId },
+      }),
+    }),
+  });
+  return {
+    // ...
+    payload: { payload: event.toJSON(), metadata: metadata.toJSON() },
+  };
+},
+```
+
+**What changes for an existing app.** Nothing, until you list a key, except:
+
+| Change | Effect |
+| --- | --- |
+| A route that maps `scopeId`/`userId` to a header on a stack with `sessionLoad` | Router throws at construction. Remove the mapping; the session always supplied the value. |
+| Session vs. header precedence | Session fields now win over a header mapped to the same key. |
+| Event metadata with `scopeId: null` / `userId: null` (a system event read back from the bus) | Now rebuilds a context without a session. It was wrongly rebuilt as authenticated with `null` ids. |
+
+**When it fails.**
+
+| Error | When | Fix |
+| --- | --- | --- |
+| `` stack "…" declares `sessionKeys` without `sessionLoad` `` | Router construction | Add the `sessionLoad` that sets the fields. |
+| `stack "…" declares invalid session key` | Router construction | Use a real field name (not empty, `__proto__`, `constructor`, `prototype`). |
+| `"…" sources "…" from a header, but stack "…" sources it from the session` | Router construction | Drop the header mapping for that key on routes of that stack. |
+| 500: `session key "…" is declared by the auth stack but no session was loaded` | Request | The stack's `sessionLoad` must always set `ctx.session`. |
+| 500: `session has no value for declared key "…"` | Request | `sessionLoad` must set the field to a non-null value. |
+| `EventMetadata: reserved actorAttributes key(s)` / `actorAttributes require both scopeId and userId` | `EventMetadata.create` | Attributes can't reuse `scopeId`/`userId`, and need both ids. |
+
+Request-time failures answer a generic 500; the specific message goes to
+the server log.
+
+**Rules for success.**
+
+- A field is injected only where the schema declares it and the stack lists it.
+- A listed field is never taken from the client, even when your
+  `RequestValidator` has no `describeSchema` (the field is then stripped and
+  not injected).
+- `*Public` routes never receive stack-listed fields.
+- `authenticatedSessionMiddleware` from `@quilla-be-kit/security` only sets
+  `scopeId`/`userId`. A stack with extra fields needs its own `sessionLoad`.
+- `extra` on log entries is not obfuscated. Don't log sensitive session fields.
+- Only string, number and boolean fields can cross the event boundary.
 
 ## Design notes
 
