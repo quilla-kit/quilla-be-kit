@@ -1,5 +1,13 @@
 # @quilla-be-kit/persistence
 
+## 6.0.0
+
+### Patch Changes
+
+- Updated dependencies [c073429]
+  - @quilla-be-kit/ddd@0.3.0
+  - @quilla-be-kit/execution-context@0.4.0
+
 ## 5.0.1
 
 ### Patch Changes
