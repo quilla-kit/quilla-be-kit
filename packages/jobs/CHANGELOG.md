@@ -1,5 +1,12 @@
 # @quilla-be-kit/jobs
 
+## 0.2.4
+
+### Patch Changes
+
+- Updated dependencies [c073429]
+  - @quilla-be-kit/execution-context@0.4.0
+
 ## 0.2.3
 
 ### Patch Changes
