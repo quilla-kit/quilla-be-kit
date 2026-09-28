@@ -64,7 +64,7 @@ Think of quilla-be-kit as five concentric layers. You reach for the inner layers
 **Foundation — the vocabulary**
 - [`@quilla-be-kit/ddd`](packages/ddd) — `AggregateRoot`, `Entity`, `DomainEvent`, `EventMetadata`, `ActorType`
 - [`@quilla-be-kit/errors`](packages/errors) — `QuillaError` base + category classes with cross-realm-safe classification
-- [`@quilla-be-kit/execution-context`](packages/execution-context) — AsyncLocalStorage-backed context carrying `scopeId`, `userId`, `actorType`, `correlationId`
+- [`@quilla-be-kit/execution-context`](packages/execution-context) — AsyncLocalStorage-backed context carrying `actorType`, `correlationId` and the caller's session (`scopeId`, `userId`, plus any fields your app adds), carried into logs and across events
 
 **Runtime — process lifecycle**
 - [`@quilla-be-kit/runtime`](packages/runtime) — `Runtime` (signal trap), `ShutdownManager` (phased teardown), `ComponentRegistry`
@@ -92,6 +92,7 @@ These are the contracts quilla-be-kit guarantees to code built on it:
 3. **Outbox iff UnitOfWork iff durable domain state.** Outbox entries commit in the same transaction as aggregate writes — no partial failure modes between "state changed" and "event emitted."
 4. **No governance leakage.** The toolkit does not encode AI-containment rules, modulith topology, projection policies, or domain-specific invariants. Those belong in consumer projects.
 5. **Interface vs. adapter split is non-negotiable.** Interface packages have zero external runtime dependencies. Platform built-ins (`node:crypto`) are fine; transport/storage drivers belong in consumer projects or sub-path exports.
+6. **Session-derived identity is not client input.** When a session is present, `@ValidateRequest` takes `scopeId`, `userId` and the auth stack's `sessionKeys` from it, overwriting anything the client sent. A stack's `sessionKeys` are never accepted from the client, even without a session; the request fails instead.
 
 ## Adopting the toolkit: build a shell
 

@@ -280,7 +280,42 @@ Router stamps the resolved name on the request as
 the caller — `scopes` share one flat namespace across stacks and cannot carry
 that distinction.
 
-**Everything that can fail, fails at construction**, never at request time:
+#### Session keys
+
+`@ValidateRequest` always injects `scopeId` and `userId` from the session. A
+stack can declare more session fields that are **authority, not input**: they
+come from the session only, and a client-sent value is always discarded.
+
+```ts
+authStacks: {
+  bearer: { credentialVerification: bearerAuth, sessionLoad: userSessionLoad },
+  apiKey: {
+    credentialVerification: apiKeyAuth,
+    sessionLoad: machineSessionLoad,   // must set session.projectId
+    sessionKeys: ['projectId'],
+  },
+},
+```
+
+On an `apiKey` route, a schema that declares `projectId` receives the session's
+value, and `?projectId=…` from the caller is dropped. On a `bearer` route the
+same key is ordinary input. The keys are per stack, so one route family can
+confine a field while another takes it from the path.
+
+- Injected only when the schema declares the key, like `scopeId`/`userId`.
+- Stripped from client input even when the validator has no `describeSchema`,
+  in which case it is not injected either.
+- `*Public` routes resolve no stack, so they never receive stack keys.
+- A declared key that the session can't supply fails the request with a 500,
+  never with the client's value: either no session was loaded, or the session
+  has no own, non-null value for the key. `authenticatedSessionMiddleware` from
+  `@quilla-be-kit/security` only sets `scopeId`/`userId`, so a stack with
+  `sessionKeys` needs a `sessionLoad` that sets its extra fields.
+
+Carrying the same fields into logs and across events is covered in
+[Carrying extended session fields end to end](../execution-context/README.md#carrying-extended-session-fields-end-to-end).
+
+**Stack selection and stack configuration fail at construction**, never at request time:
 
 | Condition | Why it throws |
 | --- | --- |
@@ -291,6 +326,9 @@ that distinction.
 | A route / `@Controller` / module names an undeclared stack | Typo, reported with the controller and handler name. |
 | `authStack` on a `*Public` route | Contradictory — the stack could never run. |
 | The same controller registered twice | Its copies would resolve to different stacks at different paths. |
+| `sessionKeys` without `sessionLoad` | Nothing would populate the keys. |
+| An empty, `__proto__`, `constructor` or `prototype` session key | Not a valid session field name. |
+| A route sources a session key from a header on a stack with `sessionLoad` | The key would have two sources. Covers `scopeId`/`userId` and the stack's `sessionKeys`, including the default `updatedAt` ← `If-Match`. |
 
 `defaultAuthStack` is constrained to the keys of `authStacks`, so a typo is a
 type error before it is a runtime one. Route-, controller-, and module-level
@@ -321,17 +359,18 @@ Throws `ForbiddenError` on missing token or mismatch. An auth middleware (from `
 
 ### `@ValidateRequest(schema, sources, headers?)`
 
-Merges data from the configured sources (`'body'`, `'params'`, `'query'`), injects `scopeId` and `userId` from `ExecutionContext.session` **only when the schema declares those keys and a session is active**, injects header-sourced fields (see below), validates against `schema` using the server's `RequestValidator`, and attaches the validated value to the request. Retrieve it with `request.getValidatedInput()` on a handler whose parameter is typed `ValidatedRequest<typeof Schema>`: the return type is derived from the schema, so it cannot drift from what the schema emits. `getValidatedInput` exists only on `ValidatedRequest`, never on a plain `HttpRequest`.
+Merges data from the configured sources (`'body'`, `'params'`, `'query'`), injects header-sourced fields (see below), injects `scopeId`, `userId` and the route's stack [`sessionKeys`](#session-keys) from `ExecutionContext.session` **only when the schema declares those keys and a session is active**, validates against `schema` using the server's `RequestValidator`, and attaches the validated value to the request. Retrieve it with `request.getValidatedInput()` on a handler whose parameter is typed `ValidatedRequest<typeof Schema>`: the return type is derived from the schema, so it cannot drift from what the schema emits. `getValidatedInput` exists only on `ValidatedRequest`, never on a plain `HttpRequest`.
 
 **Sources merge in array order, and the last source wins.** A key present in more than one source
 takes the value from the source listed last, so `['body', 'params']` lets the path id override a
 body field of the same name, and `['params', 'body']` lets a request body overwrite the id from
-the URL. Order the array deliberately; `['body', 'params']` is the safer default. Session- and
-header-derived fields are injected *after* the merge, so they win over every source.
+the URL. Order the array deliberately; `['body', 'params']` is the safer default. Header- and
+session-derived fields are injected *after* the merge, so they win over every source, and
+session fields are injected last, so the session also wins over a header.
 
-Auth-injection requires two things:
-- A live `session` on the request's `ExecutionContext` (i.e. the route ran through auth middleware that established one — anonymous and system contexts get no injection).
-- The `RequestValidator` implements the optional `describeSchema(schema)` method (see [`RequestValidator` adapter](#requestvalidator-adapter) below). Without it, auth-injection is skipped entirely — a fail-safe default that keeps surprise fields out of schemas that didn't ask for them.
+Session injection requires two things:
+- A live `session` on the request's `ExecutionContext` (i.e. the route ran through auth middleware that established one — anonymous and system contexts get no `scopeId`/`userId` injection). On a route whose stack declares [`sessionKeys`](#session-keys), a missing session fails the request instead.
+- The `RequestValidator` implements the optional `describeSchema(schema)` method (see [`RequestValidator` adapter](#requestvalidator-adapter) below). Without it, injection is skipped entirely — a fail-safe default that keeps surprise fields out of schemas that didn't ask for them. Stack `sessionKeys` are still stripped from client input.
 
 ```ts
 @Post('/')
@@ -346,7 +385,7 @@ async create(req: ValidatedRequest<typeof CreateUserRequestDto>): Promise<HttpRe
 
 Two things to keep in mind:
 
-- **Schema shape is the truth.** Helpers that reshape input change the output type. For example, `tenantScopedListQuery` nests `page` / `pageSize` / `sort` under `pagination`, so read `query.pagination.pageSize`, not `query.pageSize`. The compiler now flags the wrong one.
+- **Schema shape is the truth.** Helpers that reshape input change the output type. For example, `createQueryParametersSchema` nests `page` / `pageSize` under an optional `pagination` (absent when the client sends neither), so read `query.pagination?.pageSize`, not `query.pageSize`. The compiler now flags the wrong one.
 - **The validator must return the schema's output.** The derived type is a claim about the schema; a custom `RequestValidator.validate` that returns a different shape than the schema infers makes the type lie.
 
 #### Routes without validation
@@ -568,7 +607,7 @@ const router = new Router({
   // the resolution ladder and the full list of construction-time throws.
   authStacks: {
     bearer: { credentialVerification, sessionLoad? },
-    apiKey: { credentialVerification, sessionLoad? },
+    apiKey: { credentialVerification, sessionLoad?, sessionKeys? },
   },
   defaultAuthStack: 'bearer',             // required with `authStacks`; typed to its keys
 });

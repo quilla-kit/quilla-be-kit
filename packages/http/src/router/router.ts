@@ -10,6 +10,12 @@ import { HttpAttributes } from '../request/http-attributes.js';
 import type { HttpMiddleware } from '../request/http-middleware.type.js';
 import type { HttpRequest } from '../request/http-request.interface.js';
 import type { HttpResponse } from '../request/http-response.type.js';
+import {
+  BASE_SESSION_KEYS,
+  FORBIDDEN_SESSION_KEYS,
+  SESSION_KEYS_ATTRIBUTE,
+  effectiveHeaderMap,
+} from '../validator/input-injection.metadata.js';
 import type { AuthMiddlewareStack } from './auth-middleware-stack.type.js';
 import type { ControllerRegistration } from './controller-registration.type.js';
 import type { NormalizedRoute } from './normalized-route.type.js';
@@ -20,6 +26,12 @@ type Registration = ControllerRegistration & {
   readonly moduleVersion: string | undefined;
   readonly moduleAuthStack: string | undefined;
   readonly moduleMiddlewares: readonly HttpMiddleware[];
+};
+
+type AuthChain = {
+  readonly middlewares: readonly HttpMiddleware[];
+  readonly sessionKeys: readonly string[];
+  readonly loadsSession: boolean;
 };
 
 export class Router<S extends string = string> {
@@ -117,25 +129,42 @@ function buildExecutionContextMiddleware(options: RouterExecutionContextOptions)
 
 function buildAuthChains(
   stacks: Readonly<Partial<Record<string, AuthMiddlewareStack>>> | undefined,
-): ReadonlyMap<string, readonly HttpMiddleware[]> {
-  const chains = new Map<string, readonly HttpMiddleware[]>();
+): ReadonlyMap<string, AuthChain> {
+  const chains = new Map<string, AuthChain>();
   if (!stacks) return chains;
+  const violations: string[] = [];
   for (const [name, stack] of Object.entries(stacks)) {
     if (!stack) continue;
+    const extraKeys = stack.sessionKeys ?? [];
+    if (extraKeys.length > 0 && !stack.sessionLoad) {
+      violations.push(
+        `  stack "${name}" declares \`sessionKeys\` without \`sessionLoad\` — nothing would populate them`,
+      );
+    }
+    for (const key of extraKeys) {
+      if (key.length === 0 || FORBIDDEN_SESSION_KEYS.includes(key)) {
+        violations.push(`  stack "${name}" declares invalid session key ${JSON.stringify(key)}`);
+      }
+    }
+    const sessionKeys = [...new Set(extraKeys)].filter((k) => !BASE_SESSION_KEYS.includes(k));
     // Records the stack that authenticated the request, so guards can assert
     // scheme identity — `scopes` are one flat namespace shared across stacks.
     const stamp: HttpMiddleware = async (request, next) => {
       request.setAttribute(HttpAttributes.AUTH_STACK, name);
+      request.setAttribute(SESSION_KEYS_ATTRIBUTE, sessionKeys);
       await next();
     };
-    const chain: HttpMiddleware[] = [stamp, stack.credentialVerification];
-    if (stack.sessionLoad) chain.push(stack.sessionLoad);
-    chains.set(name, chain);
+    const middlewares: HttpMiddleware[] = [stamp, stack.credentialVerification];
+    if (stack.sessionLoad) middlewares.push(stack.sessionLoad);
+    chains.set(name, { middlewares, sessionKeys, loadsSession: stack.sessionLoad !== undefined });
+  }
+  if (violations.length > 0) {
+    throw new Error(`Router: invalid auth stack configuration\n${violations.join('\n')}`);
   }
   return chains;
 }
 
-function declaredList(authChains: ReadonlyMap<string, readonly HttpMiddleware[]>): string {
+function declaredList(authChains: ReadonlyMap<string, AuthChain>): string {
   return [...authChains.keys()].join(', ') || '(none)';
 }
 
@@ -143,7 +172,7 @@ function declaredList(authChains: ReadonlyMap<string, readonly HttpMiddleware[]>
 // collision on the same controller.
 function assertDeclaredStacks(
   registrations: readonly Registration[],
-  authChains: ReadonlyMap<string, readonly HttpMiddleware[]>,
+  authChains: ReadonlyMap<string, AuthChain>,
   declared: string,
 ): void {
   const violations: string[] = [];
@@ -171,7 +200,7 @@ function assertDeclaredStacks(
 type ChainContext = {
   readonly systemMiddleware: HttpMiddleware | undefined;
   readonly globalMiddlewares: readonly HttpMiddleware[];
-  readonly authChains: ReadonlyMap<string, readonly HttpMiddleware[]>;
+  readonly authChains: ReadonlyMap<string, AuthChain>;
   readonly declared: string;
   readonly defaultAuthStack: string | undefined;
 };
@@ -228,7 +257,17 @@ function buildRoutes(
         if (!resolved) {
           stackViolations.push(`  "${site}" resolves to unknown auth stack "${resolvedAuthStack}"`);
         } else {
-          authChain = resolved;
+          authChain = resolved.middlewares;
+          if (resolved.loadsSession && def.validation) {
+            const headerKeys = Object.keys(effectiveHeaderMap(def.validation.headers));
+            for (const key of [...BASE_SESSION_KEYS, ...resolved.sessionKeys]) {
+              if (headerKeys.includes(key)) {
+                stackViolations.push(
+                  `  "${site}" sources "${key}" from a header, but stack "${resolvedAuthStack}" sources it from the session`,
+                );
+              }
+            }
+          }
         }
       }
 

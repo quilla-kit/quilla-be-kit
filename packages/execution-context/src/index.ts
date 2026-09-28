@@ -2,9 +2,13 @@ export {
   AsyncExecutionContextProvider,
   type AsyncExecutionContextProviderOptions,
 } from './async-execution-context.provider.js';
-export { ExecutionContextEnricher } from './execution-context.enricher.js';
+export {
+  ExecutionContextEnricher,
+  type ExecutionContextEnricherOptions,
+} from './execution-context.enricher.js';
 export {
   executionContextFactory,
+  type EventMetadataSource,
   type ExecutionContextFactory,
 } from './execution-context.factory.js';
 export type { ExecutionContextProvider } from './execution-context.provider.js';

@@ -8,15 +8,14 @@ export interface RequestValidator {
   validate(schema: unknown, input: unknown): ValidationResult;
   /**
    * Optional schema introspection. When implemented, `@ValidateRequest`
-   * uses it to inject auth-derived fields (`scopeId`, `userId`) from the
-   * `ExecutionContext`, and the reserved `updatedAt` field from the
-   * `If-Match` header, into the validated input **only when the schema
-   * declares them**.
+   * uses it to inject session fields (`scopeId`, `userId`, plus the auth
+   * stack's `sessionKeys`) from the `ExecutionContext`, and the reserved
+   * `updatedAt` field from the `If-Match` header, into the validated input
+   * **only when the schema declares them**.
    *
    * Return `null` (or leave unimplemented) when the wrapped validator
-   * can't enumerate top-level field names — auth-injection is skipped in
-   * that case (fail-safe: no surprise fields written into schemas that
-   * didn't ask for them).
+   * can't enumerate top-level field names — injection is skipped in that
+   * case, and a stack's `sessionKeys` are still stripped from client input.
    *
    * Zod example:
    *

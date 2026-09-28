@@ -1,6 +1,7 @@
 import { NotFoundError } from '@quilla-be-kit/errors';
 import { AsyncExecutionContextProvider } from '@quilla-be-kit/execution-context';
 import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
 import { type HonoServeHandle, HonoServer } from '../../src/adapter/hono/hono.server.js';
 import { Controller, Get, GetPublic, Post, ValidateRequest } from '../../src/decorator/index.js';
 import type { ErrorResolver, ResolvedHttpError } from '../../src/error/error-resolver.interface.js';
@@ -21,6 +22,7 @@ import type { CorsOptions } from '../../src/server/cors.type.js';
 import type { HttpConventions } from '../../src/server/http-conventions.type.js';
 import type { RequestValidator } from '../../src/validator/request-validator.interface.js';
 import type { ValidatedRequest } from '../../src/validator/validated-request.type.js';
+import { createZodRequestValidator } from '../../src/validator/zod.js';
 
 @Controller('/users')
 class UsersController {
@@ -56,11 +58,12 @@ function buildServer(options: {
   controllers?: readonly object[];
   cors?: CorsOptions;
   conventions?: HttpConventions;
+  provider?: AsyncExecutionContextProvider;
 }): {
   server: HonoServer;
   fetch: (req: Request) => Promise<Response>;
 } {
-  const provider = new AsyncExecutionContextProvider();
+  const provider = options.provider ?? new AsyncExecutionContextProvider();
   const router = new Router({
     controllers: options.controllers ?? [new UsersController()],
     executionContext: { provider },
@@ -620,5 +623,86 @@ describe('HonoServer conventions', () => {
 
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ payload: { page: '2', pageSize: '50' } });
+  });
+});
+
+describe('HonoServer session keys', () => {
+  const passthrough: HttpMiddleware = async (_req, next) => {
+    await next();
+  };
+  const loadSession =
+    (provider: AsyncExecutionContextProvider, session: Record<string, string>): HttpMiddleware =>
+    async (_req, next) => {
+      await provider.runWithContext(
+        {
+          ...provider.getContext(),
+          actorType: 'user',
+          session: session as { scopeId: string; userId: string },
+        },
+        next,
+      );
+    };
+
+  const ListSchema = z.object({ projectId: z.string() });
+
+  @Controller('/documents')
+  class HumanDocuments {
+    @Get('/')
+    @ValidateRequest(ListSchema, ['query'])
+    async list(req: ValidatedRequest<typeof ListSchema>): Promise<HttpResponse> {
+      return { httpCode: 200, payload: req.getValidatedInput() };
+    }
+  }
+
+  @Controller('/machine/documents', { authStack: 'apiKey' })
+  class MachineDocuments {
+    @Get('/')
+    @ValidateRequest(ListSchema, ['query'])
+    async list(req: ValidatedRequest<typeof ListSchema>): Promise<HttpResponse> {
+      return { httpCode: 200, payload: req.getValidatedInput() };
+    }
+  }
+
+  function build(machineSession: Record<string, string>) {
+    const provider = new AsyncExecutionContextProvider();
+    return buildServer({
+      provider,
+      validator: createZodRequestValidator(),
+      controllers: [new HumanDocuments(), new MachineDocuments()],
+      authStacks: {
+        bearer: {
+          credentialVerification: passthrough,
+          sessionLoad: loadSession(provider, { scopeId: 's-1', userId: 'u-1' }),
+        },
+        apiKey: {
+          credentialVerification: passthrough,
+          sessionLoad: loadSession(provider, machineSession),
+          sessionKeys: ['projectId'],
+        },
+      },
+      defaultAuthStack: 'bearer',
+    });
+  }
+
+  it('injects a stack session key on its routes and keeps it as client input on other stacks', async () => {
+    const { fetch } = build({ scopeId: 's-1', userId: 'u-1', projectId: 'bound-project' });
+
+    const machine = await fetch(
+      new Request('http://localhost/machine/documents?projectId=other-project'),
+    );
+    expect(await machine.json()).toEqual({ payload: { projectId: 'bound-project' } });
+
+    const human = await fetch(new Request('http://localhost/documents?projectId=chosen-project'));
+    expect(await human.json()).toEqual({ payload: { projectId: 'chosen-project' } });
+  });
+
+  it('answers 500 with a generic body when the session lacks a declared key', async () => {
+    const { fetch } = build({ scopeId: 's-1', userId: 'u-1' });
+
+    const res = await fetch(new Request('http://localhost/machine/documents?projectId=p'));
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({
+      error: { name: 'InternalError', message: 'Internal server error' },
+    });
   });
 });

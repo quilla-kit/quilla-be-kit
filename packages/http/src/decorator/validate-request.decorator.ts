@@ -3,6 +3,11 @@ import { HttpAttributes } from '../request/http-attributes.js';
 import type { HttpRequest } from '../request/http-request.interface.js';
 import type { HttpResponse } from '../request/http-response.type.js';
 import type { HeaderSourceMap } from '../validator/header-source.type.js';
+import {
+  BASE_SESSION_KEYS,
+  SESSION_KEYS_ATTRIBUTE,
+  effectiveHeaderMap,
+} from '../validator/input-injection.metadata.js';
 import type { RequestSource } from '../validator/request-source.type.js';
 import type { RequestValidator } from '../validator/request-validator.interface.js';
 import type { ValidatedRequest } from '../validator/validated-request.type.js';
@@ -18,12 +23,6 @@ const SOURCE_READERS: Record<RequestSource, (req: HttpRequest) => object> = {
   params: (req) => req.getParams(),
   query: (req) => req.getQuery(),
 };
-
-// OCC is a first-class concept in this toolkit (see the persistence
-// package's `expectedUpdatedAt`), so `updatedAt` gets the same reserved-key
-// treatment as `scopeId`/`userId` below — sourced from `If-Match` unless a
-// route overrides it via the `headers` argument.
-const DEFAULT_HEADER_MAP: HeaderSourceMap = { updatedAt: 'If-Match' };
 
 export function ValidateRequest<S>(
   schema: S,
@@ -41,6 +40,7 @@ export function ValidateRequest<S>(
     addRoutePatch(context.metadata as Record<string | symbol, unknown>, context.name as string, {
       validation: headers ? { schema, sources, headers } : { schema, sources },
     });
+    const headerEntries = Object.entries(effectiveHeaderMap(headers));
 
     return function (this: unknown, request: HttpRequest): Promise<HttpResponse> {
       const validator = request.getAttribute<RequestValidator>(HttpAttributes.REQUEST_VALIDATOR);
@@ -55,29 +55,47 @@ export function ValidateRequest<S>(
         Object.assign(raw, SOURCE_READERS[source](request));
       }
 
-      // Auth-derived fields (`scopeId`, `userId`) are injected only when the
-      // schema declares them — keeps the decorator from writing surprise
-      // fields into schemas that don't ask for them (which breaks strict
-      // validation and muddies the intent). Requires the `RequestValidator`
-      // to implement `describeSchema`; validators without it get fail-safe
-      // no-injection.
+      // A stack's extra session keys are authority: strip any client-sent
+      // value up front, even when the schema can't be described, so a key the
+      // decorator cannot inject is never supplied by the caller either.
+      const stackKeys = request.getAttribute<readonly string[]>(SESSION_KEYS_ATTRIBUTE) ?? [];
+      for (const key of stackKeys) delete raw[key];
+
+      // Injection is limited to keys the schema declares, so strict schemas
+      // never receive surprise fields. Validators without `describeSchema`
+      // get no injection at all.
       const description = validator.describeSchema?.(schema);
       if (description) {
-        const session = request.getExecutionContext().session;
-        if (session) {
-          if (description.keys.includes('scopeId')) raw.scopeId = session.scopeId;
-          if (description.keys.includes('userId')) raw.userId = session.userId;
-        }
-
-        // Header-derived fields are injected only when the schema declares
-        // them, same rule as the session-derived fields above, and only when
-        // the header is actually sent — a merely-declared but unsent header
-        // must never blank out a value the source merge already produced.
-        const effectiveHeaders = { ...DEFAULT_HEADER_MAP, ...headers };
-        for (const [key, headerName] of Object.entries(effectiveHeaders)) {
+        // A merely-declared but unsent header must never blank out a value the
+        // source merge already produced.
+        for (const [key, headerName] of headerEntries) {
           if (!description.keys.includes(key)) continue;
           const value = request.getHeader(headerName);
           if (value !== null) raw[key] = value;
+        }
+
+        // Session injection runs last so the session always wins over client
+        // input, headers included.
+        const session = request.getExecutionContext().session as
+          | Readonly<Record<string, unknown>>
+          | undefined;
+        const declared = (key: string) => description.keys.includes(key);
+        if (!session) {
+          const key = stackKeys.find(declared);
+          if (key !== undefined) {
+            throw new Error(
+              `@ValidateRequest: session key "${key}" is declared by the auth stack but no session was loaded`,
+            );
+          }
+        } else {
+          for (const key of [...BASE_SESSION_KEYS, ...stackKeys]) {
+            if (!declared(key)) continue;
+            const value = Object.hasOwn(session, key) ? session[key] : undefined;
+            if (value === undefined || value === null) {
+              throw new Error(`@ValidateRequest: session has no value for declared key "${key}"`);
+            }
+            raw[key] = value;
+          }
         }
       }
 

@@ -26,4 +26,10 @@ export type AuthMiddlewareStack = {
    * undefined scope instead of being rejected.
    */
   readonly sessionLoad?: HttpMiddleware;
+  /**
+   * Extra `ExecutionContext.session` fields `@ValidateRequest` injects on this
+   * stack's routes, alongside `scopeId`/`userId`. A client-sent value for these
+   * keys is always discarded. Requires `sessionLoad`.
+   */
+  readonly sessionKeys?: readonly string[];
 };
