@@ -138,14 +138,16 @@ describe('KeyedWriteDao key-set operations', () => {
       expect(rows).toEqual([]);
     });
 
-    it('rejects orderBy, even for an empty key list, without touching the adapter', async () => {
-      const dao = new LineDao(adapter, ctx);
+    it.each([
+      ['non-empty', keys],
+      ['empty', []],
+    ])('rejects orderBy for a %s key list without touching the adapter', async (_, input) => {
       const orderBy = [{ column: 'qty', direction: 'asc' as const }];
-      for (const input of [keys, []]) {
-        await expect(dao.findManyForUpdateByKeys({ keys: input, orderBy }, trx)).rejects.toThrow(
-          /orderBy on a composite key requires an adapter implementing findByKeysForUpdate/,
-        );
-      }
+      await expect(
+        new LineDao(adapter, ctx).findManyForUpdateByKeys({ keys: input, orderBy }, trx),
+      ).rejects.toThrow(
+        /orderBy on a composite key requires an adapter implementing findByKeysForUpdate/,
+      );
       expect(adapter.findForUpdateCalls).toHaveLength(0);
     });
   });

@@ -306,7 +306,8 @@ methods throw.
 
 `deleteMany(keys, trx?)` takes a list of key objects;
 `findManyForUpdateByKeys({ keys, limit?, orderBy? }, trx)` takes the same list
-plus optional bounds, so a batch job can lock a key pool one chunk at a time:
+plus optional bounds (`limit` must be a non-negative integer), so a batch job
+can lock a key pool one chunk at a time:
 
 ```ts
 const chunk = await dao.findManyForUpdateByKeys(
@@ -324,12 +325,11 @@ const chunk = await dao.findManyForUpdateByKeys(
   inside a transaction.
 - On the single-statement path, rows come back (and are locked) in `orderBy`
   order when given, otherwise in unspecified order, and duplicate keys
-  collapse. The per-key fallback locks in the order you pass and returns a row
-  per occurrence, so duplicates count toward `limit`. Empty input is a no-op.
-- The per-key fallback stops once `limit` rows are locked. It can't order
-  across keys, so `orderBy` on a composite key throws unless the adapter
-  implements `findByKeysForUpdate`.
-- `limit` must be a non-negative integer; anything else throws.
+  collapse. Empty input is a no-op.
+- The per-key fallback locks in the order you pass, returns a row per
+  occurrence (duplicates count toward `limit`) and stops once `limit` rows are
+  locked. It can't order across keys, so `orderBy` on a composite key throws
+  unless the adapter implements `findByKeysForUpdate`.
 - On the composite path `PgWriteDbAdapter` aliases the table as `t`: write
   `orderBy` columns unqualified (or `t.`-qualified), not `table.column`.
 - Key columns of array types aren't supported for composite key sets (the
@@ -552,7 +552,7 @@ await uow.transaction(async (ctx) => {
 });
 ```
 
-`limit` must be a non-negative integer. Run one sweeper at a time: a second
+Run one sweeper at a time: a second
 one blocks on the first's locked rows, and once the first commits, the rows it
 changed no longer match, so the second may get a short or empty batch.
 

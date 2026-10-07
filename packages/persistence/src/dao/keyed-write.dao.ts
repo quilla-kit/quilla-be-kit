@@ -2,7 +2,7 @@ import type { ExecutionContextProvider } from '@quilla-be-kit/execution-context'
 import type { DatabaseResult } from '../database/database-result.type.js';
 import type { DatabaseTransaction } from '../database/database-transaction.interface.js';
 import type { FilterQuery } from '../db-adapter/filter-query.type.js';
-import type { OrderBy } from '../db-adapter/read-db-adapter.interface.js';
+import type { OrderBy, SelectOptions } from '../db-adapter/read-db-adapter.interface.js';
 import type {
   AuditTimestamps,
   KeySet,
@@ -17,10 +17,7 @@ type Row = Record<string, unknown>;
 // `rowCount` is optional on `DatabaseResult`; an adapter that omits it reports 0.
 const affected = (result: DatabaseResult): number => result.rowCount ?? 0;
 
-type Bounds = {
-  readonly limit?: number;
-  readonly orderBy?: readonly OrderBy[];
-};
+type Bounds = Pick<SelectOptions<unknown>, 'limit' | 'orderBy'>;
 
 export type FindManyForUpdateOptions<TRow> = Bounds & {
   readonly where: FilterQuery<TRow>;
@@ -245,14 +242,13 @@ export abstract class KeyedWriteDao<TRow extends object, TKey extends keyof TRow
         trx,
       );
     }
-    // One statement per key can't order across keys; it stops once `limit` rows are locked.
     const rows: TRow[] = [];
     for (const key of keys) {
       if (limit !== undefined && rows.length >= limit) break;
       const where = this.keyWhere('findManyForUpdateByKeys', key);
       rows.push(...(await this.adapter.findForUpdate<TRow>({ table: this.tableName, where }, trx)));
     }
-    return limit === undefined ? rows : rows.slice(0, limit);
+    return rows.slice(0, limit);
   }
 
   private bounds(limit: number | undefined, orderBy: readonly OrderBy[] | undefined): Bounds {

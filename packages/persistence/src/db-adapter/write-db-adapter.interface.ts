@@ -1,7 +1,7 @@
 import type { DatabaseResult } from '../database/database-result.type.js';
 import type { DatabaseTransaction } from '../database/database-transaction.interface.js';
 import type { FilterQuery } from './filter-query.type.js';
-import type { OrderBy, SelectOptions } from './read-db-adapter.interface.js';
+import type { SelectOptions } from './read-db-adapter.interface.js';
 
 export type OptimisticLock = {
   readonly column: string;
@@ -69,10 +69,7 @@ export type KeySet = {
 
 export type KeySetOptions = KeySet & { readonly table: string };
 
-export type KeySetSelectOptions = KeySetOptions & {
-  readonly limit?: number;
-  readonly orderBy?: readonly OrderBy[];
-};
+export type KeySetSelectOptions = KeySetOptions & Pick<SelectOptions<unknown>, 'limit' | 'orderBy'>;
 
 export type DeleteOptions<T> = {
   readonly table: string;
