@@ -3,7 +3,7 @@ import type { DatabaseTransaction } from '../database/database-transaction.inter
 import type { Database } from '../database/database.interface.js';
 import type { FilterQuery } from '../db-adapter/filter-query.type.js';
 import type { SelectOptions } from '../db-adapter/read-db-adapter.interface.js';
-import type { KeySet } from '../db-adapter/write-db-adapter.interface.js';
+import type { KeySet, OnLocked } from '../db-adapter/write-db-adapter.interface.js';
 import {
   ALL_FILTER_OPERATORS,
   FILTER_DELIMITER,
@@ -271,7 +271,7 @@ export async function runSelect<T>(
   opts: SelectOptions<T>,
   types: ColumnTypeMap,
   flags: {
-    forUpdate: boolean;
+    lock?: OnLocked | undefined;
     trx?: DatabaseTransaction | undefined;
     quoter?: IdentifierQuoter | undefined;
   },
@@ -289,8 +289,8 @@ export async function runSelect<T>(
 
   sql += orderAndLimit(opts);
 
-  if (flags.forUpdate) {
-    sql += ' FOR UPDATE';
+  if (flags.lock !== undefined) {
+    sql += lockClause(flags.lock);
   }
 
   return db.query(sql, values, flags.trx);
@@ -309,6 +309,21 @@ export function orderAndLimit({
     sql += ` LIMIT ${limit}`;
   }
   return sql;
+}
+
+export function lockClause(onLocked: OnLocked = 'wait'): string {
+  switch (onLocked) {
+    case 'wait':
+      return ' FOR UPDATE';
+    case 'skip':
+      return ' FOR UPDATE SKIP LOCKED';
+    case 'nowait':
+      return ' FOR UPDATE NOWAIT';
+    default: {
+      const exhaustive: never = onLocked;
+      throw new Error(`Unhandled onLocked policy: ${String(exhaustive)}`);
+    }
+  }
 }
 
 export function serializeValue(dataType: string | undefined, value: unknown): unknown {

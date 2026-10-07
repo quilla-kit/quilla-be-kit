@@ -23,7 +23,7 @@ export class PgReadDbAdapter implements ReadDbAdapter {
 
   async select<T>(opts: SelectOptions<T>): Promise<readonly T[]> {
     const types = await this.columnTypes.get(opts.table);
-    const result = await runSelect(this.db, opts, types, { forUpdate: false });
+    const result = await runSelect(this.db, opts, types, {});
     return result.rows as readonly T[];
   }
 

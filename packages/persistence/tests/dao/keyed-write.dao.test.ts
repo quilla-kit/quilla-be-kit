@@ -94,6 +94,19 @@ describe('KeyedWriteDao', () => {
       });
     });
 
+    it('forwards onLocked', async () => {
+      await new MembershipDao(adapter, ctx).findManyForUpdate(
+        { where, limit: 10, onLocked: 'skip' },
+        trx,
+      );
+      expect(adapter.findForUpdateCalls[0]?.opts).toStrictEqual({
+        table: 'memberships',
+        where,
+        limit: 10,
+        onLocked: 'skip',
+      });
+    });
+
     it('ignores extra properties that would retarget the read', async () => {
       const wide = { where, table: 'other', columns: ['role'] };
       await new MembershipDao(adapter, ctx).findManyForUpdate(wide, trx);

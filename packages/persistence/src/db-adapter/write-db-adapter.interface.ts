@@ -69,7 +69,17 @@ export type KeySet = {
 
 export type KeySetOptions = KeySet & { readonly table: string };
 
-export type KeySetSelectOptions = KeySetOptions & Pick<SelectOptions<unknown>, 'limit' | 'orderBy'>;
+/**
+ * What a locked read does on a row another transaction holds. Postgres:
+ * `'wait'` → `FOR UPDATE`, `'skip'` → `FOR UPDATE SKIP LOCKED`,
+ * `'nowait'` → `FOR UPDATE NOWAIT` (throws; the transaction is aborted).
+ */
+export type OnLocked = 'wait' | 'skip' | 'nowait';
+
+export type LockedSelectOptions<T> = SelectOptions<T> & { readonly onLocked?: OnLocked };
+
+export type KeySetSelectOptions = KeySetOptions &
+  Pick<LockedSelectOptions<unknown>, 'limit' | 'orderBy' | 'onLocked'>;
 
 export type DeleteOptions<T> = {
   readonly table: string;
@@ -109,7 +119,8 @@ export interface WriteDbAdapter {
 
   find<T>(opts: SelectOptions<T>, trx?: DatabaseTransaction): Promise<readonly T[]>;
 
-  findForUpdate<T>(opts: SelectOptions<T>, trx: DatabaseTransaction): Promise<readonly T[]>;
+  /** Implementations must honor `onLocked` (default `'wait'`). */
+  findForUpdate<T>(opts: LockedSelectOptions<T>, trx: DatabaseTransaction): Promise<readonly T[]>;
 
   exists<T>(opts: ExistsOptions<T>, trx?: DatabaseTransaction): Promise<boolean>;
 
@@ -124,7 +135,7 @@ export interface WriteDbAdapter {
   /**
    * Optional: lock and return every row matching a set of (typically
    * composite) keys in one statement. When absent, `KeyedWriteDao` locks one
-   * key at a time. Implementations must honor `limit` and `orderBy`.
+   * key at a time. Implementations must honor `limit`, `orderBy` and `onLocked`.
    */
   findByKeysForUpdate?<T>(
     opts: KeySetSelectOptions,

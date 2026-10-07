@@ -2,10 +2,10 @@ import type { ExecutionContextProvider } from '@quilla-be-kit/execution-context'
 import type { DatabaseResult } from '../database/database-result.type.js';
 import type { DatabaseTransaction } from '../database/database-transaction.interface.js';
 import type { FilterQuery } from '../db-adapter/filter-query.type.js';
-import type { OrderBy, SelectOptions } from '../db-adapter/read-db-adapter.interface.js';
 import type {
   AuditTimestamps,
   KeySet,
+  LockedSelectOptions,
   WriteDbAdapter,
 } from '../db-adapter/write-db-adapter.interface.js';
 import { OptimisticLockError } from '../errors/optimistic-lock.error.js';
@@ -17,13 +17,13 @@ type Row = Record<string, unknown>;
 // `rowCount` is optional on `DatabaseResult`; an adapter that omits it reports 0.
 const affected = (result: DatabaseResult): number => result.rowCount ?? 0;
 
-type Bounds = Pick<SelectOptions<unknown>, 'limit' | 'orderBy'>;
+type LockedRead = Pick<LockedSelectOptions<unknown>, 'limit' | 'orderBy' | 'onLocked'>;
 
-export type FindManyForUpdateOptions<TRow> = Bounds & {
+export type FindManyForUpdateOptions<TRow> = LockedRead & {
   readonly where: FilterQuery<TRow>;
 };
 
-export type FindManyForUpdateByKeysOptions<TRow, TKey extends keyof TRow & string> = Bounds & {
+export type FindManyForUpdateByKeysOptions<TRow, TKey extends keyof TRow & string> = LockedRead & {
   readonly keys: readonly Pick<TRow, TKey>[];
 };
 
@@ -97,11 +97,11 @@ export abstract class KeyedWriteDao<TRow extends object, TKey extends keyof TRow
   }
 
   async findManyForUpdate(
-    { where, limit, orderBy }: FindManyForUpdateOptions<TRow>,
+    options: FindManyForUpdateOptions<TRow>,
     trx: DatabaseTransaction,
   ): Promise<readonly TRow[]> {
     return this.adapter.findForUpdate<TRow>(
-      { table: this.tableName, where, ...this.bounds(limit, orderBy) },
+      { table: this.tableName, where: options.where, ...this.lockedRead(options) },
       trx,
     );
   }
@@ -218,13 +218,14 @@ export abstract class KeyedWriteDao<TRow extends object, TKey extends keyof TRow
   }
 
   async findManyForUpdateByKeys(
-    { keys, limit, orderBy }: FindManyForUpdateByKeysOptions<TRow, TKey>,
+    options: FindManyForUpdateByKeysOptions<TRow, TKey>,
     trx: DatabaseTransaction,
   ): Promise<readonly TRow[]> {
     this.requireKey('findManyForUpdateByKeys');
-    const bounds = this.bounds(limit, orderBy);
+    const { keys } = options;
+    const read = this.lockedRead(options);
     const singleKey = this.keyColumns.length === 1;
-    if (!singleKey && !this.adapter.findByKeysForUpdate && orderBy?.length) {
+    if (!singleKey && !this.adapter.findByKeysForUpdate && read.orderBy?.length) {
       throw new Error(
         `${this.tableName}: findManyForUpdateByKeys with orderBy on a composite key requires an adapter implementing findByKeysForUpdate`,
       );
@@ -232,32 +233,40 @@ export abstract class KeyedWriteDao<TRow extends object, TKey extends keyof TRow
     if (keys.length === 0) return [];
     if (singleKey) {
       return this.adapter.findForUpdate<TRow>(
-        { table: this.tableName, where: this.singleKeyWhere(keys), ...bounds },
+        { table: this.tableName, where: this.singleKeyWhere(keys), ...read },
         trx,
       );
     }
     if (this.adapter.findByKeysForUpdate) {
       return this.adapter.findByKeysForUpdate<TRow>(
-        { table: this.tableName, ...this.keySet(keys), ...bounds },
+        { table: this.tableName, ...this.keySet(keys), ...read },
         trx,
       );
     }
+    // Bounds are applied across keys here; every other locked-read option goes to each per-key read.
+    const { limit, orderBy: _orderBy, ...perKey } = read;
     const rows: TRow[] = [];
     for (const key of keys) {
       if (limit !== undefined && rows.length >= limit) break;
       const where = this.keyWhere('findManyForUpdateByKeys', key);
-      rows.push(...(await this.adapter.findForUpdate<TRow>({ table: this.tableName, where }, trx)));
+      rows.push(
+        ...(await this.adapter.findForUpdate<TRow>(
+          { table: this.tableName, where, ...perKey },
+          trx,
+        )),
+      );
     }
     return rows.slice(0, limit);
   }
 
-  private bounds(limit: number | undefined, orderBy: readonly OrderBy[] | undefined): Bounds {
+  private lockedRead({ limit, orderBy, onLocked }: LockedRead): LockedRead {
     if (limit !== undefined && !(Number.isSafeInteger(limit) && limit >= 0)) {
       throw new Error(`${this.tableName}: limit must be a non-negative integer, got ${limit}`);
     }
     return {
       ...(limit !== undefined ? { limit } : {}),
       ...(orderBy !== undefined ? { orderBy } : {}),
+      ...(onLocked !== undefined ? { onLocked } : {}),
     };
   }
 

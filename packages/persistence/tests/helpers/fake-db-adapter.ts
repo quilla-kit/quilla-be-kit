@@ -10,6 +10,7 @@ import type {
   DeleteOptions,
   ExistsOptions,
   InsertOptions,
+  LockedSelectOptions,
   UpdateManyOptions,
   UpdateOptions,
   WriteDbAdapter,
@@ -40,7 +41,7 @@ export class FakeWriteDbAdapter implements WriteDbAdapter {
   updateManyCalls: Call<UpdateManyOptions>[] = [];
   deleteCalls: Call<DeleteOptions<unknown>>[] = [];
   findCalls: Call<SelectOptions<unknown>>[] = [];
-  findForUpdateCalls: { opts: SelectOptions<unknown>; trx: DatabaseTransaction }[] = [];
+  findForUpdateCalls: { opts: LockedSelectOptions<unknown>; trx: DatabaseTransaction }[] = [];
   existsCalls: Call<ExistsOptions<unknown>>[] = [];
   countCalls: Call<CountOptions<unknown>>[] = [];
 
@@ -86,9 +87,9 @@ export class FakeWriteDbAdapter implements WriteDbAdapter {
     return Promise.resolve((this.findResults.shift() ?? []) as readonly T[]);
   }
 
-  findForUpdate<T>(opts: SelectOptions<T>, trx: DatabaseTransaction): Promise<readonly T[]> {
+  findForUpdate<T>(opts: LockedSelectOptions<T>, trx: DatabaseTransaction): Promise<readonly T[]> {
     this.findForUpdateCalls.push({
-      opts: opts as SelectOptions<unknown>,
+      opts: opts as LockedSelectOptions<unknown>,
       trx,
     });
     return Promise.resolve((this.findForUpdateResults.shift() ?? []) as readonly T[]);

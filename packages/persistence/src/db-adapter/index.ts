@@ -16,5 +16,7 @@ export type {
   KeySet,
   KeySetOptions,
   KeySetSelectOptions,
+  LockedSelectOptions,
+  OnLocked,
   OptimisticLock,
 } from './write-db-adapter.interface.js';
