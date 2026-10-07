@@ -12,6 +12,8 @@ import type {
   InsertOptions,
   KeySetOptions,
   KeySetSelectOptions,
+  LockedSelectOptions,
+  OnLocked,
   Returning,
   UpdateManyOptions,
   UpdateOptions,
@@ -25,6 +27,7 @@ import {
   buildKeySet,
   buildWhere,
   keyPredicate,
+  lockClause,
   mapPostgresType,
   orderAndLimit,
   runSelect,
@@ -244,18 +247,21 @@ export class PgWriteDbAdapter implements WriteDbAdapter {
     }
     const types = await this.columnTypes.get(opts.table);
     const keySet = buildKeySet(types, this.quoter, opts);
-    const sql = `SELECT t.* FROM ${this.quoter.table(opts.table)} AS t WHERE ${keySet.sql}${orderAndLimit(opts)} FOR UPDATE`;
+    const sql = `SELECT t.* FROM ${this.quoter.table(opts.table)} AS t WHERE ${keySet.sql}${orderAndLimit(opts)}${lockClause(opts.onLocked)}`;
     const result = await this.db.query(sql, keySet.values, trx);
     return result.rows as readonly T[];
   }
 
   async find<T>(opts: SelectOptions<T>, trx?: DatabaseTransaction): Promise<readonly T[]> {
-    const result = await this.executeSelect(opts, false, trx);
+    const result = await this.executeSelect(opts, undefined, trx);
     return result.rows as readonly T[];
   }
 
-  async findForUpdate<T>(opts: SelectOptions<T>, trx: DatabaseTransaction): Promise<readonly T[]> {
-    const result = await this.executeSelect(opts, true, trx);
+  async findForUpdate<T>(
+    opts: LockedSelectOptions<T>,
+    trx: DatabaseTransaction,
+  ): Promise<readonly T[]> {
+    const result = await this.executeSelect(opts, opts.onLocked ?? 'wait', trx);
     return result.rows as readonly T[];
   }
 
@@ -282,11 +288,11 @@ export class PgWriteDbAdapter implements WriteDbAdapter {
 
   private async executeSelect<T>(
     opts: SelectOptions<T>,
-    forUpdate: boolean,
+    lock: OnLocked | undefined,
     trx?: DatabaseTransaction,
   ): Promise<DatabaseResult> {
     const types = await this.columnTypes.get(opts.table);
-    return runSelect(this.db, opts, types, { forUpdate, trx, quoter: this.quoter });
+    return runSelect(this.db, opts, types, { lock, trx, quoter: this.quoter });
   }
 }
 

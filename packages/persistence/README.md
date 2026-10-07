@@ -305,7 +305,7 @@ methods throw.
 #### Key sets — batches of keys
 
 `deleteMany(keys, trx?)` takes a list of key objects;
-`findManyForUpdateByKeys({ keys, limit?, orderBy? }, trx)` takes the same list
+`findManyForUpdateByKeys({ keys, limit?, orderBy?, onLocked? }, trx)` takes the same list
 plus optional bounds (`limit` must be a non-negative integer), so a batch job
 can lock a key pool one chunk at a time:
 
@@ -330,6 +330,9 @@ const chunk = await dao.findManyForUpdateByKeys(
   occurrence (duplicates count toward `limit`) and stops once `limit` rows are
   locked. It can't order across keys, so `orderBy` on a composite key throws
   unless the adapter implements `findByKeysForUpdate`.
+- `onLocked` (see [Filtering on write DAOs](#filtering-on-write-daos)) applies
+  on every path, per key on the fallback. With `'skip'` a busy key just yields
+  no row; the DAO doesn't report which keys were skipped.
 - On the composite path `PgWriteDbAdapter` aliases the table as `t`: write
   `orderBy` columns unqualified (or `t.`-qualified), not `table.column`.
 - Key columns of array types aren't supported for composite key sets (the
@@ -509,13 +512,18 @@ original eight methods keeps working:
   `KeySetSelectOptions`, which adds optional `limit` and `orderBy`; an
   implementation must honor both, or callers lock more rows than they asked
   for.
+- `onLocked?` on `findForUpdate`'s `LockedSelectOptions` and on
+  `KeySetSelectOptions` — the lock wait policy (`'wait'` | `'skip'` |
+  `'nowait'`, default `'wait'`). An implementation must honor it: one that
+  ignores it always waits, so `'skip'` gives callers no parallelism and
+  `'nowait'` blocks instead of throwing.
 
 The Postgres building blocks are exported from `/postgres` for reuse:
 `buildWhere` (takes an optional column-quoting function), `buildKeySet`,
 `keyPredicate`, `mapPostgresType`, `NO_QUOTING`/`QUOTED` and the
 `IdentifierQuoter` and `ColumnTypeMap` types; `CountOptions`,
-`UpdateManyOptions`, `AuditTimestamps` and the key-set option types are
-exported from the main entry.
+`UpdateManyOptions`, `AuditTimestamps`, `LockedSelectOptions`, `OnLocked` and
+the key-set option types are exported from the main entry.
 
 ### Filtering on write DAOs
 
@@ -533,8 +541,9 @@ for the full operator table. Two differences from the read side:
   those are only available where TypeScript can see `number | Date`.
 
 This is what makes a locked, range-filtered sweep read possible without
-hand-written SQL. `findManyForUpdate({ where, limit?, orderBy? }, trx)` bounds
-it to a fixed-size, oldest-first chunk per tick:
+hand-written SQL. `findManyForUpdate({ where, limit?, orderBy?, onLocked? }, trx)`
+bounds it to a fixed-size, oldest-first chunk per tick, and `onLocked: 'skip'`
+lets concurrent sweepers each claim a disjoint chunk:
 
 ```ts
 await uow.transaction(async (ctx) => {
@@ -543,6 +552,7 @@ await uow.transaction(async (ctx) => {
       where: { status: 'PENDING', expires_at__lt: new Date() },
       orderBy: [{ column: 'expires_at', direction: 'asc' }],
       limit: 100,
+      onLocked: 'skip',
     },
     ctx.trx,
   );
@@ -552,9 +562,21 @@ await uow.transaction(async (ctx) => {
 });
 ```
 
-Run one sweeper at a time: a second
-one blocks on the first's locked rows, and once the first commits, the rows it
-changed no longer match, so the second may get a short or empty batch.
+`onLocked` decides what happens on a row another transaction holds:
+
+- `'wait'` (default, `FOR UPDATE`) — block until it's released. Concurrent
+  sweepers — other replicas, or overlapping ticks, since `InProcessJobRunner`
+  starts a tick even while the previous one is still running — then block on
+  each other and get short or empty batches.
+- `'skip'` (`FOR UPDATE SKIP LOCKED`) — leave it out. Each sweeper gets the
+  next unclaimed rows, so `orderBy` holds within a chunk, not across sweepers;
+  a short batch doesn't mean the work is done; and a row held indefinitely
+  elsewhere is skipped indefinitely.
+- `'nowait'` (`FOR UPDATE NOWAIT`) — throw the driver's lock error (Postgres
+  `55P03`). The transaction is aborted, so catch it outside the unit of work.
+
+`findOneForUpdate` takes no `onLocked`; use
+`findManyForUpdate({ where, limit: 1, onLocked })` instead.
 
 **Behavior note:** a literal `null` for a bare key (`{ status: null }`) emits
 `status IS NULL`, not `status = $1` with a `null` parameter — the latter

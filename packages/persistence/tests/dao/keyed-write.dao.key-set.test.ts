@@ -103,6 +103,14 @@ describe('KeyedWriteDao key-set operations', () => {
         trx,
       );
     });
+
+    it('forwards onLocked in the single locked read', async () => {
+      await new LineDao(adapter, ctx).findManyForUpdateByKeys({ keys, onLocked: 'nowait' }, trx);
+      expect(findByKeysForUpdate).toHaveBeenCalledWith(
+        { table: 'lines', keyColumns: ['order_id', 'line_no'], keys, onLocked: 'nowait' },
+        trx,
+      );
+    });
   });
 
   describe('composite key, adapter lacks the optional methods', () => {
@@ -121,7 +129,9 @@ describe('KeyedWriteDao key-set operations', () => {
       adapter.findForUpdateResults.push([{ order_id: 'o1', line_no: 1, qty: 1 }]);
       adapter.findForUpdateResults.push([{ order_id: 'o2', line_no: 2, qty: 2 }]);
       const rows = await new LineDao(adapter, ctx).findManyForUpdateByKeys({ keys }, trx);
-      expect(adapter.findForUpdateCalls.map((c) => c.opts.where)).toEqual(keys);
+      expect(adapter.findForUpdateCalls.map((c) => c.opts)).toStrictEqual(
+        keys.map((where) => ({ table: 'lines', where })),
+      );
       expect(rows).toHaveLength(2);
     });
 
@@ -130,6 +140,26 @@ describe('KeyedWriteDao key-set operations', () => {
       const rows = await new LineDao(adapter, ctx).findManyForUpdateByKeys({ keys, limit: 1 }, trx);
       expect(adapter.findForUpdateCalls).toHaveLength(1);
       expect(rows).toEqual([{ order_id: 'o1', line_no: 1, qty: 1 }]);
+    });
+
+    it('forwards onLocked per key and passes over skipped keys until limit', async () => {
+      const three = [...keys, { order_id: 'o3', line_no: 3 }];
+      adapter.findForUpdateResults.push(
+        [{ order_id: 'o1', line_no: 1, qty: 1 }],
+        [],
+        [{ order_id: 'o3', line_no: 3, qty: 3 }],
+      );
+      const rows = await new LineDao(adapter, ctx).findManyForUpdateByKeys(
+        { keys: three, limit: 2, onLocked: 'skip' },
+        trx,
+      );
+      expect(adapter.findForUpdateCalls.map((c) => c.opts)).toStrictEqual(
+        three.map((where) => ({ table: 'lines', where, onLocked: 'skip' })),
+      );
+      expect(rows).toEqual([
+        { order_id: 'o1', line_no: 1, qty: 1 },
+        { order_id: 'o3', line_no: 3, qty: 3 },
+      ]);
     });
 
     it('locks nothing for limit 0', async () => {
@@ -166,17 +196,18 @@ describe('KeyedWriteDao key-set operations', () => {
       expect(findByKeysForUpdate).not.toHaveBeenCalled();
     });
 
-    it('forwards limit and orderBy to the filter path', async () => {
+    it('forwards limit, orderBy and onLocked to the filter path', async () => {
       const orderBy = [{ column: 'label', direction: 'desc' as const }];
       await new CodeDao(adapter, ctx).findManyForUpdateByKeys(
-        { keys: [{ code: 'A' }, { code: 'B' }], limit: 1, orderBy },
+        { keys: [{ code: 'A' }, { code: 'B' }], limit: 1, orderBy, onLocked: 'skip' },
         trx,
       );
-      expect(adapter.findForUpdateCalls[0]?.opts).toEqual({
+      expect(adapter.findForUpdateCalls[0]?.opts).toStrictEqual({
         table: 'codes',
         where: { code: ['A', 'B'] },
         limit: 1,
         orderBy,
+        onLocked: 'skip',
       });
     });
 

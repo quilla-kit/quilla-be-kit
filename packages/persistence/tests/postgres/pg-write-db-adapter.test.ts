@@ -329,6 +329,22 @@ describe('PgWriteDbAdapter', () => {
         'SELECT * FROM users WHERE name = $1::TEXT ORDER BY created_at ASC LIMIT 100 FOR UPDATE',
       );
     });
+
+    it('claims a chunk with SKIP LOCKED after ORDER BY and LIMIT', async () => {
+      await adapter.findForUpdate(
+        {
+          table: 'users',
+          where: { name: 'PENDING' },
+          orderBy: [{ column: 'created_at', direction: 'asc' }],
+          limit: 100,
+          onLocked: 'skip',
+        },
+        {} as DatabaseTransaction,
+      );
+      expect(db.calls[0]?.sql).toBe(
+        'SELECT * FROM users WHERE name = $1::TEXT ORDER BY created_at ASC LIMIT 100 FOR UPDATE SKIP LOCKED',
+      );
+    });
   });
 
   describe('exists', () => {
@@ -610,6 +626,17 @@ describe('PgWriteDbAdapter (key sets)', () => {
     );
     expect(dateSql(db)).toBe(
       'SELECT t.* FROM order_line AS t WHERE EXISTS (SELECT 1 FROM unnest($1::UUID[], $2::INTEGER[]) AS k(order_id, line_no) WHERE t.order_id = k.order_id AND t.line_no = k.line_no) ORDER BY line_no ASC LIMIT 100 FOR UPDATE',
+    );
+  });
+
+  it('skips locked rows in a key-set lock', async () => {
+    const db = new StubDatabase(columns);
+    await new PgWriteDbAdapter(db).findByKeysForUpdate(
+      { table: 'order_line', keyColumns, keys, limit: 1, onLocked: 'skip' },
+      {} as DatabaseTransaction,
+    );
+    expect(dateSql(db)).toBe(
+      'SELECT t.* FROM order_line AS t WHERE EXISTS (SELECT 1 FROM unnest($1::UUID[], $2::INTEGER[]) AS k(order_id, line_no) WHERE t.order_id = k.order_id AND t.line_no = k.line_no) LIMIT 1 FOR UPDATE SKIP LOCKED',
     );
   });
 

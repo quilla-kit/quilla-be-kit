@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { type ColumnTypeMap, buildWhere, mapPostgresType } from '../../src/postgres/pg-sql.js';
+import {
+  type ColumnTypeMap,
+  buildWhere,
+  lockClause,
+  mapPostgresType,
+} from '../../src/postgres/pg-sql.js';
 
 const types: ColumnTypeMap = {
   id: 'uuid',
@@ -125,5 +130,20 @@ describe('mapPostgresType', () => {
   it('casts bigint filters and IN lists with BIGINT', () => {
     const { sql } = buildWhere({ n: [1, 2] }, { n: 'bigint' });
     expect(sql).toBe('n = ANY($1::BIGINT[])');
+  });
+});
+
+describe('lockClause', () => {
+  it.each([
+    [undefined, ' FOR UPDATE'],
+    ['wait', ' FOR UPDATE'],
+    ['skip', ' FOR UPDATE SKIP LOCKED'],
+    ['nowait', ' FOR UPDATE NOWAIT'],
+  ] as const)('renders %s as "%s"', (onLocked, clause) => {
+    expect(lockClause(onLocked)).toBe(clause);
+  });
+
+  it('rejects an unknown policy', () => {
+    expect(() => lockClause('fail' as never)).toThrow(/Unhandled onLocked policy: fail/);
   });
 });
