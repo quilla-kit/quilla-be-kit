@@ -314,6 +314,21 @@ describe('PgWriteDbAdapter', () => {
       expect(db.calls[0]?.params).toEqual(['PENDING', now]);
       expect(db.calls[0]?.trx).toBe(trx);
     });
+
+    it('bounds a locked read: ORDER BY, then LIMIT, then FOR UPDATE', async () => {
+      await adapter.findForUpdate(
+        {
+          table: 'users',
+          where: { name: 'PENDING' },
+          orderBy: [{ column: 'created_at', direction: 'asc' }],
+          limit: 100,
+        },
+        {} as DatabaseTransaction,
+      );
+      expect(db.calls[0]?.sql).toBe(
+        'SELECT * FROM users WHERE name = $1::TEXT ORDER BY created_at ASC LIMIT 100 FOR UPDATE',
+      );
+    });
   });
 
   describe('exists', () => {
@@ -579,6 +594,23 @@ describe('PgWriteDbAdapter (key sets)', () => {
     );
     expect(db.calls[0]?.trx).toBe(trx);
     expect(rows).toEqual([{ order_id: 'o1', line_no: 1, qty: 3 }]);
+  });
+
+  it('bounds a key-set lock with ORDER BY and LIMIT before FOR UPDATE', async () => {
+    const db = new StubDatabase(columns);
+    await new PgWriteDbAdapter(db).findByKeysForUpdate(
+      {
+        table: 'order_line',
+        keyColumns,
+        keys,
+        orderBy: [{ column: 'line_no', direction: 'asc' }],
+        limit: 100,
+      },
+      {} as DatabaseTransaction,
+    );
+    expect(dateSql(db)).toBe(
+      'SELECT t.* FROM order_line AS t WHERE EXISTS (SELECT 1 FROM unnest($1::UUID[], $2::INTEGER[]) AS k(order_id, line_no) WHERE t.order_id = k.order_id AND t.line_no = k.line_no) ORDER BY line_no ASC LIMIT 100 FOR UPDATE',
+    );
   });
 
   it('quotes identifiers and schema-qualified tables', async () => {

@@ -74,6 +74,40 @@ describe('KeyedWriteDao', () => {
     trx = new FakeDatabaseTransaction();
   });
 
+  describe('findManyForUpdate', () => {
+    const where = { org_id: 'o1' };
+
+    it('passes only table and where when unbounded', async () => {
+      await new MembershipDao(adapter, ctx).findManyForUpdate({ where }, trx);
+      expect(adapter.findForUpdateCalls[0]?.opts).toStrictEqual({ table: 'memberships', where });
+      expect(adapter.findForUpdateCalls[0]?.trx).toBe(trx);
+    });
+
+    it('forwards limit and orderBy', async () => {
+      const orderBy = [{ column: 'user_id', direction: 'asc' as const }];
+      await new MembershipDao(adapter, ctx).findManyForUpdate({ where, limit: 10, orderBy }, trx);
+      expect(adapter.findForUpdateCalls[0]?.opts).toStrictEqual({
+        table: 'memberships',
+        where,
+        limit: 10,
+        orderBy,
+      });
+    });
+
+    it('ignores extra properties that would retarget the read', async () => {
+      const wide = { where, table: 'other', columns: ['role'] };
+      await new MembershipDao(adapter, ctx).findManyForUpdate(wide, trx);
+      expect(adapter.findForUpdateCalls[0]?.opts).toStrictEqual({ table: 'memberships', where });
+    });
+
+    it.each([-1, 1.5, Number.NaN])('rejects limit %s', async (limit) => {
+      await expect(
+        new MembershipDao(adapter, ctx).findManyForUpdate({ where, limit }, trx),
+      ).rejects.toThrow(/limit must be a non-negative integer/);
+      expect(adapter.findForUpdateCalls).toHaveLength(0);
+    });
+  });
+
   describe('composite key with no audit columns', () => {
     let dao: MembershipDao;
     beforeEach(() => {

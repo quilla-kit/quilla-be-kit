@@ -1,7 +1,7 @@
 import type { DatabaseResult } from '../database/database-result.type.js';
 import type { DatabaseTransaction } from '../database/database-transaction.interface.js';
 import type { FilterQuery } from './filter-query.type.js';
-import type { SelectOptions } from './read-db-adapter.interface.js';
+import type { OrderBy, SelectOptions } from './read-db-adapter.interface.js';
 
 export type OptimisticLock = {
   readonly column: string;
@@ -69,6 +69,11 @@ export type KeySet = {
 
 export type KeySetOptions = KeySet & { readonly table: string };
 
+export type KeySetSelectOptions = KeySetOptions & {
+  readonly limit?: number;
+  readonly orderBy?: readonly OrderBy[];
+};
+
 export type DeleteOptions<T> = {
   readonly table: string;
   readonly where: FilterQuery<T>;
@@ -122,7 +127,10 @@ export interface WriteDbAdapter {
   /**
    * Optional: lock and return every row matching a set of (typically
    * composite) keys in one statement. When absent, `KeyedWriteDao` locks one
-   * key at a time.
+   * key at a time. Implementations must honor `limit` and `orderBy`.
    */
-  findByKeysForUpdate?<T>(opts: KeySetOptions, trx: DatabaseTransaction): Promise<readonly T[]>;
+  findByKeysForUpdate?<T>(
+    opts: KeySetSelectOptions,
+    trx: DatabaseTransaction,
+  ): Promise<readonly T[]>;
 }
