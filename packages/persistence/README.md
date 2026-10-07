@@ -304,8 +304,17 @@ methods throw.
 
 #### Key sets — batches of keys
 
-`deleteMany(keys, trx?)` and `findManyForUpdateByKeys(keys, trx)` take a list of
-key objects.
+`deleteMany(keys, trx?)` takes a list of key objects;
+`findManyForUpdateByKeys({ keys, limit?, orderBy? }, trx)` takes the same list
+plus optional bounds (`limit` must be a non-negative integer), so a batch job
+can lock a key pool one chunk at a time:
+
+```ts
+const chunk = await dao.findManyForUpdateByKeys(
+  { keys: pending, orderBy: [{ column: 'line_no', direction: 'asc' }], limit: 100 },
+  ctx.trx,
+);
+```
 
 - **Single key column:** one statement using `= ANY(...)`, as before.
 - **Composite key:** one statement when the adapter provides the optional
@@ -314,15 +323,22 @@ key objects.
   column). Otherwise the DAO runs one statement per key. Pass a `trx` when
   you rely on all-or-nothing behaviour — the per-key fallback is only atomic
   inside a transaction.
-- Result and lock order are unspecified on the single-statement path (the per-key
-  fallback locks in the order you pass), duplicate keys collapse, empty input is
-  a no-op.
+- On the single-statement path, rows come back (and are locked) in `orderBy`
+  order when given, otherwise in unspecified order, and duplicate keys
+  collapse. Empty input is a no-op.
+- The per-key fallback locks in the order you pass, returns a row per
+  occurrence (duplicates count toward `limit`) and stops once `limit` rows are
+  locked. It can't order across keys, so `orderBy` on a composite key throws
+  unless the adapter implements `findByKeysForUpdate`.
+- On the composite path `PgWriteDbAdapter` aliases the table as `t`: write
+  `orderBy` columns unqualified (or `t.`-qualified), not `table.column`.
 - Key columns of array types aren't supported for composite key sets (the
   adapter throws).
 
 `findManyForUpdateByKeys` exists because `FilterQuery` combines conditions
-with AND only: `findManyForUpdate({ a: [..], b: [..] })` matches the cross
-product of the values, not the pairs, and would lock rows you didn't ask for.
+with AND only: `findManyForUpdate({ where: { a: [..], b: [..] } }, trx)`
+matches the cross product of the values, not the pairs, and would lock rows
+you didn't ask for.
 
 #### Audit policy — `auditPolicy`
 
@@ -467,7 +483,7 @@ const repo = new OrderLineRepository(new OrderLineDao(adapter, contextProvider))
 
 await uow.transaction(async (ctx) => {
   const lines = await dao.findManyForUpdateByKeys(
-    [{ order_id: 'o1', line_no: 1 }, { order_id: 'o1', line_no: 2 }],
+    { keys: [{ order_id: 'o1', line_no: 1 }, { order_id: 'o1', line_no: 2 }] },
     ctx.trx,
   );
   await repo.deleteMany(lines, ctx.trx);
@@ -489,7 +505,10 @@ original eight methods keeps working:
 - `deleteByKeys?(opts, trx?)` and `findByKeysForUpdate?(opts, trx)` — take a
   `KeySet` (`{ keyColumns, keys }`) and act on all matching rows in one
   statement. Implement them if your database can; otherwise leave them out and
-  the DAO falls back to one call per key.
+  the DAO falls back to one call per key. `findByKeysForUpdate` receives
+  `KeySetSelectOptions`, which adds optional `limit` and `orderBy`; an
+  implementation must honor both, or callers lock more rows than they asked
+  for.
 
 The Postgres building blocks are exported from `/postgres` for reuse:
 `buildWhere` (takes an optional column-quoting function), `buildKeySet`,
@@ -514,19 +533,28 @@ for the full operator table. Two differences from the read side:
   those are only available where TypeScript can see `number | Date`.
 
 This is what makes a locked, range-filtered sweep read possible without
-hand-written SQL:
+hand-written SQL. `findManyForUpdate({ where, limit?, orderBy? }, trx)` bounds
+it to a fixed-size, oldest-first chunk per tick:
 
 ```ts
 await uow.transaction(async (ctx) => {
-  const pending = await replacementDao.findManyForUpdate(
-    { status: 'PENDING', expiresAt__lt: new Date() },
+  const overdue = await replacementDao.findManyForUpdate(
+    {
+      where: { status: 'PENDING', expires_at__lt: new Date() },
+      orderBy: [{ column: 'expires_at', direction: 'asc' }],
+      limit: 100,
+    },
     ctx.trx,
   );
-  for (const row of pending) {
+  for (const row of overdue) {
     // transition each row in the same locked transaction
   }
 });
 ```
+
+Run one sweeper at a time: a second
+one blocks on the first's locked rows, and once the first commits, the rows it
+changed no longer match, so the second may get a short or empty batch.
 
 **Behavior note:** a literal `null` for a bare key (`{ status: null }`) emits
 `status IS NULL`, not `status = $1` with a `null` parameter — the latter

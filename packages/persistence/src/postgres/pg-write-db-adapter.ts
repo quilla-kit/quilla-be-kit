@@ -11,6 +11,7 @@ import type {
   ExistsOptions,
   InsertOptions,
   KeySetOptions,
+  KeySetSelectOptions,
   Returning,
   UpdateManyOptions,
   UpdateOptions,
@@ -25,6 +26,7 @@ import {
   buildWhere,
   keyPredicate,
   mapPostgresType,
+  orderAndLimit,
   runSelect,
   serializeValue,
 } from './pg-sql.js';
@@ -234,7 +236,7 @@ export class PgWriteDbAdapter implements WriteDbAdapter {
   }
 
   async findByKeysForUpdate<T>(
-    opts: KeySetOptions,
+    opts: KeySetSelectOptions,
     trx: DatabaseTransaction,
   ): Promise<readonly T[]> {
     if (opts.keys.length === 0) {
@@ -242,7 +244,7 @@ export class PgWriteDbAdapter implements WriteDbAdapter {
     }
     const types = await this.columnTypes.get(opts.table);
     const keySet = buildKeySet(types, this.quoter, opts);
-    const sql = `SELECT t.* FROM ${this.quoter.table(opts.table)} AS t WHERE ${keySet.sql} FOR UPDATE`;
+    const sql = `SELECT t.* FROM ${this.quoter.table(opts.table)} AS t WHERE ${keySet.sql}${orderAndLimit(opts)} FOR UPDATE`;
     const result = await this.db.query(sql, keySet.values, trx);
     return result.rows as readonly T[];
   }

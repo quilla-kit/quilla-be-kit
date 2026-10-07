@@ -15,5 +15,6 @@ export type {
   AuditTimestamps,
   KeySet,
   KeySetOptions,
+  KeySetSelectOptions,
   OptimisticLock,
 } from './write-db-adapter.interface.js';

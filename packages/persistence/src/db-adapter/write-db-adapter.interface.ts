@@ -69,6 +69,8 @@ export type KeySet = {
 
 export type KeySetOptions = KeySet & { readonly table: string };
 
+export type KeySetSelectOptions = KeySetOptions & Pick<SelectOptions<unknown>, 'limit' | 'orderBy'>;
+
 export type DeleteOptions<T> = {
   readonly table: string;
   readonly where: FilterQuery<T>;
@@ -122,7 +124,10 @@ export interface WriteDbAdapter {
   /**
    * Optional: lock and return every row matching a set of (typically
    * composite) keys in one statement. When absent, `KeyedWriteDao` locks one
-   * key at a time.
+   * key at a time. Implementations must honor `limit` and `orderBy`.
    */
-  findByKeysForUpdate?<T>(opts: KeySetOptions, trx: DatabaseTransaction): Promise<readonly T[]>;
+  findByKeysForUpdate?<T>(
+    opts: KeySetSelectOptions,
+    trx: DatabaseTransaction,
+  ): Promise<readonly T[]>;
 }

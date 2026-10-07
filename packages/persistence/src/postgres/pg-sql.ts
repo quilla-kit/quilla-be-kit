@@ -287,20 +287,28 @@ export async function runSelect<T>(
     sql += ` WHERE ${where.sql}`;
   }
 
-  if (opts.orderBy?.length) {
-    const orderClauses = opts.orderBy.map((o) => `${o.column} ${o.direction.toUpperCase()}`);
-    sql += ` ORDER BY ${orderClauses.join(', ')}`;
-  }
-
-  if (opts.limit !== undefined) {
-    sql += ` LIMIT ${opts.limit}`;
-  }
+  sql += orderAndLimit(opts);
 
   if (flags.forUpdate) {
     sql += ' FOR UPDATE';
   }
 
   return db.query(sql, values, flags.trx);
+}
+
+/** Renders ` ORDER BY ... LIMIT n` (each part only when set); `orderBy` columns pass through as given. */
+export function orderAndLimit({
+  orderBy,
+  limit,
+}: Pick<SelectOptions<unknown>, 'orderBy' | 'limit'>): string {
+  let sql = '';
+  if (orderBy?.length) {
+    sql += ` ORDER BY ${orderBy.map((o) => `${o.column} ${o.direction.toUpperCase()}`).join(', ')}`;
+  }
+  if (limit !== undefined) {
+    sql += ` LIMIT ${limit}`;
+  }
+  return sql;
 }
 
 export function serializeValue(dataType: string | undefined, value: unknown): unknown {

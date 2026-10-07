@@ -2,6 +2,7 @@ import type { ExecutionContextProvider } from '@quilla-be-kit/execution-context'
 import type { DatabaseResult } from '../database/database-result.type.js';
 import type { DatabaseTransaction } from '../database/database-transaction.interface.js';
 import type { FilterQuery } from '../db-adapter/filter-query.type.js';
+import type { OrderBy, SelectOptions } from '../db-adapter/read-db-adapter.interface.js';
 import type {
   AuditTimestamps,
   KeySet,
@@ -15,6 +16,16 @@ type Row = Record<string, unknown>;
 
 // `rowCount` is optional on `DatabaseResult`; an adapter that omits it reports 0.
 const affected = (result: DatabaseResult): number => result.rowCount ?? 0;
+
+type Bounds = Pick<SelectOptions<unknown>, 'limit' | 'orderBy'>;
+
+export type FindManyForUpdateOptions<TRow> = Bounds & {
+  readonly where: FilterQuery<TRow>;
+};
+
+export type FindManyForUpdateByKeysOptions<TRow, TKey extends keyof TRow & string> = Bounds & {
+  readonly keys: readonly Pick<TRow, TKey>[];
+};
 
 type Memo = {
   readonly audit: ResolvedAudit;
@@ -86,10 +97,13 @@ export abstract class KeyedWriteDao<TRow extends object, TKey extends keyof TRow
   }
 
   async findManyForUpdate(
-    where: FilterQuery<TRow>,
+    { where, limit, orderBy }: FindManyForUpdateOptions<TRow>,
     trx: DatabaseTransaction,
   ): Promise<readonly TRow[]> {
-    return this.adapter.findForUpdate<TRow>({ table: this.tableName, where }, trx);
+    return this.adapter.findForUpdate<TRow>(
+      { table: this.tableName, where, ...this.bounds(limit, orderBy) },
+      trx,
+    );
   }
 
   async create(row: TRow, trx?: DatabaseTransaction): Promise<void> {
@@ -204,29 +218,47 @@ export abstract class KeyedWriteDao<TRow extends object, TKey extends keyof TRow
   }
 
   async findManyForUpdateByKeys(
-    keys: readonly Pick<TRow, TKey>[],
+    { keys, limit, orderBy }: FindManyForUpdateByKeysOptions<TRow, TKey>,
     trx: DatabaseTransaction,
   ): Promise<readonly TRow[]> {
     this.requireKey('findManyForUpdateByKeys');
+    const bounds = this.bounds(limit, orderBy);
+    const singleKey = this.keyColumns.length === 1;
+    if (!singleKey && !this.adapter.findByKeysForUpdate && orderBy?.length) {
+      throw new Error(
+        `${this.tableName}: findManyForUpdateByKeys with orderBy on a composite key requires an adapter implementing findByKeysForUpdate`,
+      );
+    }
     if (keys.length === 0) return [];
-    if (this.keyColumns.length === 1) {
+    if (singleKey) {
       return this.adapter.findForUpdate<TRow>(
-        { table: this.tableName, where: this.singleKeyWhere(keys) },
+        { table: this.tableName, where: this.singleKeyWhere(keys), ...bounds },
         trx,
       );
     }
     if (this.adapter.findByKeysForUpdate) {
       return this.adapter.findByKeysForUpdate<TRow>(
-        { table: this.tableName, ...this.keySet(keys) },
+        { table: this.tableName, ...this.keySet(keys), ...bounds },
         trx,
       );
     }
     const rows: TRow[] = [];
     for (const key of keys) {
+      if (limit !== undefined && rows.length >= limit) break;
       const where = this.keyWhere('findManyForUpdateByKeys', key);
       rows.push(...(await this.adapter.findForUpdate<TRow>({ table: this.tableName, where }, trx)));
     }
-    return rows;
+    return rows.slice(0, limit);
+  }
+
+  private bounds(limit: number | undefined, orderBy: readonly OrderBy[] | undefined): Bounds {
+    if (limit !== undefined && !(Number.isSafeInteger(limit) && limit >= 0)) {
+      throw new Error(`${this.tableName}: limit must be a non-negative integer, got ${limit}`);
+    }
+    return {
+      ...(limit !== undefined ? { limit } : {}),
+      ...(orderBy !== undefined ? { orderBy } : {}),
+    };
   }
 
   private async insertRows(
