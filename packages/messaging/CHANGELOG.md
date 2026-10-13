@@ -1,5 +1,13 @@
 # @quilla-be-kit/messaging
 
+## 0.6.4
+
+### Patch Changes
+
+- 5054ac1: README: event metadata with only a `scopeId` now comes back as a context with a session-less `scopeId`.
+- Updated dependencies [5054ac1]
+  - @quilla-be-kit/execution-context@0.5.0
+
 ## 0.6.3
 
 ### Patch Changes

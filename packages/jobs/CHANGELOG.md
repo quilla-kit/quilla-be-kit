@@ -1,5 +1,20 @@
 # @quilla-be-kit/jobs
 
+## 0.3.0
+
+### Minor Changes
+
+- 5054ac1: `InProcessJobRunner` no longer runs a job alongside itself: a tick that fires while the job's previous run is still executing is skipped and logged at `debug`. This fixes `drain()`, which could stop waiting on an earlier run once an overlapping run replaced it in the runner's tracking. The guarantee is per process.
+
+  Interval schedules accept `initialDelayMs?: number`, the delay before the first run (default `everyMs`). `0` runs the job right after `register` returns, through the same path as every tick (fresh `job` context, overlap skip, error logging, `drain()` tracking). A negative or non-finite value throws at `register`.
+
+  - **Custom `JobRunner` authors:** honor `initialDelayMs`, or throw at `register` on schedules you can't honor.
+
+### Patch Changes
+
+- Updated dependencies [5054ac1]
+  - @quilla-be-kit/execution-context@0.5.0
+
 ## 0.2.4
 
 ### Patch Changes
