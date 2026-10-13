@@ -1,5 +1,12 @@
 # @quilla-be-kit/persistence
 
+## 8.0.0
+
+### Patch Changes
+
+- Updated dependencies [5054ac1]
+  - @quilla-be-kit/execution-context@0.5.0
+
 ## 7.1.0
 
 ### Minor Changes
