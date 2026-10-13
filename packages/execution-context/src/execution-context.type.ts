@@ -3,8 +3,8 @@ import type { AuthSession } from './auth-session.type.js';
 
 /**
  * Per-operation execution context. Carries the actor type, correlation
- * id, execution attempt id, and (when authenticated) the caller's
- * `AuthSession`.
+ * id, execution attempt id, and either the caller's `AuthSession` (when
+ * authenticated) or a session-less `scopeId` — never both.
  *
  * `correlationId` identifies the logical operation and can span retries —
  * a consumer that retries a request may deliberately reuse it.
@@ -23,6 +23,11 @@ import type { AuthSession } from './auth-session.type.js';
  * `@ValidateRequest`, log enrichment) treats session presence as the
  * single source of truth.
  *
+ * `scopeId` is the scope affected by work that has no session (a job, a
+ * public flow, a system task). It never authenticates anyone and must not
+ * sit beside a `session`: `resolveScopeId(ctx)` reads the operation's scope
+ * from either place and throws when both are set.
+ *
  * Consumers that need richer session data, roles, permissions, or any
  * other product-shaped fields extend `AuthSession` by intersection and
  * narrow `ExecutionContext.session` to the extended shape. See the
@@ -33,4 +38,5 @@ export type ExecutionContext = {
   readonly correlationId: string;
   readonly executionAttemptId: string;
   readonly session?: AuthSession;
+  readonly scopeId?: string;
 };

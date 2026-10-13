@@ -2,7 +2,7 @@
 
 Per-operation execution context: `ExecutionContext` type,
 `ExecutionContextProvider` interface, `AsyncExecutionContextProvider`
-(AsyncLocalStorage-backed), `executionContextFactory`, and
+(AsyncLocalStorage-backed), `executionContextFactory`, `resolveScopeId`, and
 `ExecutionContextEnricher` for bridging into `@quilla-be-kit/observability`.
 
 ## Why this exists
@@ -53,9 +53,12 @@ await provider.runWithContext(ctx, async () => {
 
 ### Types
 - `ExecutionContext` — the base shape (`actorType`, `correlationId`,
-  `executionAttemptId`, and an optional `session` of type `AuthSession`).
-  `session` is present iff the operation ran inside an authenticated scope;
-  anonymous, system, and job contexts leave it undefined.
+  `executionAttemptId`, an optional `session` of type `AuthSession`, and an
+  optional `scopeId`). `session` is present iff the operation ran inside an
+  authenticated scope; anonymous, system, and job contexts leave it
+  undefined. `scopeId` is the scope affected by work that has no session
+  (see [Scope without a session](#scope-without-a-session)); it never sits
+  beside a `session`.
 - `correlationId` vs. `executionAttemptId` — `correlationId` identifies the
   logical operation and can span retries (a consumer that retries a
   request may deliberately reuse it). `executionAttemptId` identifies this
@@ -71,15 +74,20 @@ await provider.runWithContext(ctx, async () => {
 
 ### Interfaces
 - `ExecutionContextProvider` — `getContext()` + `runWithContext(ctx, fn)` +
-  readonly `factory` (the paired `ExecutionContextFactory`).
+  `withScope(scopeId, fn)` + readonly `factory` (the paired
+  `ExecutionContextFactory`).
   `getContext()` **throws** if called outside a `runWithContext` scope.
+  `withScope` runs `fn` in the current context scoped to `scopeId` (see
+  [Scope without a session](#scope-without-a-session)). A custom provider
+  implements all three methods.
   **`runWithContext(fn)` is async-only** — synchronous code cannot establish a
   scope; wrap it in `async () => {...}` at the boundary.
 - `ExecutionContextFactory` — `createSystemContext(actorType)`, `createBaselineContext`,
   `createFromEventMetadata`. `createFromEventMetadata` accepts an
   `EventMetadata` instance or its parsed `toJSON()` form (`EventMetadataSource`):
   it rebuilds a session only when both `scopeId` and `userId` are strings, and
-  adds the metadata's `actorAttributes` to it. Reach it via `provider.factory` so consumers
+  adds the metadata's `actorAttributes` to it. A `scopeId` without a `userId`
+  comes back as the context's session-less `scopeId`. Reach it via `provider.factory` so consumers
   take only one injectable (the provider) and stay internally consistent.
   `createSystemContext` and `createBaselineContext` auto-generate
   `correlationId` via `node:crypto.randomUUID()` when not supplied — so a
@@ -106,13 +114,19 @@ await provider.runWithContext(ctx, async () => {
   extended `ExecutionContext` with new fields.
 - `ExecutionContextEnricher` — `LogEntryEnricher` that reads from a provider
   and returns the current context's fields as a log contribution. Contributes
-  `scopeId` and `userId` (from `ctx.session`, only when a session is present),
-  plus `actorType`, `correlationId`, and `executionAttemptId`. All land in the
+  `scopeId` (from `ctx.session`, or the session-less `ctx.scopeId`), `userId`
+  (from `ctx.session` only), plus `actorType`, `correlationId`, and
+  `executionAttemptId`. All land in the
   log entry's `context` field, flat. Takes an optional
   `{ sessionKeys }`: listed extended session fields are added under
   `extra.session`. Returns an empty contribution when the
   provider is outside a scope (bootstrap logs, pre-request logs) — never
   throws.
+
+### Functions
+- `resolveScopeId(ctx)` — the operation's scope: `ctx.session.scopeId` when
+  authenticated, otherwise `ctx.scopeId`, otherwise `undefined`. Throws when
+  both are set. Read scope through it rather than from either field.
 
 ### Values
 - `executionContextFactory` — default `ExecutionContextFactory` implementation.
@@ -136,12 +150,58 @@ surface that reads auth-derived identity does this consistently:
   `userId` fields on log entries — log shape stays flat even though the
   context groups, so dashboards and log queries keep their field names.
 - `createFromEventMetadata` rebuilds `ctx.session` in event consumers only
-  when the event metadata carries both `scopeId` and `userId`.
+  when the event metadata carries both `scopeId` and `userId`. A lone
+  `scopeId` becomes the context's session-less `scopeId`, never a session.
+
+The session-less `ctx.scopeId` never authenticates anyone, grants a
+permission, or reaches `@ValidateRequest` injection or audit columns. It
+only says which scope the work affects.
 
 Consumer code applies the same discipline: check `ctx.session` once, then
 read `scopeId` / `userId` off it. Avoid reconstituting half-states
 (`ctx.session?.scopeId && !ctx.session?.userId`) — they can't happen by
 construction.
+
+## Scope without a session
+
+Work with no authenticated caller — a background job, a public flow such as
+account activation, a system task — can still affect one scope. It states
+that scope on its context with `withScope`, which merges into the current
+context instead of building a new one by hand:
+
+```ts
+class ExpireInvitationsJob implements BackgroundJob {
+  // ...
+  async execute(): Promise<void> {
+    for (const { scopeId } of await this.invitations.findExpired()) {
+      await this.provider.withScope(scopeId, () =>
+        this.uow.transaction(async (ctx) => {
+          // your serializer and the log enricher read the scope here
+        }),
+      );
+    }
+  }
+}
+```
+
+| Current context | `withScope(X, fn)` |
+| --- | --- |
+| no scope | runs `fn` in the current context plus `scopeId: X` |
+| scope is already `X` (session or session-less) | runs `fn` in the current context — no new one |
+| scope is `Y` (session or session-less) | rejects; no silent choice between the two |
+
+`correlationId`, `executionAttemptId`, `actorType` and `session` are always
+kept. It rejects outside a context; establish one first with
+`createSystemContext(...)` or `createBaselineContext()`.
+
+Read the scope with `resolveScopeId(ctx)`, which covers both the session and
+the session-less case. A context must never carry both: `resolveScopeId`
+throws when it does.
+
+Crossing into a *different* scope — for example, a platform operator acting
+on another tenant — is an authorization decision, so the toolkit has no
+call for it. Build that context with `runWithContext` where the decision is
+visible in your code.
 
 ## Extension pattern
 
@@ -267,17 +327,19 @@ new ExecutionContextEnricher(provider, { sessionKeys: ['projectId'] });
 **5. Carry it through events.** Your `UnitOfWork` `serialize` builds the
 event metadata, so you decide what an event carries. Put the extra fields in
 `actorAttributes`. Consumers wired with `executionContext: { provider }`
-receive them back on `ctx.session`:
+receive them back on `ctx.session`. Take `scopeId` from `resolveScopeId` so
+session-less scoped work carries its scope too:
 
 ```ts
 serialize: (event) => {
   const ctx = provider.getContext() as AppExecutionContext;
+  const scopeId = resolveScopeId(ctx);
   const metadata = EventMetadata.create({
     kind: EventKind.DOMAIN,
     correlationId: ctx.correlationId,
     actorType: ctx.actorType,
+    ...(scopeId !== undefined && { scopeId }),
     ...(ctx.session && {
-      scopeId: ctx.session.scopeId,
       userId: ctx.session.userId,
       // Bearer sessions carry no projectId, so only add it when present.
       ...(ctx.session.projectId !== undefined && {

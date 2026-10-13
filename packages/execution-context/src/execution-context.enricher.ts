@@ -37,9 +37,13 @@ export class ExecutionContextEnricher implements LogEntryEnricher {
       // dashboards filter by scopeId/userId without navigating a nested
       // object. The log shape stays flat even though the context groups.
       const sessionExtra = this.sessionExtra(ctx.session);
+      // Not `resolveScopeId`: a context carrying both scopes would throw and
+      // drop every other log field. The conflict surfaces where scope is used.
+      const scopeId = ctx.session ? ctx.session.scopeId : ctx.scopeId;
       return {
         context: {
-          ...(ctx.session ? { scopeId: ctx.session.scopeId, userId: ctx.session.userId } : {}),
+          ...(scopeId !== undefined ? { scopeId } : {}),
+          ...(ctx.session ? { userId: ctx.session.userId } : {}),
           actorType: ctx.actorType,
           correlationId: ctx.correlationId,
           executionAttemptId: ctx.executionAttemptId,

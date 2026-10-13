@@ -5,6 +5,7 @@ import {
 } from './execution-context.factory.js';
 import type { ExecutionContextProvider } from './execution-context.provider.js';
 import type { ExecutionContext } from './execution-context.type.js';
+import { resolveScopeId } from './resolve-scope-id.js';
 
 export type AsyncExecutionContextProviderOptions = {
   readonly factory?: ExecutionContextFactory;
@@ -35,5 +36,20 @@ export class AsyncExecutionContextProvider implements ExecutionContextProvider {
 
   runWithContext<T>(ctx: ExecutionContext, fn: () => Promise<T>): Promise<T> {
     return this.storage.run(ctx, fn);
+  }
+
+  async withScope<T>(scopeId: string, fn: () => Promise<T>): Promise<T> {
+    if (typeof scopeId !== 'string' || scopeId === '') {
+      throw new Error('withScope: scopeId must be a non-empty string');
+    }
+    const ctx = this.getContext();
+    const current = resolveScopeId(ctx);
+    if (current === scopeId) return fn();
+    if (current !== undefined) {
+      throw new Error(
+        `withScope: context is already scoped to "${current}", cannot run in scope "${scopeId}"`,
+      );
+    }
+    return this.storage.run({ ...ctx, scopeId }, fn);
   }
 }

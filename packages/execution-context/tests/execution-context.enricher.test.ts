@@ -66,6 +66,29 @@ describe('ExecutionContextEnricher', () => {
     );
   });
 
+  it('logs the session-less scopeId without a userId', async () => {
+    const provider = new AsyncExecutionContextProvider();
+    const enricher = new ExecutionContextEnricher(provider);
+    await provider.runWithContext(
+      {
+        actorType: 'job',
+        correlationId: 'corr-1',
+        executionAttemptId: 'attempt-1',
+        scopeId: 'scope-1',
+      },
+      async () => {
+        expect(enricher.enrich()).toEqual({
+          context: {
+            scopeId: 'scope-1',
+            actorType: 'job',
+            correlationId: 'corr-1',
+            executionAttemptId: 'attempt-1',
+          },
+        });
+      },
+    );
+  });
+
   it('returns an empty contribution when provider is outside a scope', () => {
     const provider = new AsyncExecutionContextProvider();
     const enricher = new ExecutionContextEnricher(provider);

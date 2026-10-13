@@ -26,6 +26,10 @@ export class FakeExecutionContextProvider implements ExecutionContextProvider {
   runWithContext<T>(_ctx: ExecutionContext, fn: () => Promise<T>): Promise<T> {
     return fn();
   }
+
+  withScope<T>(_scopeId: string, fn: () => Promise<T>): Promise<T> {
+    return fn();
+  }
 }
 
 /** Reproduces a provider called outside any `runWithContext` scope. */
@@ -39,6 +43,10 @@ export class ThrowingExecutionContextProvider implements ExecutionContextProvide
   }
 
   runWithContext<T>(_ctx: ExecutionContext, fn: () => Promise<T>): Promise<T> {
+    return fn();
+  }
+
+  withScope<T>(_scopeId: string, fn: () => Promise<T>): Promise<T> {
     return fn();
   }
 }

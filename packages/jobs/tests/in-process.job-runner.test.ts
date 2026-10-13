@@ -14,6 +14,27 @@ function makeJob(overrides: Partial<BackgroundJob> = {}): BackgroundJob {
   };
 }
 
+function delayedJob(
+  initialDelayMs: number,
+  execute: BackgroundJob['execute'] = vi.fn(async () => {}),
+) {
+  return makeJob({
+    execute,
+    schedule: { type: JobScheduleType.Interval, everyMs: 1000, initialDelayMs },
+  });
+}
+
+function deferredExecute() {
+  const resolvers: Array<() => void> = [];
+  const execute = vi.fn(
+    () =>
+      new Promise<void>((resolve) => {
+        resolvers.push(resolve);
+      }),
+  );
+  return { execute, finishCurrent: () => resolvers.shift()?.() };
+}
+
 describe('InProcessJobRunner', () => {
   let provider: AsyncExecutionContextProvider;
   let logger: Logger;
@@ -130,6 +151,87 @@ describe('InProcessJobRunner', () => {
     await vi.advanceTimersByTimeAsync(2000);
 
     expect(observed).toEqual(['job', 'job']);
+  });
+
+  describe('overlapping runs', () => {
+    it('skips ticks while the previous run is still executing', async () => {
+      const { execute, finishCurrent } = deferredExecute();
+      runner.register(makeJob({ execute }));
+
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(execute).toHaveBeenCalledTimes(1);
+
+      finishCurrent();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(execute).toHaveBeenCalledTimes(2);
+      finishCurrent();
+    });
+
+    it('logs a skipped tick at debug level', async () => {
+      const { execute, finishCurrent } = deferredExecute();
+      const scoped = new NoopLogger();
+      const debug = vi.spyOn(scoped, 'debug');
+      vi.spyOn(logger, 'forMethod').mockReturnValue(scoped);
+      runner.register(makeJob({ execute }));
+
+      await vi.advanceTimersByTimeAsync(2000);
+
+      expect(debug).toHaveBeenCalledWith(expect.stringContaining('Skipping test.job'));
+      finishCurrent();
+    });
+  });
+
+  describe('initialDelayMs', () => {
+    it('runs right after registration with 0, never synchronously in register', async () => {
+      const execute = vi.fn(async () => {});
+      runner.register(delayedJob(0, execute));
+      expect(execute).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(execute).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(execute).toHaveBeenCalledTimes(2);
+    });
+
+    it('anchors the interval on the first run', async () => {
+      const execute = vi.fn(async () => {});
+      runner.register(delayedJob(300, execute));
+
+      await vi.advanceTimersByTimeAsync(299);
+      expect(execute).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(execute).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(999);
+      expect(execute).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(execute).toHaveBeenCalledTimes(2);
+    });
+
+    it('skips the first interval tick while the startup run is still executing', async () => {
+      const { execute, finishCurrent } = deferredExecute();
+      runner.register(delayedJob(0, execute));
+
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(execute).toHaveBeenCalledTimes(1);
+      finishCurrent();
+    });
+
+    it('stop() before the initial delay elapses prevents any run', async () => {
+      const execute = vi.fn(async () => {});
+      runner.register(delayedJob(500, execute));
+
+      runner.stop();
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(execute).not.toHaveBeenCalled();
+    });
+
+    it.each([-1, Number.NaN, Number.POSITIVE_INFINITY])(
+      'throws on initialDelayMs %s',
+      (initialDelayMs) => {
+        expect(() => runner.register(delayedJob(initialDelayMs))).toThrow(/initialDelayMs/);
+      },
+    );
   });
 
   it('throws on unsupported schedule types', () => {

@@ -52,10 +52,9 @@ export const executionContextFactory: ExecutionContextFactory = {
 
   createFromEventMetadata(metadata) {
     // An event carries session data iff both scopeId and userId are
-    // strings. Half-populated metadata (only scopeId, only userId) comes from
-    // non-auth contexts (system jobs that scoped writes without a user), and
-    // parsed JSON carries `null` for absent ids — both reconstitute as
-    // session-less contexts.
+    // strings. A lone scopeId comes from session-less scoped work (a job, a
+    // public flow) and comes back as the context's `scopeId`; a lone userId
+    // and parsed JSON's `null` ids carry neither.
     const { scopeId, userId } = metadata;
     const session =
       typeof scopeId === 'string' && typeof userId === 'string'
@@ -66,7 +65,7 @@ export const executionContextFactory: ExecutionContextFactory = {
       actorType: metadata.actorType,
       correlationId: metadata.correlationId,
       executionAttemptId: randomUUID(),
-      ...(session ? { session } : {}),
+      ...(session ? { session } : typeof scopeId === 'string' ? { scopeId } : {}),
     };
   },
 };

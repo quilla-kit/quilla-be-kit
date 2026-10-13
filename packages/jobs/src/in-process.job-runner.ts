@@ -25,26 +25,19 @@ export class InProcessJobRunner implements JobRunner {
       );
     }
 
-    const timer = setInterval(() => {
-      const ctx = this.executionContextProvider.factory.createSystemContext('job');
-      const execution = this.executionContextProvider.runWithContext(ctx, async () => {
-        try {
-          log.debug(`Executing ${job.name}`);
-          await job.execute();
-        } catch (err) {
-          log.error(`Job "${job.name}" failed`, err);
-        }
-      });
+    const { everyMs, initialDelayMs } = job.schedule;
+    if (initialDelayMs !== undefined && !(Number.isFinite(initialDelayMs) && initialDelayMs >= 0)) {
+      throw new Error(
+        `InProcessJobRunner requires initialDelayMs to be a finite number >= 0 (job "${job.name}")`,
+      );
+    }
 
-      this.activeExecutions.set(job.name, execution);
-      void execution.finally(() => {
-        if (this.activeExecutions.get(job.name) === execution) {
-          this.activeExecutions.delete(job.name);
-        }
-      });
-    }, job.schedule.everyMs);
-
-    this.timers.set(job.name, timer);
+    const tick = () => this.tick(job, log);
+    const first = setTimeout(() => {
+      tick();
+      this.timers.set(job.name, setInterval(tick, everyMs));
+    }, initialDelayMs ?? everyMs);
+    this.timers.set(job.name, first);
   }
 
   stop(): void {
@@ -61,5 +54,25 @@ export class InProcessJobRunner implements JobRunner {
   async dispose(): Promise<void> {
     this.stop();
     await this.drain();
+  }
+
+  private tick(job: BackgroundJob, log: Logger): void {
+    if (this.activeExecutions.has(job.name)) {
+      log.debug(`Skipping ${job.name}: previous run still in progress`);
+      return;
+    }
+
+    const ctx = this.executionContextProvider.factory.createSystemContext('job');
+    const execution = this.executionContextProvider.runWithContext(ctx, async () => {
+      try {
+        log.debug(`Executing ${job.name}`);
+        await job.execute();
+      } catch (err) {
+        log.error(`Job "${job.name}" failed`, err);
+      }
+    });
+
+    this.activeExecutions.set(job.name, execution);
+    void execution.finally(() => this.activeExecutions.delete(job.name));
   }
 }
