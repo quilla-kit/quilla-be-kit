@@ -105,3 +105,91 @@ describe('AsyncExecutionContextProvider', () => {
     });
   });
 });
+
+describe('AsyncExecutionContextProvider.withScope', () => {
+  const session = { scopeId: 's-1', userId: 'u-1' };
+
+  it('enriches the current context with the scope, keeping its other fields', async () => {
+    const provider = new AsyncExecutionContextProvider();
+    await provider.runWithContext(baseCtx, async () => {
+      await provider.withScope('s-1', async () => {
+        expect(provider.getContext()).toEqual({ ...baseCtx, scopeId: 's-1' });
+      });
+    });
+  });
+
+  it('restores the outer context after fn settles', async () => {
+    const provider = new AsyncExecutionContextProvider();
+    await provider.runWithContext(baseCtx, async () => {
+      await provider.withScope('s-1', async () => {});
+      expect(provider.getContext()).toBe(baseCtx);
+    });
+  });
+
+  it('returns what fn returns', async () => {
+    const provider = new AsyncExecutionContextProvider();
+    await provider.runWithContext(baseCtx, async () => {
+      await expect(provider.withScope('s-1', async () => 42)).resolves.toBe(42);
+    });
+  });
+
+  it('joins a context already scoped to the same scopeId', async () => {
+    const provider = new AsyncExecutionContextProvider();
+    const scoped: ExecutionContext = { ...baseCtx, scopeId: 's-1' };
+    await provider.runWithContext(scoped, async () => {
+      await provider.withScope('s-1', async () => {
+        expect(provider.getContext()).toBe(scoped);
+      });
+    });
+  });
+
+  it('joins a session with the same scope without adding a session-less scopeId', async () => {
+    const provider = new AsyncExecutionContextProvider();
+    const authenticated: ExecutionContext = { ...baseCtx, actorType: 'user', session };
+    await provider.runWithContext(authenticated, async () => {
+      await provider.withScope('s-1', async () => {
+        expect(provider.getContext()).toBe(authenticated);
+        expect(provider.getContext()).not.toHaveProperty('scopeId');
+      });
+    });
+  });
+
+  it.each<[string, ExecutionContext]>([
+    ['session-less scope', { ...baseCtx, scopeId: 's-1' }],
+    ['session scope', { ...baseCtx, actorType: 'user', session }],
+  ])('rejects a different scope than the current %s', async (_label, ctx) => {
+    const provider = new AsyncExecutionContextProvider();
+    await provider.runWithContext(ctx, async () => {
+      await expect(provider.withScope('s-2', async () => {})).rejects.toThrow(
+        /already scoped to "s-1".*"s-2"/,
+      );
+    });
+  });
+
+  it('rejects outside a context', async () => {
+    const provider = new AsyncExecutionContextProvider();
+    await expect(provider.withScope('s-1', async () => {})).rejects.toThrow(/not available/);
+  });
+
+  it('rejects an empty scopeId', async () => {
+    const provider = new AsyncExecutionContextProvider();
+    await provider.runWithContext(baseCtx, async () => {
+      await expect(provider.withScope('', async () => {})).rejects.toThrow(/non-empty/);
+    });
+  });
+
+  it('isolates concurrent scopes', async () => {
+    const provider = new AsyncExecutionContextProvider();
+    await provider.runWithContext(baseCtx, async () => {
+      const seen = await Promise.all(
+        ['s-a', 's-b'].map((scopeId) =>
+          provider.withScope(scopeId, async () => {
+            await new Promise((resolve) => setImmediate(resolve));
+            return provider.getContext().scopeId;
+          }),
+        ),
+      );
+      expect(seen).toEqual(['s-a', 's-b']);
+    });
+  });
+});

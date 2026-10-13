@@ -186,3 +186,54 @@ describe('executionContextFactory.createFromEventMetadata with parsed JSON and a
     expect(ctx.session).toBeUndefined();
   });
 });
+
+describe('executionContextFactory.createFromEventMetadata scope without a session', () => {
+  const loneScope = EventMetadata.create({
+    kind: EventKind.DOMAIN,
+    correlationId: 'corr-1',
+    actorType: 'job',
+    scopeId: 'scope-1',
+  });
+
+  it('restores a lone scopeId as the context scopeId, without a session', () => {
+    const ctx = executionContextFactory.createFromEventMetadata(loneScope);
+    expect(ctx.session).toBeUndefined();
+    expect(ctx.scopeId).toBe('scope-1');
+  });
+
+  it('restores a lone scopeId from parsed JSON', () => {
+    const json = JSON.parse(JSON.stringify(loneScope.toJSON()));
+    expect(executionContextFactory.createFromEventMetadata(json).scopeId).toBe('scope-1');
+  });
+
+  it('keeps the scope on the session only when both ids are present', () => {
+    const meta = EventMetadata.create({
+      kind: EventKind.DOMAIN,
+      correlationId: 'corr-1',
+      actorType: 'user',
+      scopeId: 'scope-1',
+      userId: 'user-1',
+    });
+    const ctx = executionContextFactory.createFromEventMetadata(meta);
+    expect(ctx.session?.scopeId).toBe('scope-1');
+    expect(ctx).not.toHaveProperty('scopeId');
+  });
+
+  it('carries no scope for a lone userId or null ids', () => {
+    const loneUser = executionContextFactory.createFromEventMetadata({
+      actorType: 'job',
+      correlationId: 'corr-1',
+      userId: 'user-1',
+    });
+    const nullIds = executionContextFactory.createFromEventMetadata({
+      actorType: 'system',
+      correlationId: 'corr-1',
+      scopeId: null,
+      userId: null,
+    });
+    for (const ctx of [loneUser, nullIds]) {
+      expect(ctx.session).toBeUndefined();
+      expect(ctx).not.toHaveProperty('scopeId');
+    }
+  });
+});

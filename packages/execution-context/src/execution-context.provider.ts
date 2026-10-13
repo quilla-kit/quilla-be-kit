@@ -18,4 +18,11 @@ export interface ExecutionContextProvider {
 
   /** Runs `fn` with `ctx` as the active execution context. */
   runWithContext<T>(ctx: ExecutionContext, fn: () => Promise<T>): Promise<T>;
+
+  /**
+   * Runs `fn` in the current context scoped to `scopeId`. Joins the current
+   * context when it already has that scope. Rejects when it has a different
+   * one (from its session or an earlier call), and outside a context.
+   */
+  withScope<T>(scopeId: string, fn: () => Promise<T>): Promise<T>;
 }

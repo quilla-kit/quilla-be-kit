@@ -496,7 +496,9 @@ produced the event, plus any extended session fields carried in
 `actorAttributes` (see
 [Carrying extended session fields end to end](../execution-context/README.md#carrying-extended-session-fields-end-to-end)).
 A session is rebuilt only when the metadata carries both `scopeId` and
-`userId`; a system event comes back without one. The same `correlationId` that flowed through the
+`userId`. Metadata with only a `scopeId` (from scoped work with no session,
+such as a job) comes back as a context with a session-less `scopeId`; a
+system event with neither comes back unscoped. The same `correlationId` that flowed through the
 originating HTTP request surfaces on log lines emitted by the handler,
 and `ExecutionContextProvider.getContext()` returns a valid context
 inside handler code without the consumer wiring any middleware.
