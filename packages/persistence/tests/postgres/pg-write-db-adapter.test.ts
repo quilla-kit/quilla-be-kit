@@ -3,6 +3,7 @@ import type { DatabaseResult } from '../../src/database/database-result.type.js'
 import type { DatabaseTransaction } from '../../src/database/database-transaction.interface.js';
 import type { Database } from '../../src/database/database.interface.js';
 import { PgWriteDbAdapter } from '../../src/postgres/pg-write-db-adapter.js';
+import { FakeDatabaseTransaction } from '../helpers/fake-database.js';
 
 type Capture = {
   sql: string;
@@ -706,5 +707,111 @@ describe('PgWriteDbAdapter (key sets)', () => {
     });
     expect(db.calls[0]?.params).toEqual([['{"a":1}']]);
     expect(dateSql(db)).toContain('unnest($1::JSONB[])');
+  });
+});
+
+describe('PgWriteDbAdapter (batches past the parameter limit)', () => {
+  // Three parameters per row for both insert (id, name, age) and updateMany (name, age + id).
+  const ROWS_PER_STATEMENT = Math.floor(65535 / 3);
+  const rows = (count: number) =>
+    Array.from({ length: count }, (_, i) => ({ id: `u${i}`, name: `n${i}`, age: i }));
+
+  let db: StubDatabase;
+  let adapter: PgWriteDbAdapter;
+  let own: FakeDatabaseTransaction;
+
+  beforeEach(() => {
+    db = new StubDatabase({
+      users: {
+        id: 'uuid',
+        name: 'text',
+        age: 'integer',
+        created_at: 'timestamp with time zone',
+        updated_at: 'timestamp with time zone',
+      },
+    });
+    own = new FakeDatabaseTransaction();
+    db.getDbTransaction.mockResolvedValue(own);
+    adapter = new PgWriteDbAdapter(db);
+  });
+
+  const writes = {
+    insert: (count: number, trx?: DatabaseTransaction) =>
+      adapter.insert({ table: 'users', rows: rows(count) }, trx),
+    updateMany: (count: number, trx?: DatabaseTransaction) =>
+      adapter.updateMany({ table: 'users', rows: rows(count) }, trx),
+  };
+
+  for (const [name, write] of Object.entries(writes)) {
+    describe(name, () => {
+      it('keeps a batch at the limit in one statement, without opening a transaction', async () => {
+        await write(ROWS_PER_STATEMENT);
+        expect(db.calls).toHaveLength(1);
+        expect(db.calls[0]?.params).toHaveLength(ROWS_PER_STATEMENT * 3);
+        expect(db.calls[0]?.trx).toBeUndefined();
+        expect(db.getDbTransaction).not.toHaveBeenCalled();
+      });
+
+      it('splits a larger batch into statements within the limit, in row order', async () => {
+        await write(ROWS_PER_STATEMENT + 1, {} as DatabaseTransaction);
+        expect(db.calls).toHaveLength(2);
+        for (const call of db.calls) {
+          expect(call.params.length).toBeLessThanOrEqual(65535);
+        }
+        expect(db.calls[1]?.params).toContain(`u${ROWS_PER_STATEMENT}`);
+        expect(db.calls[1]?.sql).toContain('$1::');
+        expect(db.calls[1]?.sql).not.toContain('$4::');
+      });
+
+      it("runs every statement on the caller's transaction", async () => {
+        const trx = {} as DatabaseTransaction;
+        await write(ROWS_PER_STATEMENT * 2 + 1, trx);
+        expect(db.calls.map((call) => call.trx)).toEqual([trx, trx, trx]);
+        expect(db.getDbTransaction).not.toHaveBeenCalled();
+      });
+
+      it('opens, commits and releases its own transaction when the caller passes none', async () => {
+        await write(ROWS_PER_STATEMENT + 1);
+        expect(db.calls.map((call) => call.trx)).toEqual([own, own]);
+        expect(own.committed).toBe(true);
+        expect(own.rolledBack).toBe(false);
+        expect(own.released).toBe(true);
+      });
+
+      it('rolls back its own transaction and rethrows when a statement fails', async () => {
+        const failure = new Error('boom');
+        const query = db.query.bind(db);
+        vi.spyOn(db, 'query').mockImplementation(async (sql, params, trx) => {
+          const result = await query(sql, params, trx);
+          if (db.calls.length === 2) throw failure;
+          return result;
+        });
+
+        await expect(write(ROWS_PER_STATEMENT + 1)).rejects.toBe(failure);
+        expect(own.committed).toBe(false);
+        expect(own.rollbackReason).toBe(failure);
+        expect(own.released).toBe(true);
+      });
+
+      it('sums rowCount and concatenates returned rows across statements', async () => {
+        db.resultQueue = [
+          { rows: [{ id: 'a' }], rowCount: ROWS_PER_STATEMENT },
+          { rows: [{ id: 'b' }], rowCount: 1 },
+        ];
+        const result = await write(ROWS_PER_STATEMENT + 1, {} as DatabaseTransaction);
+        expect(result.rowCount).toBe(ROWS_PER_STATEMENT + 1);
+        expect(result.rows).toEqual([{ id: 'a' }, { id: 'b' }]);
+      });
+    });
+  }
+
+  it('validates every updateMany row before writing any statement', async () => {
+    const batch: Record<string, unknown>[] = rows(ROWS_PER_STATEMENT + 1);
+    batch[ROWS_PER_STATEMENT] = { name: 'no key', age: 0 };
+    await expect(adapter.updateMany({ table: 'users', rows: batch })).rejects.toThrow(
+      'missing key column "id"',
+    );
+    expect(db.calls).toHaveLength(0);
+    expect(db.getDbTransaction).not.toHaveBeenCalled();
   });
 });

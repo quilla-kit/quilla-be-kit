@@ -1,4 +1,5 @@
 import type { BaseWriteDao } from '../dao/base-write.dao.js';
+import type { IdWriteDao } from '../dao/id-write-dao.interface.js';
 import type { DatabaseTransaction } from '../database/database-transaction.interface.js';
 import { KeyedBasicRepository } from './keyed-basic.repository.js';
 
@@ -8,11 +9,11 @@ import { KeyedBasicRepository } from './keyed-basic.repository.js';
  * pattern requirements. Rows are addressed by `id`; use
  * `KeyedBasicRepository` for other keys.
  */
-export abstract class BaseBasicRepository<TRow extends { id: string }> extends KeyedBasicRepository<
-  TRow,
-  'id'
-> {
-  constructor(protected override readonly writeDao: BaseWriteDao<TRow>) {
+export abstract class BaseBasicRepository<
+  TRow extends { id: string },
+  TDao extends IdWriteDao<TRow> = BaseWriteDao<TRow>,
+> extends KeyedBasicRepository<TRow, 'id', TDao> {
+  constructor(protected override readonly writeDao: TDao) {
     super(writeDao);
   }
 

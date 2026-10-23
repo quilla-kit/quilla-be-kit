@@ -1,4 +1,5 @@
 import type { KeyedWriteDao } from '../dao/keyed-write.dao.js';
+import type { WriteDao } from '../dao/write-dao.interface.js';
 import type { DatabaseTransaction } from '../database/database-transaction.interface.js';
 
 /**
@@ -8,8 +9,12 @@ import type { DatabaseTransaction } from '../database/database-transaction.inter
  * lock value under whatever name the table uses. `BaseBasicRepository` is
  * the `id`-keyed case.
  */
-export abstract class KeyedBasicRepository<TRow extends object, TKey extends keyof TRow & string> {
-  constructor(protected readonly writeDao: KeyedWriteDao<TRow, TKey>) {}
+export abstract class KeyedBasicRepository<
+  TRow extends object,
+  TKey extends keyof TRow & string,
+  TDao extends WriteDao<TRow, TKey> = KeyedWriteDao<TRow, TKey>,
+> {
+  constructor(protected readonly writeDao: TDao) {}
 
   async create(row: TRow, trx?: DatabaseTransaction): Promise<void> {
     await this.writeDao.create(row, trx);
