@@ -1,5 +1,6 @@
 import type { AggregateRoot } from '@quilla-be-kit/ddd';
 import type { BaseWriteDao } from '../dao/base-write.dao.js';
+import type { IdWriteDao } from '../dao/id-write-dao.interface.js';
 import type { UnitOfWorkContext } from '../unit-of-work/unit-of-work-context.type.js';
 import type { PersistenceMapper } from './mapper.interface.js';
 
@@ -9,15 +10,17 @@ import type { PersistenceMapper } from './mapper.interface.js';
  * their domain events into the outbox at commit.
  *
  * Verb: `loadById` / `loadForUpdate...` — returns `TAggregate` (DDD
- * language). Persistence I/O delegates to `BaseWriteDao`'s `find*` methods.
+ * language). Persistence I/O delegates to the `IdWriteDao` passed in;
+ * `TDao` types `writeDao` for subclasses that call their own DAO queries.
  */
 export abstract class BaseAggregateRepository<
   TAggregate extends AggregateRoot<object> & { id: string },
   TRow extends { id: string },
+  TDao extends IdWriteDao<TRow> = BaseWriteDao<TRow>,
 > {
   constructor(
     protected readonly mapper: PersistenceMapper<TAggregate, TRow>,
-    protected readonly writeDao: BaseWriteDao<TRow>,
+    protected readonly writeDao: TDao,
   ) {}
 
   async create(aggregate: TAggregate, ctx: UnitOfWorkContext): Promise<void> {

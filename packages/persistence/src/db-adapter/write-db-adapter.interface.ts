@@ -26,6 +26,7 @@ export type AuditTimestamps = {
  */
 export type Returning = 'all' | readonly string[];
 
+/** One call accepts any number of rows and is atomic, whatever the dialect's parameter limit. */
 export type InsertOptions = {
   readonly table: string;
   readonly rows: readonly Record<string, unknown>[];
@@ -48,7 +49,9 @@ export type UpdateOptions<T> = {
  * the join key) plus the same set of columns to update — heterogeneous keys across rows are unsupported
  * (the VALUES table requires a fixed schema). No optimistic locking: bulk
  * update is meant to follow `findManyForUpdate` so row-level locks held
- * inside the transaction already serialize concurrent writers.
+ * inside the transaction already serialize concurrent writers. One call
+ * accepts any number of rows and is atomic; when two rows share a key,
+ * which one wins is unspecified.
  */
 export type UpdateManyOptions = {
   readonly table: string;
@@ -107,6 +110,10 @@ export type CountOptions<T> = {
  * — for pre-create uniqueness checks), and `findForUpdate` is the locked
  * variant (required trx — for read-before-update). Read projections live
  * entirely on `ReadDbAdapter`.
+ *
+ * `insert` and `updateMany` must accept a batch of any size and apply it
+ * all-or-nothing: on the caller's `trx` when given, otherwise in a
+ * transaction of their own if the batch needs more than one statement.
  */
 export interface WriteDbAdapter {
   insert(opts: InsertOptions, trx?: DatabaseTransaction): Promise<DatabaseResult>;

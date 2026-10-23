@@ -40,6 +40,11 @@ const KIT_TIMESTAMPS: AuditTimestamps = {
   updatedAt: AUDIT_COLUMNS.updatedAt,
 };
 
+// Postgres' bind message counts parameters in a 16-bit field.
+const MAX_PARAMETERS = 65535;
+
+type Statement = { readonly sql: string; readonly values: readonly unknown[] };
+
 const timestampComparison = (paramIndex: number): string =>
   `date_trunc('milliseconds', $${paramIndex}::timestamptz)`;
 
@@ -103,23 +108,27 @@ export class PgWriteDbAdapter implements WriteDbAdapter {
     }
 
     const casts = keys.map((key) => mapPostgresType(types[key]));
-    const values: unknown[] = [];
-    const rowPlaceholders: string[] = [];
-    for (const row of opts.rows) {
-      const rowData = row as Record<string, unknown>;
-      const placeholders = keys.map((key, i) => {
-        values.push(serializeValue(types[key], rowData[key]));
-        return `$${values.length}::${casts[i]}`;
-      });
-      rowPlaceholders.push(
-        `(${[...placeholders, ...stamps.map(() => TIMESTAMP_LITERAL)].join(', ')})`,
-      );
-    }
-
     const allColumns = [...keys, ...stamps].map(this.quoter.column).join(', ');
-    const sql = `INSERT INTO ${table} (${allColumns}) VALUES ${rowPlaceholders.join(', ')}${returning}`;
+    const statements = chunkRows(opts.rows, keys.length).map((rows): Statement => {
+      const values: unknown[] = [];
+      const rowPlaceholders: string[] = [];
+      for (const row of rows) {
+        const rowData = row as Record<string, unknown>;
+        const placeholders = keys.map((key, i) => {
+          values.push(serializeValue(types[key], rowData[key]));
+          return `$${values.length}::${casts[i]}`;
+        });
+        rowPlaceholders.push(
+          `(${[...placeholders, ...stamps.map(() => TIMESTAMP_LITERAL)].join(', ')})`,
+        );
+      }
+      return {
+        sql: `INSERT INTO ${table} (${allColumns}) VALUES ${rowPlaceholders.join(', ')}${returning}`,
+        values,
+      };
+    });
 
-    return this.db.query(sql, values, trx);
+    return this.run(statements, trx);
   }
 
   async update<T>(opts: UpdateOptions<T>, trx?: DatabaseTransaction): Promise<DatabaseResult> {
@@ -177,36 +186,41 @@ export class PgWriteDbAdapter implements WriteDbAdapter {
 
     const setCasts = setKeys.map((key) => mapPostgresType(types[key]));
     const keyCasts = keyColumns.map((key) => mapPostgresType(types[key]));
-    const values: unknown[] = [];
-    const rowPlaceholders: string[] = [];
-    for (const row of opts.rows) {
-      const rowData = row as Record<string, unknown>;
-      const setPlaceholders = setKeys.map((key, i) => {
-        values.push(serializeValue(types[key], rowData[key]));
-        return `$${values.length}::${setCasts[i]}`;
-      });
-      const keyPlaceholders = keyColumns.map((key, i) => {
-        if (!(key in rowData)) {
-          throw new Error(`updateMany on ${opts.table}: row is missing key column "${key}"`);
-        }
-        values.push(serializeValue(types[key], rowData[key]));
-        return `$${values.length}::${keyCasts[i]}`;
-      });
-      rowPlaceholders.push(`(${[...setPlaceholders, ...keyPlaceholders].join(', ')})`);
-    }
-
     const q = this.quoter.column;
     const setClauses = setKeys.map((key) => `${q(key)} = data.${q(key)}`);
     const { updatedAt } = opts.audit ?? KIT_TIMESTAMPS;
     if (updatedAt !== undefined) {
       setClauses.push(`${q(updatedAt)} = ${TIMESTAMP_LITERAL}`);
     }
-
     const dataColumns = [...setKeys, ...keyColumns].map(q).join(', ');
     const join = keyPredicate('t', 'data', keyColumns, q);
-    const sql = `UPDATE ${this.quoter.table(opts.table)} AS t SET ${setClauses.join(', ')} FROM (VALUES ${rowPlaceholders.join(', ')}) AS data(${dataColumns}) WHERE ${join}`;
 
-    return this.db.query(sql, values, trx);
+    const paramsPerRow = setKeys.length + keyColumns.length;
+    const statements = chunkRows(opts.rows, paramsPerRow).map((rows): Statement => {
+      const values: unknown[] = [];
+      const rowPlaceholders: string[] = [];
+      for (const row of rows) {
+        const rowData = row as Record<string, unknown>;
+        const setPlaceholders = setKeys.map((key, i) => {
+          values.push(serializeValue(types[key], rowData[key]));
+          return `$${values.length}::${setCasts[i]}`;
+        });
+        const keyPlaceholders = keyColumns.map((key, i) => {
+          if (!(key in rowData)) {
+            throw new Error(`updateMany on ${opts.table}: row is missing key column "${key}"`);
+          }
+          values.push(serializeValue(types[key], rowData[key]));
+          return `$${values.length}::${keyCasts[i]}`;
+        });
+        rowPlaceholders.push(`(${[...setPlaceholders, ...keyPlaceholders].join(', ')})`);
+      }
+      return {
+        sql: `UPDATE ${this.quoter.table(opts.table)} AS t SET ${setClauses.join(', ')} FROM (VALUES ${rowPlaceholders.join(', ')}) AS data(${dataColumns}) WHERE ${join}`,
+        values,
+      };
+    });
+
+    return this.run(statements, trx);
   }
 
   async delete<T>(opts: DeleteOptions<T>, trx?: DatabaseTransaction): Promise<DatabaseResult> {
@@ -286,6 +300,47 @@ export class PgWriteDbAdapter implements WriteDbAdapter {
     return Number(result.rows[0]?.count ?? 0);
   }
 
+  // Statements are built before any runs, so a malformed row fails before anything is written.
+  private async run(
+    statements: readonly Statement[],
+    trx: DatabaseTransaction | undefined,
+  ): Promise<DatabaseResult> {
+    const [first] = statements;
+    if (statements.length === 1 && first !== undefined) {
+      return this.db.query(first.sql, first.values, trx);
+    }
+    if (trx) {
+      return this.runAll(statements, trx);
+    }
+    const own = await this.db.getDbTransaction();
+    await own.start();
+    try {
+      const result = await this.runAll(statements, own);
+      await own.commit();
+      return result;
+    } catch (error) {
+      const reason = error instanceof Error ? error : new Error(String(error));
+      await own.rollback(reason);
+      throw error;
+    } finally {
+      await own.release();
+    }
+  }
+
+  private async runAll(
+    statements: readonly Statement[],
+    trx: DatabaseTransaction,
+  ): Promise<DatabaseResult> {
+    const rows: Record<string, unknown>[] = [];
+    let rowCount = 0;
+    for (const statement of statements) {
+      const result = await this.db.query(statement.sql, statement.values, trx);
+      for (const row of result.rows) rows.push(row);
+      rowCount += result.rowCount ?? 0;
+    }
+    return { rows, rowCount };
+  }
+
   private async executeSelect<T>(
     opts: SelectOptions<T>,
     lock: OnLocked | undefined,
@@ -294,6 +349,16 @@ export class PgWriteDbAdapter implements WriteDbAdapter {
     const types = await this.columnTypes.get(opts.table);
     return runSelect(this.db, opts, types, { lock, trx, quoter: this.quoter });
   }
+}
+
+function chunkRows<T>(rows: readonly T[], paramsPerRow: number): (readonly T[])[] {
+  const size =
+    paramsPerRow === 0 ? rows.length : Math.max(1, Math.floor(MAX_PARAMETERS / paramsPerRow));
+  const chunks: (readonly T[])[] = [];
+  for (let start = 0; start < rows.length; start += size) {
+    chunks.push(rows.slice(start, start + size));
+  }
+  return chunks;
 }
 
 function buildReturning(returning: Returning | undefined, quoter: IdentifierQuoter): string {

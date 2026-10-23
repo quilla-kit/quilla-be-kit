@@ -53,6 +53,11 @@ pnpm add pg
   concurrency control on a bulk write should `findManyForUpdate` first; the
   row-level locks held inside the transaction already serialize concurrent
   writers.
+- **One bulk write is one atomic call, whatever its size.** `insert` and
+  `updateMany` accept any number of rows. When a batch needs more than one
+  statement, the statements run on the caller's `trx`, or in a transaction
+  the adapter opens itself when there is none — either way all rows land or
+  none do. See [Bulk writes](#bulk-writes).
 - **Outbox is orthogonal, not built-in.** Wire an `OutboxWriter` on
   `UnitOfWork` to drain aggregate events + registered integration events
   in the same transaction. Omit for apps that don't use outbox.
@@ -450,6 +455,29 @@ if (removed === 0) { /* nothing matched */ }
 - `deleteMany`'s per-key fallback sums what the database reported, which
   counts rows, not distinct keys.
 
+#### Bulk writes
+
+`createMany`, `createManyReturning` and `updateMany` take batches of any size.
+Postgres binds at most 65,535 parameters per statement, so
+`PgWriteDbAdapter` splits a batch that would exceed that into statements of
+`floor(65535 / columns per row)` rows and runs them in order:
+
+- With a `trx`, every statement runs on it — a failure leaves the
+  transaction to your rollback, as with any other write.
+- Without one, the adapter opens its own transaction for the batch, commits
+  it, and rolls it back if any statement fails.
+- A batch that fits in one statement is sent exactly as before, and no
+  transaction is opened for it.
+- The returned count is the sum across statements; returned rows come back in
+  input order.
+
+**What this does NOT do:**
+
+- Deletes and `IN` filters need no splitting: a key list is bound as one
+  array parameter, whatever its length.
+- Two rows with the same key in one `updateMany` batch: which one wins is
+  unspecified.
+
 #### Identifier quoting
 
 `PgWriteDbAdapter` emits identifiers unquoted by default. Pass
@@ -495,6 +523,44 @@ await uow.transaction(async (ctx) => {
 
 `BaseBasicRepository` is the `id`-keyed case and keeps its existing signatures.
 
+#### Write-DAO contracts — `WriteDao` / `IdWriteDao`
+
+The repository bases depend on two interfaces, not on the DAO classes:
+
+| Interface | Implemented by | Used by |
+| --- | --- | --- |
+| `WriteDao<TRow, TKey>` | `KeyedWriteDao` | `KeyedBasicRepository` |
+| `IdWriteDao<TRow>` (`WriteDao<TRow, 'id'>` + `findOneById`, `deleteMany` with bare ids) | `BaseWriteDao` | `BaseBasicRepository`, the aggregate repositories |
+
+Each repository base takes the DAO type as an optional last type parameter.
+Left out, it is the kit's class, exactly as before. Pass your own contract to
+give `this.writeDao` your DAO's extra queries, or to back a repository with
+something other than the kit's DAO classes:
+
+```ts
+interface UserWriteDao extends IdWriteDao<UserRow> {
+  findByEmail(email: string, trx?: DatabaseTransaction): Promise<UserRow | null>;
+}
+
+class PgUserWriteDao extends BaseWriteDao<UserRow> implements UserWriteDao {
+  protected readonly tableName = 'users';
+  async findByEmail(email: string, trx?: DatabaseTransaction) {
+    return this.findOne({ email }, trx);
+  }
+}
+
+class UserRepository extends BaseUnscopedAggregateRepository<User, UserRow, UserWriteDao> {
+  async loadByEmail(email: string): Promise<User | null> {
+    const row = await this.writeDao.findByEmail(email);
+    return row ? this.mapper.toDomain(row) : null;
+  }
+}
+```
+
+Without the type parameter the constructor still expects the class, so a
+`UserWriteDao` that isn't a `BaseWriteDao` is rejected. Any object with the
+contract's methods satisfies it — a test double can be a plain object.
+
 #### For adapter authors
 
 `WriteDbAdapter` is the extension point for other databases or your own
@@ -517,6 +583,11 @@ original eight methods keeps working:
   `'nowait'`, default `'wait'`). An implementation must honor it: one that
   ignores it always waits, so `'skip'` gives callers no parallelism and
   `'nowait'` blocks instead of throwing.
+
+`insert` and `updateMany` must accept a batch of any size and apply it
+all-or-nothing: on the caller's `trx` when given, otherwise in a transaction
+of the adapter's own whenever the batch needs more than one statement. Split
+by your database's parameter limit if it has one.
 
 The Postgres building blocks are exported from `/postgres` for reuse:
 `buildWhere` (takes an optional column-quoting function), `buildKeySet`,
@@ -1166,7 +1237,8 @@ The builder covers the common projection shapes. For one-off reads where the bui
 src/
 ├── database/     Database / DatabaseTransaction / DatabaseResult / DatabaseHealth
 ├── db-adapter/   FilterQuery, Read/Write DbAdapter interfaces + options
-├── dao/          BaseReadDao, BaseWriteDao, KeyedWriteDao, AuditPolicy
+├── dao/          BaseReadDao, BaseWriteDao, KeyedWriteDao, WriteDao / IdWriteDao contracts,
+│                 AuditPolicy
 ├── query/        QueryProduct, PaginatedResult, StandardListQuery, FieldDescriptor,
 │                 ColumnResolver + DefaultColumnResolver, SqlQueryBuilder
 ├── query-schema/ createQueryParametersSchema (Zod adapter — sub-path export)

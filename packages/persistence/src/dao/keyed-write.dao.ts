@@ -11,6 +11,11 @@ import type {
 import { OptimisticLockError } from '../errors/optimistic-lock.error.js';
 import { resolveAuditPolicy } from './audit-columns.js';
 import type { AuditPolicy, ResolvedAudit } from './audit-policy.type.js';
+import type {
+  FindManyForUpdateByKeysOptions,
+  FindManyForUpdateOptions,
+  WriteDao,
+} from './write-dao.interface.js';
 
 type Row = Record<string, unknown>;
 
@@ -18,14 +23,6 @@ type Row = Record<string, unknown>;
 const affected = (result: DatabaseResult): number => result.rowCount ?? 0;
 
 type LockedRead = Pick<LockedSelectOptions<unknown>, 'limit' | 'orderBy' | 'onLocked'>;
-
-export type FindManyForUpdateOptions<TRow> = LockedRead & {
-  readonly where: FilterQuery<TRow>;
-};
-
-export type FindManyForUpdateByKeysOptions<TRow, TKey extends keyof TRow & string> = LockedRead & {
-  readonly keys: readonly Pick<TRow, TKey>[];
-};
 
 type Memo = {
   readonly audit: ResolvedAudit;
@@ -44,7 +41,9 @@ type Memo = {
  * optional `trx`; locked reads require one. `updateMany`/`deleteMany` have
  * no per-row lock — `findManyForUpdate` first if you need one.
  */
-export abstract class KeyedWriteDao<TRow extends object, TKey extends keyof TRow & string> {
+export abstract class KeyedWriteDao<TRow extends object, TKey extends keyof TRow & string>
+  implements WriteDao<TRow, TKey>
+{
   protected abstract readonly tableName: string;
   protected abstract readonly keyColumns: readonly TKey[];
   protected readonly auditPolicy: AuditPolicy = 'kit';

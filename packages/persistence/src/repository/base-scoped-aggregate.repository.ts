@@ -1,4 +1,6 @@
 import type { AggregateRoot } from '@quilla-be-kit/ddd';
+import type { BaseWriteDao } from '../dao/base-write.dao.js';
+import type { IdWriteDao } from '../dao/id-write-dao.interface.js';
 import type { FilterQuery } from '../db-adapter/filter-query.type.js';
 import { CrossScopeAccessError } from '../errors/cross-scope-access.error.js';
 import type { UnitOfWorkContext } from '../unit-of-work/unit-of-work-context.type.js';
@@ -13,7 +15,8 @@ import { BaseAggregateRepository } from './base-aggregate.repository.js';
 export abstract class BaseScopedAggregateRepository<
   TAggregate extends AggregateRoot<object> & { id: string },
   TRow extends { id: string; scope_id: string },
-> extends BaseAggregateRepository<TAggregate, TRow> {
+  TDao extends IdWriteDao<TRow> = BaseWriteDao<TRow>,
+> extends BaseAggregateRepository<TAggregate, TRow, TDao> {
   async loadByIdAndScopeOrFail(id: string, scopeId: string): Promise<TAggregate> {
     const row = await this.writeDao.findOneById(id);
     if (!row || row.scope_id !== scopeId) {
