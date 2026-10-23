@@ -536,6 +536,10 @@ new PgLocalOutbox({
 });
 ```
 
+`insert` accepts any number of entries. Past Postgres' 65,535-parameter
+limit (4,369 entries) it writes them in several statements, all on the
+transaction you pass, so a commit's events still land or roll back together.
+
 ### `PgEventBus`
 
 ```ts

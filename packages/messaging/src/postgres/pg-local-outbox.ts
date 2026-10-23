@@ -12,6 +12,9 @@ import type { TransactionHandle } from '../local-outbox/transaction-handle.inter
 const DEFAULT_TABLE_NAME = 'outbox_events';
 const DEFAULT_MAX_RETRIES = 3;
 const INSERT_COLUMN_COUNT = 15;
+// Postgres' bind message counts parameters in a 16-bit field.
+const MAX_PARAMETERS = 65535;
+const ENTRIES_PER_STATEMENT = Math.floor(MAX_PARAMETERS / INSERT_COLUMN_COUNT);
 
 type OutboxRow = {
   id: string;
@@ -49,8 +52,19 @@ export class PgLocalOutbox implements LocalOutboxWriter, LocalOutboxReader {
   }
 
   async insert(entries: readonly LocalOutboxInsertInput[], trx: TransactionHandle): Promise<void> {
-    if (entries.length === 0) return;
+    const statements: { sql: string; params: unknown[] }[] = [];
+    for (let start = 0; start < entries.length; start += ENTRIES_PER_STATEMENT) {
+      statements.push(this.insertStatement(entries.slice(start, start + ENTRIES_PER_STATEMENT)));
+    }
+    for (const { sql, params } of statements) {
+      await trx.query(sql, params);
+    }
+  }
 
+  private insertStatement(entries: readonly LocalOutboxInsertInput[]): {
+    sql: string;
+    params: unknown[];
+  } {
     const params: unknown[] = [];
     const valueGroups: string[] = [];
 
@@ -80,14 +94,14 @@ export class PgLocalOutbox implements LocalOutboxWriter, LocalOutboxReader {
       );
     }
 
-    await trx.query(
-      `INSERT INTO ${this.tableName}
+    return {
+      sql: `INSERT INTO ${this.tableName}
         (id, event_type, event_version, event_kind, payload,
          aggregate_id, correlation_id, status, claimed_by, claimed_at,
          retry_count, last_error, published_at, created_at, occurred_at)
        VALUES ${valueGroups.join(', ')}`,
       params,
-    );
+    };
   }
 
   async claim(instanceId: string, batchSize: number): Promise<readonly LocalOutboxEntry[]> {
