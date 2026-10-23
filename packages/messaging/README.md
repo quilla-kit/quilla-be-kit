@@ -134,6 +134,7 @@ Or pipe the string into drizzle-kit / knex / your migration tool.
 ```ts
 import { UnitOfWork } from '@quilla-be-kit/persistence';
 import { PgDatabase } from '@quilla-be-kit/persistence/postgres';
+import type { LocalOutboxInsertInput } from '@quilla-be-kit/messaging';
 import { PgLocalOutbox } from '@quilla-be-kit/messaging/postgres';
 import { Pool } from 'pg';
 
@@ -141,10 +142,10 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const db = new PgDatabase({ pool });
 const outbox = new PgLocalOutbox({ pool });
 
-const uow = new UnitOfWork({
+const uow = new UnitOfWork<LocalOutboxInsertInput>({
   db,
   events: {
-    sink: outbox,
+    sink: { sink: (entries, trx) => outbox.insert(entries, trx) },
     serialize: (event) => ({
       eventType: event.name,
       eventVersion: 1,
@@ -164,6 +165,9 @@ await uow.transaction(async (ctx) => {
   // Aggregate rows + outbox_events rows commit atomically.
 });
 ```
+
+`insert` takes any transaction object with a `query(sql, params)` method; it
+only runs statements on it and never reads the results.
 
 ### 3. Run the forwarder in the background
 

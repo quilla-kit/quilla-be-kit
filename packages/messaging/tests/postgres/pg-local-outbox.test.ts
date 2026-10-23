@@ -79,6 +79,22 @@ describe('PgLocalOutbox', () => {
       expect(trx.calls).toHaveLength(0);
     });
 
+    it('accepts any transaction object with a query method', async () => {
+      const calls: string[] = [];
+      const trx = {
+        query: async (sql: string): Promise<{ rowCount: number }> => {
+          calls.push(sql);
+          return { rowCount: 1 };
+        },
+      };
+      await outbox.insert(
+        [{ eventType: 't', eventKind: 'domain', payload: {}, occurredAt: OCCURRED_AT }],
+        trx,
+      );
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).toContain('INSERT INTO outbox_events');
+    });
+
     it('honors custom table name', async () => {
       const custom = new PgLocalOutbox({ pool: pool.asPool(), tableName: 'svc_outbox' });
       const trx = new CapturingTrx();
