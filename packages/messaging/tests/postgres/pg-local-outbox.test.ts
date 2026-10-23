@@ -88,6 +88,39 @@ describe('PgLocalOutbox', () => {
       );
       expect(trx.calls[0]?.sql).toContain('INSERT INTO svc_outbox');
     });
+
+    describe('past the parameter limit', () => {
+      const PER_STATEMENT = Math.floor(65535 / 15);
+      const entries = (count: number) =>
+        Array.from({ length: count }, (_, i) => ({
+          id: `e${i}`,
+          eventType: 't',
+          eventKind: 'domain' as const,
+          payload: {},
+          occurredAt: OCCURRED_AT,
+        }));
+
+      it('keeps a batch at the limit in one statement', async () => {
+        const trx = new CapturingTrx();
+        await outbox.insert(entries(PER_STATEMENT), trx);
+        expect(trx.calls).toHaveLength(1);
+        expect(trx.calls[0]?.params).toHaveLength(PER_STATEMENT * 15);
+      });
+
+      it('splits a larger batch into statements on the same trx, in order', async () => {
+        const trx = new CapturingTrx();
+        await outbox.insert(entries(PER_STATEMENT + 1), trx);
+        expect(trx.calls).toHaveLength(2);
+        for (const call of trx.calls) {
+          expect(call.params.length).toBeLessThanOrEqual(65535);
+        }
+        expect(trx.calls[0]?.params[0]).toBe('e0');
+        expect(trx.calls[1]?.params).toHaveLength(15);
+        expect(trx.calls[1]?.params[0]).toBe(`e${PER_STATEMENT}`);
+        expect(trx.calls[1]?.sql).toContain('($1, $2,');
+        expect(trx.calls[1]?.sql).not.toContain('$16');
+      });
+    });
   });
 
   describe('claim', () => {
