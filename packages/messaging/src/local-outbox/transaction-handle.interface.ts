@@ -1,6 +1,4 @@
+/** The transaction an outbox write runs on. Statements are run; results are never read. */
 export interface TransactionHandle {
-  query<TRow = unknown>(
-    sql: string,
-    params?: readonly unknown[],
-  ): Promise<{ rows: readonly TRow[] }>;
+  query(sql: string, params?: readonly unknown[]): Promise<unknown>;
 }
