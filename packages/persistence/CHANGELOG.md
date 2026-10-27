@@ -1,5 +1,14 @@
 # @quilla-be-kit/persistence
 
+## 0.9.0
+
+### Minor Changes
+
+- Version line reset to 0.x: the package is pre-1.0 until its API is declared stable.
+  0.9.0 is identical to 8.2.0; 1.0.0–8.2.0 are deprecated. Most of those majors
+  came from dependency bumps, not breaking changes. Depend on `^0.9.0`; until 1.0,
+  a minor release may contain breaking changes.
+
 ## 8.2.0
 
 ### Minor Changes
