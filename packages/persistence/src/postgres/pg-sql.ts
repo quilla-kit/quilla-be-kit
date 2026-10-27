@@ -12,6 +12,9 @@ import {
 
 export type ColumnTypeMap = Record<string, string>;
 
+export const IDENT = '[a-zA-Z_][a-zA-Z0-9_]*';
+export const IDENT_RE = new RegExp(`^${IDENT}$`);
+
 /**
  * Renders identifiers into SQL. `NO_QUOTING` reproduces the historical
  * unquoted output; `QUOTED` double-quotes every identifier so mixed-case,

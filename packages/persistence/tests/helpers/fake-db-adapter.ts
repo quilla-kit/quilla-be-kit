@@ -6,6 +6,13 @@ import type {
   SelectOptions,
 } from '../../src/db-adapter/read-db-adapter.interface.js';
 import type {
+  RoutineDbAdapter,
+  StoredFunctionCall,
+  StoredFunctionResult,
+  StoredProcedureCall,
+  StoredProcedureResult,
+} from '../../src/db-adapter/routine-db-adapter.interface.js';
+import type {
   CountOptions,
   DeleteOptions,
   ExistsOptions,
@@ -104,4 +111,33 @@ export class FakeWriteDbAdapter implements WriteDbAdapter {
     this.countCalls.push({ opts: opts as CountOptions<unknown>, trx });
     return this.countResults.shift() ?? 0;
   });
+}
+
+export class FakeRoutineDbAdapter implements RoutineDbAdapter {
+  procedureCalls: Call<StoredProcedureCall>[] = [];
+  functionCalls: Call<StoredFunctionCall>[] = [];
+  procedureResults: StoredProcedureResult<unknown, unknown>[] = [];
+  functionResults: StoredFunctionResult<unknown, unknown>[] = [];
+
+  async callProcedure<TOut, TRow>(
+    opts: StoredProcedureCall,
+    trx?: DatabaseTransaction,
+  ): Promise<StoredProcedureResult<TOut, TRow>> {
+    this.procedureCalls.push({ opts, trx });
+    return (this.procedureResults.shift() ?? { outputs: {}, rows: [] }) as StoredProcedureResult<
+      TOut,
+      TRow
+    >;
+  }
+
+  async callFunction<TOut, TRow>(
+    opts: StoredFunctionCall,
+    trx?: DatabaseTransaction,
+  ): Promise<StoredFunctionResult<TOut, TRow>> {
+    this.functionCalls.push({ opts, trx });
+    return (this.functionResults.shift() ?? { outputs: {}, rows: [] }) as StoredFunctionResult<
+      TOut,
+      TRow
+    >;
+  }
 }
