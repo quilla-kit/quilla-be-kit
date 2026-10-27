@@ -1,5 +1,14 @@
 # @quilla-be-kit/persistence
 
+## 8.2.0
+
+### Minor Changes
+
+- 94996ea: Call stored procedures and functions through a routine DAO: `BaseRoutineDao`
+  over a `RoutineDbAdapter` port, with `PgRoutineDbAdapter` in `/postgres`.
+  Arguments are declared in order with a mode (`in`/`out`/`inout`); out-values
+  come back by name. See "Stored routines" in the README.
+
 ## 8.1.0
 
 ### Minor Changes
