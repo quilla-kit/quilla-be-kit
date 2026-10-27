@@ -1,5 +1,11 @@
 # @quilla-be-kit/messaging
 
+## 0.7.1
+
+### Patch Changes
+
+- 3413b56: README: the outbox wiring example imports the DDD-typed `UnitOfWork` from `@quilla-be-kit/persistence/aggregate`.
+
 ## 0.7.0
 
 ### Minor Changes

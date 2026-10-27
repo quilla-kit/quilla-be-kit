@@ -1,6 +1,6 @@
 {
   "name": "@quilla-be-kit/persistence",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "description": "Layered persistence: database adapters, DAOs and a unit of work, with optional row repositories and DDD aggregate repositories on top.",
   "license": "MIT",
   "author": "Max Martinez",
