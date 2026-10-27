@@ -3,6 +3,7 @@ export {
   type BaseReadDaoOptions,
   type SqlQueryBuilderFactory,
 } from './base-read.dao.js';
+export { BaseRoutineDao } from './base-routine.dao.js';
 export { BaseWriteDao } from './base-write.dao.js';
 export { KeyedWriteDao } from './keyed-write.dao.js';
 export type {

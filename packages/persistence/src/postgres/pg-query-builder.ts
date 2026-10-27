@@ -8,6 +8,8 @@ import type {
   SqlQueryBuilder,
 } from '../query/sql-query-builder.interface.js';
 import {
+  IDENT,
+  IDENT_RE,
   type IdentifierQuoter,
   NO_QUOTING,
   QUOTED,
@@ -15,8 +17,7 @@ import {
   parseFilterKey,
 } from './pg-sql.js';
 
-const IDENT_RE = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
-const QUALIFIED_IDENT_RE = /^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)?$/;
+const QUALIFIED_IDENT_RE = new RegExp(`^${IDENT}(\\.${IDENT})?$`);
 // `table` or `schema.table` or `table alias` or `table AS alias`.
 const FROM_RE =
   /^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)?(\s+(AS\s+)?[a-zA-Z_][a-zA-Z0-9_]*)?$/i;

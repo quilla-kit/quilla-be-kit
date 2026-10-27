@@ -80,6 +80,8 @@ pnpm add pg
 ## Vocabulary
 
 - **DAO** layer — verb `find*`. Returns raw `TRow` from the database.
+- **Routine DAO** layer — verb `call*`. Calls stored procedures and
+  functions; see [Stored routines](#stored-routines).
 - **Repository** layer — verb `load*`. Returns `TAggregate` mapped from
   rows. The verb split marks the layer.
 
@@ -673,6 +675,110 @@ compile. Cast directly to `FilterQuery<TRow>` instead of routing through
 `{ id } as Partial<TRow>` — which sidesteps the generic-assignability gap
 entirely (this is the pattern `BaseWriteDao` uses internally).
 
+## Stored routines
+
+Subclass `BaseRoutineDao` and add one typed method per stored procedure or
+function; one subclass can group any number of routines.
+
+```ts
+import { BaseRoutineDao, type DatabaseTransaction } from '@quilla-be-kit/persistence';
+import { PgRoutineDbAdapter } from '@quilla-be-kit/persistence/postgres';
+
+class BillingRoutinesDao extends BaseRoutineDao {
+  protected override readonly schema = 'billing';
+
+  closeOrder(orderId: string, trx?: DatabaseTransaction) {
+    return this.callProcedure<{ p_total: number; p_closed_at: Date }>(
+      {
+        routine: 'close_order',
+        args: [
+          { name: 'p_order_id', value: orderId, type: 'uuid' },
+          { name: 'p_total', mode: 'inout', value: 0 },
+          { name: 'p_closed_at', mode: 'out' },
+        ],
+      },
+      trx,
+    );
+  }
+
+  orderTotal(orderId: string) {
+    return this.callFunction({
+      routine: 'order_total',
+      returns: 'value',
+      args: [{ value: orderId, type: 'uuid' }],
+    });
+  }
+
+  openOrders(customerId: string) {
+    return this.callFunction<Record<string, never>, { id: string; total: number }>({
+      routine: 'open_orders',
+      args: [{ value: customerId }],
+    });
+  }
+}
+
+const routines = new BillingRoutinesDao(new PgRoutineDbAdapter(db));
+const { outputs } = await routines.closeOrder(orderId, ctx.trx);
+const closedAt: Date = outputs.p_closed_at;
+```
+
+- `schema` applies to every call that doesn't set its own `schema`; omit both
+  to use the database's search path. `routine` is always the bare name.
+- `callProcedure` and `callFunction` are protected, so the subclass's methods
+  are the only routines callers can reach.
+- Pass `trx` to run inside a unit of work; the call commits or rolls back with
+  it. Without `trx` the call runs on its own.
+- Repositories use a routine DAO the same way they use a write DAO: take it as
+  a constructor argument and pass `ctx.trx` down.
+
+### Arguments
+
+Each argument is `{ name?, mode?, value?, type? }`, in the order the routine
+declares them:
+
+- `mode` is `'in'` (default), `'out'` or `'inout'`. `out` and `inout`
+  arguments must be named; their values come back in `outputs` under that
+  name.
+- `name` uses named notation (`p_order_id => $1`). Positional arguments must
+  come before named ones.
+- `value` is always bound as a parameter; it is ignored for `out` arguments.
+- `type` is the database's type name (`uuid`, `numeric(10,2)`, `text[]`). Omit
+  it to let the database infer the type from the value; set it when the
+  routine is overloaded or inference picks the wrong type.
+
+### Results
+
+| Call | Result |
+| --- | --- |
+| `callProcedure` | `{ outputs, rows }`: `outputs` holds the declared `out`/`inout` values |
+| `callFunction` (default `returns: 'rows'`) | `{ outputs, rows }`: `rows` is the result set; declared `out`/`inout` values are read from its first row |
+| `callFunction` with `returns: 'value'` | `{ outputs, rows, returnValue }`: the function's single return value |
+
+Adapters for other databases enforce the same argument rules by calling the
+exported `routineOutputNames(call)`, which validates the arguments and returns
+the `out`/`inout` names.
+
+### Postgres
+
+`PgRoutineDbAdapter` renders:
+
+| Call | SQL |
+| --- | --- |
+| `callProcedure` | `CALL s.r(...)`; `out` arguments are passed as `NULL` placeholders |
+| `callFunction` | `SELECT * FROM s.r(...)`; `out` arguments are left out of the call and come back as columns |
+| `callFunction` with `returns: 'value'` | `SELECT s.r(...) AS "returnValue"`; `out`/`inout` arguments are rejected |
+
+- Output values are read by the name Postgres reports, which for an unquoted
+  parameter name is its lower-case form.
+
+- `out` parameters on procedures need Postgres 14 or later; `inout` works
+  from Postgres 11.
+- Pass `{ quoteIdentifiers: true }` to double-quote schema, routine and
+  argument names (mixed-case or reserved names). Without it, each must be a
+  plain identifier. Type names are validated either way.
+- Errors are the driver's own: a missing routine is SQLSTATE `42883`, an
+  ambiguous overload `42725`. Catch them by `code` as with any other query.
+
 ## Mappers — row ↔ aggregate conversion
 
 `BasePersistenceMapper` handles the bidirectional row↔aggregate conversion
@@ -1236,9 +1342,9 @@ The builder covers the common projection shapes. For one-off reads where the bui
 ```
 src/
 ├── database/     Database / DatabaseTransaction / DatabaseResult / DatabaseHealth
-├── db-adapter/   FilterQuery, Read/Write DbAdapter interfaces + options
-├── dao/          BaseReadDao, BaseWriteDao, KeyedWriteDao, WriteDao / IdWriteDao contracts,
-│                 AuditPolicy
+├── db-adapter/   FilterQuery, Read/Write/Routine DbAdapter interfaces + options
+├── dao/          BaseReadDao, BaseWriteDao, KeyedWriteDao, BaseRoutineDao,
+│                 WriteDao / IdWriteDao contracts, AuditPolicy
 ├── query/        QueryProduct, PaginatedResult, StandardListQuery, FieldDescriptor,
 │                 ColumnResolver + DefaultColumnResolver, SqlQueryBuilder
 ├── query-schema/ createQueryParametersSchema (Zod adapter — sub-path export)
@@ -1246,5 +1352,5 @@ src/
 ├── unit-of-work/ UnitOfWork, UnitOfWorkContext, OutboxWriter
 ├── errors/       CrossScopeAccessError, OptimisticLockError
 └── postgres/     PgDatabase, PgTransaction, PgWriteDbAdapter, PgReadDbAdapter,
-                  PgSqlQueryBuilder
+                  PgRoutineDbAdapter, PgSqlQueryBuilder
 ```

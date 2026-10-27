@@ -20,3 +20,13 @@ export type {
   OnLocked,
   OptimisticLock,
 } from './write-db-adapter.interface.js';
+export type {
+  RoutineArgument,
+  RoutineArgumentMode,
+  RoutineDbAdapter,
+  StoredFunctionCall,
+  StoredFunctionResult,
+  StoredProcedureCall,
+  StoredProcedureResult,
+} from './routine-db-adapter.interface.js';
+export { routineOutputNames } from './routine-arguments.js';
