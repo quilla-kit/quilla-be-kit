@@ -1,7 +1,7 @@
 {
   "name": "@quilla-be-kit/persistence",
   "version": "0.9.0",
-  "description": "Persistence primitives: Database, DAOs with audit injection and optimistic locking, aggregate repositories with scope isolation, UnitOfWork with pluggable outbox.",
+  "description": "Layered persistence: database adapters, DAOs and a unit of work, with optional row repositories and DDD aggregate repositories on top.",
   "license": "MIT",
   "author": "Max Martinez",
   "homepage": "https://github.com/quilla-kit/quilla-be-kit/tree/main/packages/persistence",
@@ -38,6 +38,10 @@
     "./query-schema": {
       "types": "./dist/query-schema/index.d.ts",
       "import": "./dist/query-schema/index.js"
+    },
+    "./aggregate": {
+      "types": "./dist/aggregate/index.d.ts",
+      "import": "./dist/aggregate/index.js"
     }
   },
   "main": "./dist/index.js",
@@ -60,11 +64,13 @@
   "peerDependencies": {
     "@quilla-be-kit/ddd": ">=0.3.0",
     "@quilla-be-kit/errors": ">=0.3.0",
-    "@quilla-be-kit/execution-context": ">=0.5.0",
     "pg": ">=8.0",
     "zod": ">=4.0.0"
   },
   "peerDependenciesMeta": {
+    "@quilla-be-kit/ddd": {
+      "optional": true
+    },
     "pg": {
       "optional": true
     },

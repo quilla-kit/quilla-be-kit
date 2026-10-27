@@ -119,6 +119,12 @@ export interface SqlQueryBuilder<TRow = unknown> {
   paginate(options: PaginateOptions): SqlQueryBuilder<TRow>;
 
   /**
+   * Plain LIMIT, without pagination — e.g. `.limit(2)` before
+   * `BaseReadDao.findSingle`. Cannot be combined with `paginate`.
+   */
+  limit(count: number): SqlQueryBuilder<TRow>;
+
+  /**
    * Emit the final SQL + params. Result is a `QueryProduct` ready to
    * hand to `BaseReadDao.findOne` / `findMany` / `findPaginated`.
    */

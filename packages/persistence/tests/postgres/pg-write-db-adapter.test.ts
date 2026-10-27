@@ -227,6 +227,38 @@ describe('PgWriteDbAdapter', () => {
     });
   });
 
+  describe('allRows', () => {
+    it('updates every row only when allRows is set', async () => {
+      await adapter.update({ table: 'users', set: { name: 'x' }, where: {}, allRows: true });
+      expect(db.calls[0]?.sql).toBe(
+        "UPDATE users SET name = $1::TEXT, updated_at = date_trunc('milliseconds', CURRENT_TIMESTAMP)",
+      );
+      expect(db.calls[0]?.params).toEqual(['x']);
+    });
+
+    it('deletes every row only when allRows is set', async () => {
+      await adapter.delete({ table: 'users', where: {}, allRows: true });
+      expect(db.calls[0]?.sql).toBe('DELETE FROM users');
+      expect(db.calls[0]?.params).toEqual([]);
+    });
+
+    it('still rejects an empty where without allRows', async () => {
+      await expect(adapter.delete({ table: 'users', where: {} })).rejects.toThrow(
+        /at least one filter/,
+      );
+      await expect(
+        adapter.update({ table: 'users', set: { name: 'x' }, where: {} }),
+      ).rejects.toThrow(/at least one filter/);
+      expect(db.calls).toHaveLength(0);
+    });
+
+    it('rejects allRows combined with a filter', async () => {
+      await expect(
+        adapter.delete({ table: 'users', where: { id: 'u1' }, allRows: true }),
+      ).rejects.toThrow('users: allRows cannot be combined with a where filter');
+    });
+  });
+
   describe('delete', () => {
     it('emits DELETE for single id', async () => {
       await adapter.delete({ table: 'users', where: { id: 'u1' } });

@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it } from 'vitest';
+import { BaseScopedAggregateRepository } from '../../src/aggregate/base-scoped-aggregate.repository.js';
+import type { PersistenceMapper } from '../../src/aggregate/mapper.interface.js';
 import { BaseWriteDao } from '../../src/dao/base-write.dao.js';
 import { CrossScopeAccessError } from '../../src/errors/cross-scope-access.error.js';
-import { BaseScopedAggregateRepository } from '../../src/repository/base-scoped-aggregate.repository.js';
-import type { PersistenceMapper } from '../../src/repository/mapper.interface.js';
 import { FakeExecutionContextProvider } from '../helpers/fake-context-provider.js';
 import { FakeDatabaseTransaction } from '../helpers/fake-database.js';
 import { FakeWriteDbAdapter } from '../helpers/fake-db-adapter.js';
@@ -88,6 +88,7 @@ describe('BaseScopedAggregateRepository', () => {
       const ctx = {
         trx,
         registerAggregate: (...aggs: unknown[]) => registered.push(...aggs),
+        registerEventSource: () => {},
         registerIntegrationEvent: () => {},
       };
 
@@ -107,6 +108,7 @@ describe('BaseScopedAggregateRepository', () => {
       const ctx = {
         trx,
         registerAggregate: () => {},
+        registerEventSource: () => {},
         registerIntegrationEvent: () => {},
       };
 

@@ -1,5 +1,7 @@
-type NumberOrDateKeys<T> = {
-  [K in keyof T]: NonNullable<T[K]> extends number | Date ? K : never;
+// Strings are ordered too: SQL compares them by the column's type, so a
+// numeric column held as text in the row type still compares numerically.
+type OrderedKeys<T> = {
+  [K in keyof T]: NonNullable<T[K]> extends number | bigint | string | Date ? K : never;
 }[keyof T];
 
 type StringKeys<T> = {
@@ -7,7 +9,7 @@ type StringKeys<T> = {
 }[keyof T];
 
 type ComparisonFilters<T> = {
-  readonly [K in NumberOrDateKeys<T> & string as
+  readonly [K in OrderedKeys<T> & string as
     | `${K}__gt`
     | `${K}__gte`
     | `${K}__lt`
@@ -30,7 +32,15 @@ type ContainsFilters<T> = {
  * maintained; keep this in mind if one changes without the other.
  */
 type MembershipFilters<T> = {
-  readonly [K in keyof T & string as `${K}__in` | `${K}__notIn`]?: readonly T[K][];
+  readonly [K in keyof T & string as
+    | `${K}__in`
+    | `${K}__notIn`
+    | `${K}__notInStrict`]?: readonly T[K][];
+};
+
+/** SQL-exact comparisons: no `IS NULL` rewrite, so a `null` value matches no row. */
+type StrictFilters<T> = {
+  readonly [K in keyof T & string as `${K}__eq` | `${K}__ne`]?: T[K] | null;
 };
 
 type NullabilityFilters<T> = {
@@ -42,4 +52,5 @@ export type FilterQuery<T> = {
 } & ComparisonFilters<T> &
   ContainsFilters<T> &
   MembershipFilters<T> &
+  StrictFilters<T> &
   NullabilityFilters<T>;

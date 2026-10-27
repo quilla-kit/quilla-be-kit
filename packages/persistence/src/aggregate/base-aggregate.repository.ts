@@ -1,8 +1,8 @@
 import type { AggregateRoot } from '@quilla-be-kit/ddd';
 import type { BaseWriteDao } from '../dao/base-write.dao.js';
 import type { IdWriteDao } from '../dao/id-write-dao.interface.js';
-import type { UnitOfWorkContext } from '../unit-of-work/unit-of-work-context.type.js';
 import type { PersistenceMapper } from './mapper.interface.js';
+import type { UnitOfWorkContext } from './unit-of-work.js';
 
 /**
  * Base repository for aggregates. Handles persistence through a mapper and

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
+import { BaseUnscopedAggregateRepository } from '../../src/aggregate/base-unscoped-aggregate.repository.js';
+import type { PersistenceMapper } from '../../src/aggregate/mapper.interface.js';
 import { BaseWriteDao } from '../../src/dao/base-write.dao.js';
-import { BaseUnscopedAggregateRepository } from '../../src/repository/base-unscoped-aggregate.repository.js';
-import type { PersistenceMapper } from '../../src/repository/mapper.interface.js';
 import { FakeExecutionContextProvider } from '../helpers/fake-context-provider.js';
 import { FakeDatabaseTransaction } from '../helpers/fake-database.js';
 import { FakeWriteDbAdapter } from '../helpers/fake-db-adapter.js';
@@ -62,6 +62,7 @@ describe('BaseUnscopedAggregateRepository', () => {
       const ctx = {
         trx,
         registerAggregate: () => {},
+        registerEventSource: () => {},
         registerIntegrationEvent: () => {},
       };
 
@@ -74,6 +75,7 @@ describe('BaseUnscopedAggregateRepository', () => {
       const ctx = {
         trx,
         registerAggregate: (...aggs: unknown[]) => registered.push(...aggs),
+        registerEventSource: () => {},
         registerIntegrationEvent: () => {},
       };
 
@@ -95,6 +97,7 @@ describe('BaseUnscopedAggregateRepository', () => {
       const ctx = {
         trx,
         registerAggregate: () => {},
+        registerEventSource: () => {},
         registerIntegrationEvent: () => {},
       };
 
@@ -116,6 +119,7 @@ describe('BaseUnscopedAggregateRepository', () => {
       const ctx = {
         trx,
         registerAggregate: () => {},
+        registerEventSource: () => {},
         registerIntegrationEvent: () => {},
       };
 
@@ -134,6 +138,7 @@ describe('BaseUnscopedAggregateRepository', () => {
       const ctx = {
         trx,
         registerAggregate: (...aggs: unknown[]) => registered.push(...aggs),
+        registerEventSource: () => {},
         registerIntegrationEvent: () => {},
       };
 
@@ -152,6 +157,7 @@ describe('BaseUnscopedAggregateRepository', () => {
       const ctx = {
         trx,
         registerAggregate: (...aggs: unknown[]) => registered.push(...aggs),
+        registerEventSource: () => {},
         registerIntegrationEvent: () => {},
       };
 
@@ -168,6 +174,7 @@ describe('BaseUnscopedAggregateRepository', () => {
       const ctx = {
         trx,
         registerAggregate: () => {},
+        registerEventSource: () => {},
         registerIntegrationEvent: () => {},
       };
       await repo.updateMany([], ctx as Parameters<typeof repo.updateMany>[1]);
@@ -178,6 +185,7 @@ describe('BaseUnscopedAggregateRepository', () => {
       const ctx = {
         trx,
         registerAggregate: () => {},
+        registerEventSource: () => {},
         registerIntegrationEvent: () => {},
       };
       await repo.deleteMany([], ctx as Parameters<typeof repo.deleteMany>[1]);
@@ -192,6 +200,7 @@ describe('BaseUnscopedAggregateRepository', () => {
     const ctx = {
       trx,
       registerAggregate: (...aggs: unknown[]) => registered.push(...aggs),
+      registerEventSource: () => {},
       registerIntegrationEvent: () => {},
     };
 

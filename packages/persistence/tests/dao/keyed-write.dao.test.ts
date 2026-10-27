@@ -1,8 +1,12 @@
+import type { ExecutionContextProvider } from '@quilla-be-kit/execution-context';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { resolveAuditPolicy } from '../../src/dao/audit-columns.js';
+import type { ActorProvider } from '../../src/dao/actor.provider.js';
+import { resolveAuditPolicy } from '../../src/dao/audit-policy.resolver.js';
 import type { AuditPolicy } from '../../src/dao/audit-policy.type.js';
 import { KeyedWriteDao } from '../../src/dao/keyed-write.dao.js';
+import { ALL_ROWS } from '../../src/dao/write-dao.interface.js';
 import { OptimisticLockError } from '../../src/errors/optimistic-lock.error.js';
+import { TooManyRowsError } from '../../src/errors/too-many-rows.error.js';
 import {
   FakeExecutionContextProvider,
   ThrowingExecutionContextProvider,
@@ -417,5 +421,276 @@ describe('KeyedWriteDao execution context', () => {
     await dao.update({ code: 'A', label: 'a' });
     await dao.updateMany([{ code: 'A', label: 'a' }], trx);
     expect(provider.calls).toBe(0);
+  });
+
+  it('may be omitted when the policy records no actor', async () => {
+    const dao = new MembershipDao(adapter);
+    const row = { org_id: 'o1', user_id: 'u1', role: 'admin' };
+    await dao.create(row);
+    await dao.update(row);
+    expect(adapter.insertCalls).toHaveLength(1);
+    expect(adapter.updateCalls).toHaveLength(1);
+  });
+
+  it('throws on the first write that needs an actor when omitted', async () => {
+    const dao = new CodeDao(adapter);
+    await expect(dao.create({ code: 'A', label: 'a' })).rejects.toThrow(
+      'codes: auditPolicy records an actor, but no contextProvider was given',
+    );
+    expect(adapter.insertCalls).toHaveLength(0);
+  });
+
+  it('accepts any object shaped like an actor provider', async () => {
+    const userId: string | undefined = 'u-9';
+    const dao = new CodeDao(adapter, { getContext: () => ({ session: { userId } }) });
+    await dao.create({ code: 'A', label: 'a' });
+    expect(adapter.insertCalls[0]?.opts.rows[0]).toMatchObject({ created_by: 'u-9' });
+  });
+
+  it('accepts an ExecutionContextProvider', () => {
+    const fromKit: ActorProvider = provider satisfies ExecutionContextProvider;
+    expect(fromKit).toBe(provider);
+  });
+});
+
+type IssueRow = { issue_no: number; title: string; status: string | null };
+
+class IssueDao extends KeyedWriteDao<IssueRow, 'issue_no'> {
+  protected readonly tableName = 'issues';
+  protected readonly keyColumns = ['issue_no'] as const;
+  protected override readonly generatedColumns = ['issue_no'];
+}
+
+describe('KeyedWriteDao predicate methods', () => {
+  let adapter: FakeWriteDbAdapter;
+  let ctx: FakeExecutionContextProvider;
+  let trx: FakeDatabaseTransaction;
+
+  beforeEach(() => {
+    adapter = new FakeWriteDbAdapter();
+    ctx = new FakeExecutionContextProvider({
+      actorType: 'user',
+      correlationId: 'c',
+      executionAttemptId: 'a',
+      session: { scopeId: 's', userId: 'u-1' },
+    });
+    trx = new FakeDatabaseTransaction();
+  });
+
+  describe('updateBy', () => {
+    it('updates a keyless table by predicate and reports the affected count', async () => {
+      const dao = new LogDao(adapter);
+      adapter.updateResults.push({ rows: [], rowCount: 4 });
+
+      await expect(dao.updateBy({ message__contains: 'tmp' }, { message: 'x' }, trx)).resolves.toBe(
+        4,
+      );
+      expect(adapter.updateCalls[0]).toEqual({
+        opts: {
+          table: 'logs',
+          set: { message: 'x' },
+          where: { message__contains: 'tmp' },
+          audit: {},
+        },
+        trx,
+      });
+    });
+
+    it('stamps audit columns exactly as update does', async () => {
+      const dao = new IssueDao(adapter, ctx);
+      await dao.update({ issue_no: 7, title: 't', status: 'open' });
+      await dao.updateBy({ status: 'open' }, { title: 't' });
+
+      const [byKey, byPredicate] = adapter.updateCalls;
+      expect(byPredicate?.opts.audit).toEqual(byKey?.opts.audit);
+      expect(byPredicate?.opts.set).toEqual({ title: 't', updated_by: 'u-1' });
+    });
+
+    it('may set key columns', async () => {
+      const dao = new MembershipDao(adapter);
+      await dao.updateBy({ org_id: 'o1' }, { user_id: 'u2' });
+      expect(adapter.updateCalls[0]?.opts.set).toEqual({ user_id: 'u2' });
+    });
+
+    it.each([
+      ['an empty set', {}, 'issues: updateBy: set has no columns'],
+      ['an undefined value', { title: undefined }, 'issues: updateBy: set.title is undefined'],
+      [
+        'a generated column',
+        { issue_no: 9 },
+        'issues: updateBy: issue_no is an audit or generated column',
+      ],
+      [
+        'an audit column',
+        { updated_by: 'x' },
+        'issues: updateBy: updated_by is an audit or generated column',
+      ],
+    ])('rejects %s', async (_case, set, message) => {
+      const dao = new IssueDao(adapter, ctx);
+      await expect(dao.updateBy({ status: 'open' }, set as Partial<IssueRow>)).rejects.toThrow(
+        message,
+      );
+      expect(adapter.updateCalls).toHaveLength(0);
+    });
+
+    it('reaches every row only through ALL_ROWS', async () => {
+      const dao = new LogDao(adapter);
+      await dao.updateBy(ALL_ROWS, { message: 'x' });
+      expect(adapter.updateCalls[0]?.opts).toMatchObject({ where: {}, allRows: true });
+    });
+  });
+
+  describe('strict predicates', () => {
+    class Filter {
+      message = 'x';
+    }
+
+    it.each([
+      ['an empty where', {}, 'an empty where reaches every row; pass ALL_ROWS'],
+      ['an undefined value', { message: undefined }, 'where.message is undefined'],
+      ['a class instance', new Filter(), 'where must be a plain object'],
+      ['an empty __notIn', { message__notIn: [] }, 'where.message__notIn would match every row'],
+      [
+        'an empty __notInStrict',
+        { message__notInStrict: [] },
+        'where.message__notInStrict would match every row',
+      ],
+      [
+        'an empty __contains',
+        { message__contains: '' },
+        'where.message__contains would match every row',
+      ],
+    ])('rejects %s on every predicate method', async (_case, where, reason) => {
+      const dao = new LogDao(adapter);
+      const predicate = where as Parameters<LogDao['deleteBy']>[0];
+      await expect(dao.deleteBy(predicate)).rejects.toThrow(`logs: deleteBy: ${reason}`);
+      await expect(dao.updateBy(predicate, { message: 'y' })).rejects.toThrow(
+        `logs: updateBy: ${reason}`,
+      );
+      await expect(dao.findSingle(predicate)).rejects.toThrow(`logs: findSingle: ${reason}`);
+      await expect(dao.findSingleForUpdate(predicate, trx)).rejects.toThrow(
+        `logs: findSingleForUpdate: ${reason}`,
+      );
+      expect(adapter.deleteCalls).toHaveLength(0);
+      expect(adapter.updateCalls).toHaveLength(0);
+      expect(adapter.findCalls).toHaveLength(0);
+      expect(adapter.findForUpdateCalls).toHaveLength(0);
+    });
+
+    it('accepts a null value — strict operators decide what it means', async () => {
+      const dao = new IssueDao(adapter, ctx);
+      await dao.deleteBy({ status__eq: null });
+      expect(adapter.deleteCalls[0]?.opts.where).toEqual({ status__eq: null });
+    });
+  });
+
+  describe('deleteBy', () => {
+    it('deletes from a keyless table by predicate', async () => {
+      const dao = new LogDao(adapter);
+      adapter.deleteResults.push({ rows: [], rowCount: 5 });
+      await expect(dao.deleteBy({ message__in: ['a', 'b'] }, trx)).resolves.toBe(5);
+      expect(adapter.deleteCalls[0]).toEqual({
+        opts: { table: 'logs', where: { message__in: ['a', 'b'] } },
+        trx,
+      });
+    });
+
+    it('passes ALL_ROWS to the adapter as allRows', async () => {
+      const dao = new LogDao(adapter);
+      await dao.deleteBy(ALL_ROWS);
+      expect(adapter.deleteCalls[0]?.opts).toEqual({ table: 'logs', where: {}, allRows: true });
+    });
+  });
+
+  describe('findSingle', () => {
+    it('reads at most two rows and returns the only match', async () => {
+      const dao = new LogDao(adapter);
+      adapter.findResults.push([{ message: 'a' }]);
+      await expect(dao.findSingle({ message: 'a' }, trx)).resolves.toEqual({ message: 'a' });
+      expect(adapter.findCalls[0]).toEqual({
+        opts: { table: 'logs', where: { message: 'a' }, limit: 2 },
+        trx,
+      });
+    });
+
+    it('returns null when nothing matches', async () => {
+      await expect(new LogDao(adapter).findSingle({ message: 'a' })).resolves.toBeNull();
+    });
+
+    it('throws TooManyRowsError when two rows match', async () => {
+      adapter.findResults.push([{ message: 'a' }, { message: 'a' }]);
+      const error = await new LogDao(adapter).findSingle({ message: 'a' }).catch((e) => e);
+      expect(error).toBeInstanceOf(TooManyRowsError);
+      expect(error.context).toEqual({ entity: 'logs' });
+    });
+
+    it('reads without a filter for ALL_ROWS', async () => {
+      await new LogDao(adapter).findSingle(ALL_ROWS);
+      expect(adapter.findCalls[0]?.opts).toEqual({ table: 'logs', limit: 2 });
+    });
+  });
+
+  describe('findSingleForUpdate', () => {
+    it('locks at most two rows and passes onLocked through', async () => {
+      const dao = new LogDao(adapter);
+      adapter.findForUpdateResults.push([{ message: 'a' }]);
+      await expect(
+        dao.findSingleForUpdate({ message: 'a' }, trx, { onLocked: 'nowait' }),
+      ).resolves.toEqual({ message: 'a' });
+      expect(adapter.findForUpdateCalls[0]).toEqual({
+        opts: { table: 'logs', where: { message: 'a' }, limit: 2, onLocked: 'nowait' },
+        trx,
+      });
+    });
+
+    it('throws TooManyRowsError when two rows match', async () => {
+      adapter.findForUpdateResults.push([{ message: 'a' }, { message: 'b' }]);
+      await expect(new LogDao(adapter).findSingleForUpdate(ALL_ROWS, trx)).rejects.toBeInstanceOf(
+        TooManyRowsError,
+      );
+    });
+
+    it("rejects 'skip' at the type level", () => {
+      const dao = new LogDao(adapter);
+      const typeOnly = () =>
+        // @ts-expect-error - SKIP LOCKED could hide a second matching row
+        dao.findSingleForUpdate({ message: 'a' }, trx, { onLocked: 'skip' });
+      expect(typeOnly).toBeTypeOf('function');
+    });
+  });
+});
+
+describe('KeyedWriteDao undefined key values', () => {
+  let adapter: FakeWriteDbAdapter;
+  let trx: FakeDatabaseTransaction;
+  const missing = { org_id: 'o1', user_id: undefined as unknown as string, role: 'r' };
+
+  beforeEach(() => {
+    adapter = new FakeWriteDbAdapter();
+    trx = new FakeDatabaseTransaction();
+  });
+
+  it.each([
+    ['update', (dao: MembershipDao) => dao.update(missing)],
+    ['delete', (dao: MembershipDao) => dao.delete(missing)],
+    ['updateMany', (dao: MembershipDao) => dao.updateMany([missing], trx)],
+    ['findOneByKey', (dao: MembershipDao) => dao.findOneByKey(missing)],
+    ['deleteMany', (dao: MembershipDao) => dao.deleteMany([missing])],
+    [
+      'findManyForUpdateByKeys',
+      (dao: MembershipDao) => dao.findManyForUpdateByKeys({ keys: [missing] }, trx),
+    ],
+  ])('%s throws instead of matching nothing', async (operation, call) => {
+    await expect(call(new MembershipDao(adapter))).rejects.toThrow(
+      `memberships: ${operation}: key column user_id is undefined`,
+    );
+  });
+
+  it('applies to the single-key array path too', async () => {
+    const dao = new IssueDao(adapter);
+    await expect(dao.deleteMany([{ issue_no: undefined as unknown as number }])).rejects.toThrow(
+      'issues: deleteMany: key column issue_no is undefined',
+    );
+    expect(adapter.deleteCalls).toHaveLength(0);
   });
 });

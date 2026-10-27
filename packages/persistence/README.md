@@ -1,40 +1,89 @@
 # @quilla-be-kit/persistence
 
-Persistence primitives: `Database` abstraction, `ReadDbAdapter` /
-`WriteDbAdapter` for CQRS-isolated dialect adapters, DAOs with audit
-injection and optimistic locking, aggregate repositories with scope
-isolation, and a `UnitOfWork` with pluggable outbox.
+A layered persistence toolkit. Use the layers you need — each one works on
+its own, and each higher layer is built only on the public surface of the one
+below:
+
+```
+Database + adapters      PgDatabase, PgWriteDbAdapter, PgReadDbAdapter, …
+        ▲
+DAOs + UnitOfWork        KeyedWriteDao, BaseWriteDao, BaseReadDao, BaseRoutineDao, UnitOfWork
+        ▲
+Row repositories         KeyedBasicRepository, BaseBasicRepository            (optional)
+        ▲
+Aggregate repositories   BaseScoped/UnscopedAggregateRepository, mappers     (optional, DDD)
+```
+
+DDD is a layer on top, not a requirement: a service that only needs DAOs and
+transactions never installs or imports `@quilla-be-kit/ddd`. The package's
+tests enforce the direction — a lower layer that imports a higher one fails
+the build.
 
 Ships a **Postgres reference implementation** under
-`@quilla-be-kit/persistence/postgres` — `PgDatabase`, `PgTransaction`,
-`PgWriteDbAdapter` (with info-schema cache + JSONB / UUID / timestamp
-casts), `PgReadDbAdapter`. Works with the `pg` package (optional peer dep).
+`@quilla-be-kit/persistence/postgres`, backed by the `pg` package.
 
-Peer deps: `@quilla-be-kit/ddd`, `@quilla-be-kit/execution-context`,
-`@quilla-be-kit/errors`. `pg` is an optional peer — required only if you
-import from `/postgres`.
+## Choose your layers
+
+| You need | Use | Install |
+| --- | --- | --- |
+| Parameterised SQL in transactions | `PgDatabase` + `UnitOfWork` (`ctx.trx.query(sql, params)`) | `persistence errors pg` |
+| Table access: keyed or keyless, audit columns, optimistic locking, predicate writes | + write/read/routine DAOs | same |
+| Row-level repositories over those DAOs | + `KeyedBasicRepository` / `BaseBasicRepository` | same |
+| DDD aggregates: mappers, aggregate repositories, domain events at commit | + `@quilla-be-kit/persistence/aggregate` | + `@quilla-be-kit/ddd` |
+| `inserted_by`/`updated_by` from the request context | an `ActorProvider` — an `ExecutionContextProvider` is one | + `@quilla-be-kit/execution-context` if you use it |
 
 ## Install
 
 ```sh
-# Core:
-pnpm add @quilla-be-kit/persistence @quilla-be-kit/ddd @quilla-be-kit/execution-context @quilla-be-kit/errors
+# DAOs, unit of work, row repositories:
+pnpm add @quilla-be-kit/persistence @quilla-be-kit/errors pg
 
-# Plus Postgres adapter:
-pnpm add pg
+# Plus the DDD layer:
+pnpm add @quilla-be-kit/ddd
 ```
+
+`@quilla-be-kit/errors` is a required peer. `@quilla-be-kit/ddd` is an
+optional peer, needed only by the `/aggregate` entry point. `pg` is an
+optional peer, needed only by `/postgres`; `zod` only by `/query-schema`.
+
+### Entry points
+
+| Import from | Contains |
+| --- | --- |
+| `@quilla-be-kit/persistence` | `Database` contracts, adapter ports, DAOs, `UnitOfWork`, row repositories, query builder contracts, errors |
+| `@quilla-be-kit/persistence/postgres` | `PgDatabase`, `PgTransaction`, `PgWriteDbAdapter`, `PgReadDbAdapter`, `PgRoutineDbAdapter`, `PgSqlQueryBuilder` |
+| `@quilla-be-kit/persistence/aggregate` | aggregate repositories, `PersistenceMapper` / `BasePersistenceMapper`, and `UnitOfWork` / `UnitOfWorkContext` typed for DDD events |
+| `@quilla-be-kit/persistence/query-schema` | `createQueryParametersSchema` (Zod) |
+
+Sub-path entry points need `moduleResolution` `NodeNext` or `Bundler`.
 
 ## Architectural invariants
 
-- **Scope isolation is repo-layer explicit.** `BaseScopedAggregateRepository`
-  takes `scopeId` on every load and throws `CrossScopeAccessError` on miss
-  or mismatch. DAOs never inject `scope_id` implicitly.
+**Every layer**
+
+- **CQRS isolation at the type level.** `ReadDbAdapter` exposes only
+  `select`/`raw`; `WriteDbAdapter` exposes `insert`/`update`/`delete`/`find`/
+  `findForUpdate`/`exists`/`count`. A single physical class can implement
+  both interfaces for wiring convenience, but DAO-facing types enforce the
+  boundary. **Read DAOs never accept a `trx` parameter** — reads don't
+  participate in write transactions.
+- **One bulk write is one atomic call, whatever its size.** `insert` and
+  `updateMany` accept any number of rows. When a batch needs more than one
+  statement, the statements run on the caller's `trx`, or in a transaction
+  the adapter opens itself when there is none — either way all rows land or
+  none do. See [Bulk writes](#bulk-writes).
+- **Nested `transaction()` calls JOIN** — an inner call sees the outer
+  `UnitOfWorkContext` (via AsyncLocalStorage) and reuses the trx.
+
+**DAO layer**
+
 - **Audit fields are DAO-layer implicit.** `inserted_by` and `updated_by`
-  resolve from `ExecutionContextProvider.getContext().session?.userId` on
-  every write. Callers cannot pass them; rows with audit fields in them
-  get stripped. Writes under system contexts (no session) persist
-  `null` audit. Which columns exist, and what they are called, is the DAO's
-  `auditPolicy` (default `'kit'`) — see
+  come from the DAO's `contextProvider` (`getContext().session?.userId`) on
+  every write that stamps them. Callers cannot pass them; rows with audit
+  fields in them get stripped. Writes without a session persist `null`
+  audit. Which columns exist, and what they are called, is the DAO's
+  `auditPolicy` (default `'kit'`); a policy that records no actor needs no
+  provider — see
   [Tables that don't match the kit's shape](#tables-that-dont-match-the-kits-shape).
 - **Optimistic locking is opt-in via `updated_at`.** Include `updated_at`
   in the row passed to `update()`, or as `row.updated_at` passed to
@@ -45,37 +94,39 @@ pnpm add pg
   "someone else just modified it" — callers that need to tell "conflict"
   apart from "already deleted" must check existence themselves (e.g. a
   preceding `findOneById`). Omit `updated_at` to update/delete
-  unconditionally. `BaseAggregateRepository.delete(aggregate, expectedUpdatedAt, ctx)`
+  unconditionally. `updateMany`/`deleteMany` have no per-row lock — callers
+  needing concurrency control on a bulk write should `findManyForUpdate`
+  first; the row-level locks held inside the transaction already serialize
+  concurrent writers.
+- **Predicate writes never widen by accident.** `updateBy`/`deleteBy`/
+  `findSingle*` reject an `undefined` value, an empty `where`, and filters
+  that would match every row; a whole-table write needs the explicit
+  `ALL_ROWS`. An `undefined` key value on a key-addressed method throws too.
+  See [Predicate writes](#predicate-writes--updateby--deleteby--findsingle).
+- **Pre-create uniqueness checks and precondition guards use the write
+  side's unlocked reads** (`findOne` / `existsBy` / `countBy`), not the read
+  side. `countBy` is a filtered `SELECT COUNT(*)` — use it instead of
+  `findMany(...).length` when only the count is needed (e.g. "don't
+  deactivate the last active admin"); omit `where` to count every row in the
+  table. Locked reads (`findOneForUpdate`) are for read-before-update only.
+
+**Unit of work**
+
+- **Events are orthogonal, not built-in.** Give `UnitOfWork` an `events: {
+  sink, serialize }` option to write registered events in the same
+  transaction — through an `EventSink` such as an outbox. Omit it for apps
+  that don't publish events. See [Transactions](#transactions--unitofwork).
+
+**Repository and DDD layers**
+
+- **Scope isolation is repo-layer explicit.** `BaseScopedAggregateRepository`
+  takes `scopeId` on every load and throws `CrossScopeAccessError` on miss
+  or mismatch. DAOs never inject `scope_id` implicitly.
+- `BaseAggregateRepository.delete(aggregate, expectedUpdatedAt, ctx)`
   requires the expected version explicitly — pass `aggregate.updatedAt` to
   reproduce CAS protection off a `loadForUpdate*` read, or a caller-claimed
   version if you need to check against something other than what was just
-  read. `updateMany`/`deleteMany` have no per-row lock — callers needing
-  concurrency control on a bulk write should `findManyForUpdate` first; the
-  row-level locks held inside the transaction already serialize concurrent
-  writers.
-- **One bulk write is one atomic call, whatever its size.** `insert` and
-  `updateMany` accept any number of rows. When a batch needs more than one
-  statement, the statements run on the caller's `trx`, or in a transaction
-  the adapter opens itself when there is none — either way all rows land or
-  none do. See [Bulk writes](#bulk-writes).
-- **Outbox is orthogonal, not built-in.** Wire an `OutboxWriter` on
-  `UnitOfWork` to drain aggregate events + registered integration events
-  in the same transaction. Omit for apps that don't use outbox.
-- **Nested `transaction()` calls JOIN** — inner call sees the outer
-  `UnitOfWorkContext` (via AsyncLocalStorage) and reuses the trx.
-- **CQRS isolation at the type level.** `ReadDbAdapter` exposes only
-  `select`; `WriteDbAdapter` exposes `insert`/`update`/`delete`/`find`/
-  `findForUpdate`/`exists`/`count`. A single physical class can implement
-  both interfaces for wiring convenience, but DAO-facing types enforce the
-  boundary. **Read DAOs never accept a `trx` parameter** — reads don't
-  participate in write transactions.
-- **Pre-create uniqueness checks and precondition guards use the write
-  side's unlocked reads** (`findOne` / `existsBy` / `countBy` on
-  `BaseWriteDao`), not the read side. `countBy` is a filtered
-  `SELECT COUNT(*)` — use it instead of `findMany(...).length` when only the
-  count is needed (e.g. "don't deactivate the last active admin"); omit
-  `where` to count every row in the table. Locked reads (`findOneForUpdate`)
-  are for read-before-update only.
+  read.
 
 ## Vocabulary
 
@@ -85,18 +136,81 @@ pnpm add pg
 - **Repository** layer — verb `load*`. Returns `TAggregate` mapped from
   rows. The verb split marks the layer.
 
-## Minimal usage (with Postgres)
+Repositories and aggregates are optional layers over the DAOs.
+
+## Quickstart — DAOs only
+
+No repositories, no aggregates, no `@quilla-be-kit/ddd`:
 
 ```ts
 import {
-  BasePersistenceMapper,
-  BaseScopedAggregateRepository,
+  ALL_ROWS,
+  type AuditPolicy,
   BaseWriteDao,
+  KeyedWriteDao,
   UnitOfWork,
 } from '@quilla-be-kit/persistence';
+import { PgDatabase, PgWriteDbAdapter } from '@quilla-be-kit/persistence/postgres';
+
+type EventLogRow = { source: string; message: string; logged_at: Date };
+type CustomerRow = { id: string; name: string; email: string; status: string; last_seen_at: Date };
+
+// A keyless table with no audit columns: no actor provider needed.
+class EventLogDao extends KeyedWriteDao<EventLogRow, never> {
+  protected readonly tableName = 'event_log';
+  protected readonly keyColumns = [] as const;
+  protected override readonly auditPolicy: AuditPolicy = 'none';
+}
+
+// A kit-shaped table: string `id`, `created_at`/`updated_at`, `inserted_by`/`updated_by`.
+class CustomerDao extends BaseWriteDao<CustomerRow> {
+  protected readonly tableName = 'customers';
+}
+
+const db = new PgDatabase({ connectionString: process.env.DATABASE_URL });
+const adapter = new PgWriteDbAdapter(db);
+const uow = new UnitOfWork({ db });
+
+const eventLog = new EventLogDao(adapter);
+// Any object with `getContext()` — an ExecutionContextProvider works as is.
+const customers = new CustomerDao(adapter, {
+  getContext: () => ({ session: { userId: currentUserId() } }),
+});
+
+await uow.transaction(async ({ trx }) => {
+  const archived = await customers.updateBy(
+    { status: 'inactive', last_seen_at__lt: cutoff },
+    { status: 'archived' },
+    trx,
+  );
+  await eventLog.create(
+    { source: 'archiver', message: `${archived} archived`, logged_at: new Date() },
+    trx,
+  );
+  // null when nothing matches; TooManyRowsError when more than one row does.
+  const owner = await customers.findSingle({ email__eq: ownerEmail }, trx);
+});
+
+await eventLog.deleteBy({ logged_at__lt: retentionCutoff });
+await eventLog.deleteBy(ALL_ROWS); // the whole table, on purpose
+```
+
+## Quickstart — adding repositories and aggregates (DDD)
+
+The DDD layer is built on the same DAOs and unit of work, imported from
+`/aggregate`:
+
+```ts
+import { BaseReadDao, BaseWriteDao } from '@quilla-be-kit/persistence';
+import {
+  BasePersistenceMapper,
+  BaseScopedAggregateRepository,
+  UnitOfWork,
+} from '@quilla-be-kit/persistence/aggregate';
 import {
   PgDatabase,
   PgReadDbAdapter,
+  PgSqlQueryBuilder,
   PgWriteDbAdapter,
 } from '@quilla-be-kit/persistence/postgres';
 
@@ -120,7 +234,8 @@ const db = new PgDatabase({ host, database, user, password });
 // Or, to share the pool with PgLocalOutbox / PgEventBus — see "Sharing a Pool" below.
 const writeAdapter = new PgWriteDbAdapter(db);
 const readAdapter  = new PgReadDbAdapter(db);
-const uow = new UnitOfWork({ db, outboxWriter });
+// `serialize` receives each domain or integration event (typed `AnyEvent`).
+const uow = new UnitOfWork({ db, events: { sink: outboxSink, serialize: toOutboxEntry } });
 
 const userDao  = new UserDao(writeAdapter, contextProvider);
 const userRepo = new UserRepository(new UserMapper(), userDao);
@@ -132,7 +247,7 @@ await uow.transaction(async (ctx) => {
   );
   user.changeName('Alice');
   await userRepo.update(user, ctx);
-  // Domain events drained to outbox, trx committed atomically.
+  // Domain events written through the sink, trx committed atomically.
 });
 
 // Pre-create uniqueness check — unlocked read on the write side:
@@ -179,6 +294,8 @@ shutdown.addPhase({
 });
 ```
 
+## Database and adapters
+
 ### Sharing a Pool
 
 `PgDatabase` accepts either a `PoolConfig` (the adapter creates and owns
@@ -207,6 +324,8 @@ shutdown.addPhase({
   participants: [{ name: 'pg.Pool', dispose: () => pool.end() }],
 });
 ```
+
+## DAO layer
 
 ### Handling optimistic lock conflicts
 
@@ -272,15 +391,15 @@ Being explicit means callers never need to mutate the aggregate's
 
 ### Tables that don't match the kit's shape
 
-The write side is configured, not forked. Everything below is opt-in; a DAO,
-repository or adapter written against earlier versions needs no changes.
+The write side is configured, not forked. Everything below is opt-in.
 
 #### Which base do I use?
 
 | Your table / need | DAO | Repository |
 | --- | --- | --- |
-| String `id` key, kit audit columns | `BaseWriteDao` | `BaseBasicRepository` (rows) or the aggregate repositories (aggregates) |
+| String `id` key, kit audit columns | `BaseWriteDao` | `BaseBasicRepository` (rows) or the aggregate repositories from `/aggregate` (aggregates) |
 | Any other key: renamed, composite, or none | `KeyedWriteDao` + `keyColumns` | `KeyedBasicRepository` |
+| Rows addressed by a condition rather than a key | either DAO: `updateBy` / `deleteBy` / `findSingle` | `updateBy` / `deleteBy` on either row repository |
 | Different or missing audit columns | either DAO + `auditPolicy` | either |
 | Mixed-case / reserved-word names, `schema.table` | either DAO, `PgWriteDbAdapter` with `quoteIdentifiers: true` | either |
 
@@ -306,8 +425,11 @@ await dao.delete({ order_id: 'o1', line_no: 2 });
 
 `update`/`updateMany`/`delete`/`deleteMany`/`findOneByKey` address rows by
 `keyColumns` and never put them in a `SET` clause; `updateMany` joins on every
-key column. With `keyColumns = []` the table is **insert-only**: the keyed
-methods throw.
+key column. With `keyColumns = []` these key-addressed methods throw — the
+table is insert-only for them — while the
+[predicate methods](#predicate-writes--updateby--deleteby--findsingle) work
+as usual. A key value that is `undefined` throws as well, rather than binding
+`NULL` and silently matching nothing.
 
 #### Key sets — batches of keys
 
@@ -350,6 +472,65 @@ with AND only: `findManyForUpdate({ where: { a: [..], b: [..] } }, trx)`
 matches the cross product of the values, not the pairs, and would lock rows
 you didn't ask for.
 
+#### Predicate writes — `updateBy` / `deleteBy` / `findSingle`
+
+Address rows by a `where` filter instead of the key — the table may have no
+key at all:
+
+```ts
+// UPDATE … SET status = 'archived', updated_by = …, updated_at = now() WHERE …
+const archived = await dao.updateBy(
+  { status: 'inactive', last_seen_at__lt: cutoff },
+  { status: 'archived' },
+  ctx.trx,
+);
+
+const removed = await dao.deleteBy({ batch_id__eq: batchId }, ctx.trx);
+
+// At most one row expected: null for none, TooManyRowsError for more.
+const row = await dao.findSingle({ code__eq: code }, ctx.trx);
+const locked = await dao.findSingleForUpdate({ code__eq: code }, ctx.trx, { onLocked: 'nowait' });
+```
+
+| Method | Returns |
+| --- | --- |
+| `updateBy(where, set, trx?)` | affected rows |
+| `deleteBy(where, trx?)` | affected rows |
+| `findSingle(where, trx?)` | the row, or `null` |
+| `findSingleForUpdate(where, trx, { onLocked? }?)` | the row, or `null`, locked |
+
+The `where` is strict, so a mistake can't widen a write:
+
+- An `undefined` value throws — it is never skipped.
+- An empty `where` throws. To address every row, pass `ALL_ROWS`:
+  `dao.deleteBy(ALL_ROWS, trx)`.
+- Filters that would match every row throw: an empty `__notIn` /
+  `__notInStrict` list, or an empty `__contains` string.
+- `where` must be a plain object.
+- `null` is allowed; the operator decides what it means (`status: null` is
+  `IS NULL`, `status__eq: null` matches no row — see
+  [The filter suffix DSL](#the-filter-suffix-dsl)).
+
+`updateBy`'s `set`:
+
+- Stamps audit columns exactly as `update` does under the DAO's
+  `auditPolicy` (`updated_by`, `updated_at`).
+- May set key columns — unless they are `generatedColumns`.
+- Throws on an empty `set`, an `undefined` value, or a declared audit or
+  generated column.
+- Never takes an optimistic lock; put the expected version in `where` if you
+  need one.
+
+`findSingle` reads at most two rows and throws `TooManyRowsError` (code
+`TOO_MANY_ROWS`, `context.entity` = table) when it gets two.
+`findSingleForUpdate` has locked both rows by then — let the unit of work
+roll back. Its `onLocked` takes `'wait'` (default) or `'nowait'`; `'skip'`
+isn't offered, because skipping a locked second row would hide it from the
+check.
+
+All four run on the caller's `trx` when given, and work with
+`keyColumns = []`.
+
 #### Audit policy — `auditPolicy`
 
 Declares which audit/timestamp columns the table has:
@@ -367,8 +548,8 @@ class CodeDao extends KeyedWriteDao<CodeRow, 'code'> {
 ```
 
 `created_at`/`updated_at`-style columns are stamped by the database clock;
-`inserted_by`/`updated_by`-style columns are stamped from the execution
-context. Only declared columns are written, and undeclared columns are left
+`inserted_by`/`updated_by`-style columns are stamped from the DAO's
+`contextProvider`. Only declared columns are written, and undeclared columns are left
 alone (a real `created_at` column under `'none'` is ordinary data). The
 optimistic lock applies only when an `updatedAt` column is declared, and the
 expected value is read from the row property named by that column. A
@@ -376,12 +557,21 @@ composite key is joined into `OptimisticLockError`'s `id` (comma-separated)
 and also passed as `context.key`. The `prepareInsertRow` / `prepareUpdateRow` /
 `stripKeys` hooks are `protected` for finer control.
 
-The execution context is read **only** when the policy declares an
-`insertedBy` or `updatedBy` column. A DAO under `'none'` — or one declaring
-timestamps only — never calls the provider, so it runs in jobs, scripts,
-migrations and tests with no `runWithContext` scope. `update`/`updateMany`
-read the context only for `updatedBy`, so the `CodeDao` above reads it on
-insert and not on update.
+The provider is read **only** when the policy declares an `insertedBy` or
+`updatedBy` column. A DAO under `'none'` — or one declaring timestamps only —
+never calls it, so it runs in jobs, scripts, migrations and tests with no
+`runWithContext` scope, and can be constructed without one:
+`new EventLogDao(adapter)`. `update`/`updateMany` read it only for
+`updatedBy`, so the `CodeDao` above reads it on insert and not on update.
+When the policy does record an actor and no provider was given, the first
+write that needs it throws.
+
+The provider is any `ActorProvider` — an object whose
+`getContext().session?.userId` names the actor. An `ExecutionContextProvider`
+from `@quilla-be-kit/execution-context` is one; so is
+`{ getContext: () => ({ session: { userId } }) }`. The DAO's protected
+`contextProvider` field is typed `ActorProvider | undefined`; keep your own
+typed reference if a subclass needs more of the execution context.
 
 #### Database-produced columns — `generatedColumns`
 
@@ -434,8 +624,8 @@ const tickets = await dao.createManyReturning(rows);
 
 #### Affected-row counts
 
-`update`, `updateMany`, `delete` and `deleteMany` return the number of rows
-the adapter reported affected:
+`update`, `updateMany`, `delete`, `deleteMany`, `updateBy` and `deleteBy`
+return the number of rows the adapter reported affected:
 
 ```ts
 const removed = await dao.deleteMany(['a', 'b', 'c']);
@@ -444,9 +634,11 @@ if (removed === 0) { /* nothing matched */ }
 
 **What this does NOT do:**
 
-- Counts stop at the DAO. `KeyedBasicRepository`, `BaseBasicRepository` and
-  `BaseAggregateRepository` still return `void` — how many rows a statement
-  touched is a storage fact, not a domain verb.
+- Counts mostly stop at the DAO. `KeyedBasicRepository`,
+  `BaseBasicRepository` and `BaseAggregateRepository` return `void` from their
+  key-addressed writes — how many rows a statement touched is a storage fact,
+  not a domain verb. The row repositories' `updateBy`/`deleteBy` are the
+  exception: for a predicate write the count is the only feedback.
 - `create`/`createMany` return `void`; their count is deterministic.
 - On a locked `update`/`delete` the count is never `0` — a zero-row match
   throws `OptimisticLockError` instead, so `if (await dao.update(row) === 0)`
@@ -506,8 +698,10 @@ The read side takes the same option — see
 #### Repositories for keyed rows — `KeyedBasicRepository`
 
 The repository twin of `KeyedWriteDao`: `create`/`createMany`/`update`/
-`updateMany`/`delete`/`deleteMany` with key objects, and the optimistic-lock
-value under whatever column the DAO's `auditPolicy` declares.
+`updateMany`/`delete`/`deleteMany` with key objects, the optimistic-lock
+value under whatever column the DAO's `auditPolicy` declares, and
+`updateBy`/`deleteBy` predicate writes returning the affected count. Row
+repositories expose no reads; use the DAO.
 
 ```ts
 class OrderLineRepository extends KeyedBasicRepository<OrderLineRow, 'order_id' | 'line_no'> {}
@@ -532,7 +726,10 @@ The repository bases depend on two interfaces, not on the DAO classes:
 | Interface | Implemented by | Used by |
 | --- | --- | --- |
 | `WriteDao<TRow, TKey>` | `KeyedWriteDao` | `KeyedBasicRepository` |
-| `IdWriteDao<TRow>` (`WriteDao<TRow, 'id'>` + `findOneById`, `deleteMany` with bare ids) | `BaseWriteDao` | `BaseBasicRepository`, the aggregate repositories |
+| `IdWriteDao<TRow>` (`WriteDao<TRow, 'id'>` + `findOneById`, `deleteMany` with bare ids) | `BaseWriteDao` | `BaseBasicRepository`, the aggregate repositories (`/aggregate`) |
+
+`WriteDao` includes the predicate methods (`findSingle`, `findSingleForUpdate`,
+`updateBy`, `deleteBy`), so a hand-written implementation provides them too.
 
 Each repository base takes the DAO type as an optional last type parameter.
 Left out, it is the kit's class, exactly as before. Pass your own contract to
@@ -569,6 +766,11 @@ contract's methods satisfies it — a test double can be a plain object.
 adapter. Everything new is optional, so an adapter implementing only the
 original eight methods keeps working:
 
+- `update` and `delete` must throw on an empty `where` unless `allRows: true`
+  is set (then `where` is `{}`) — this is what makes `ALL_ROWS` the only way
+  to reach every row. An adapter that ignores `allRows` keeps refusing the
+  empty `where`, so it fails closed.
+
 - `audit?: { createdAt?, updatedAt? }` on `InsertOptions`, `UpdateOptions` and
   `UpdateManyOptions` — the timestamp columns to stamp with the database clock.
   Omitted means `created_at`/`updated_at`; `{}` means stamp nothing.
@@ -600,18 +802,19 @@ the key-set option types are exported from the main entry.
 
 ### Filtering on write DAOs
 
-`WriteDbAdapter`'s `where` option (used by `BaseWriteDao`'s `findOne` /
-`findMany` / `findOneForUpdate` / `findManyForUpdate` / `update` / `delete` /
-`exists`) accepts the same operator-suffix DSL as the read-side
+`WriteDbAdapter`'s `where` option (used by the write DAOs' `findOne` /
+`findMany` / `findOneForUpdate` / `findManyForUpdate` / `existsBy` /
+`countBy` and the predicate methods) accepts the same operator-suffix DSL as the read-side
 `SqlQueryBuilder` — see [The filter suffix DSL](#the-filter-suffix-dsl) below
 for the full operator table. Two differences from the read side:
 
 - Keys are **raw DB column names** (`expires_at__lt`), not the camelCase,
   `ColumnResolver`-resolved names `SqlQueryBuilder` uses — write DAOs have no
   resolver.
-- A `bigint`/`numeric` column typed as `string` in your row type (common,
-  to avoid JS float-precision loss) won't get `__gt/__gte/__lt/__lte` —
-  those are only available where TypeScript can see `number | Date`.
+- `__gt/__gte/__lt/__lte` are typed for `number`, `bigint`, `string` and
+  `Date` fields. The comparison follows the column's SQL type: a
+  `bigint`/`numeric` column held as `string` in your row type compares
+  numerically, a text column compares as text.
 
 This is what makes a locked, range-filtered sweep read possible without
 hand-written SQL. `findManyForUpdate({ where, limit?, orderBy?, onLocked? }, trx)`
@@ -653,14 +856,18 @@ await uow.transaction(async (ctx) => {
 
 **Behavior note:** a literal `null` for a bare key (`{ status: null }`) emits
 `status IS NULL`, not `status = $1` with a `null` parameter — the latter
-never matches in Postgres.
+never matches in Postgres. When you want the plain SQL `=`, use
+`status__eq` — `status__eq: null` matches no row, exactly like `WHERE status
+= NULL`.
 
 **Sharp edge — `__notIn` on `delete`/`update`:** `field__notIn` compiles to
 `(field <> ALL($n) OR field IS NULL)`, matching the read side's null-safe
 `NOT IN` semantics. On a destructive write, this also matches rows where
 `field IS NULL`: `delete({ status__notIn: ['DONE'] })` deletes every row with
 `status IS NULL` too, not just rows with some other non-`DONE` status. Confirm
-that's actually intended before using `__notIn` in a `delete` or `update`.
+that's actually intended before using `__notIn` in a `delete` or `update`, or
+use `__notInStrict` (`field <> ALL($n)`, SQL's own `NOT IN`), which leaves
+`NULL` rows alone.
 
 **Migration note — casting to `FilterQuery<T>` inside a generic method:**
 `FilterQuery<T>` is now an intersection of several mapped types (the base
@@ -674,6 +881,42 @@ compile. Cast directly to `FilterQuery<TRow>` instead of routing through
 `Partial<TRow>` first — e.g. `{ id } as FilterQuery<TRow>`, not
 `{ id } as Partial<TRow>` — which sidesteps the generic-assignability gap
 entirely (this is the pattern `BaseWriteDao` uses internally).
+
+## Transactions — `UnitOfWork`
+
+`UnitOfWork.transaction(fn)` opens a transaction, runs `fn(ctx)`, and
+commits — or rolls back if `fn` throws. Pass `ctx.trx` to every DAO call that
+should be part of it. Nested `transaction()` calls join the outer one.
+
+It needs nothing beyond a `Database`:
+
+```ts
+const uow = new UnitOfWork({ db });
+
+await uow.transaction(async ({ trx }) => {
+  await accounts.updateBy({ id__eq: from }, { balance: fromBalance }, trx);
+  await accounts.updateBy({ id__eq: to }, { balance: toBalance }, trx);
+  // Raw SQL in the same transaction — e.g. a join or aggregate no DAO covers:
+  const { rows } = await trx.query('SELECT sum(balance) AS total FROM accounts', []);
+});
+```
+
+**Events (optional).** With `events: { sink, serialize }`, the unit of work
+collects events during `fn` and hands them to `sink.sink(entries, trx)` before
+committing:
+
+- `ctx.registerEventSource(source)` registers anything with
+  `drainDomainEvents()` (a `DomainEventSource`). Registering the same object
+  twice drains it once; distinct objects are all drained.
+- `ctx.registerIntegrationEvent(event)` adds a standalone event.
+- `serialize(event)` turns each event into the sink's entry type.
+
+Imported from the main entry, `UnitOfWork<TEntry, TEvent>` leaves the event
+type to you (`unknown` by default). The `/aggregate` entry point exports a
+subclass typed for DDD events (`AnyEvent`) whose `UnitOfWorkContext` adds
+`ctx.registerAggregate(aggregate)` — the aggregate repositories call it for
+you. Use that one with aggregates; it is still a `UnitOfWork` from the main
+entry.
 
 ## Stored routines
 
@@ -781,6 +1024,9 @@ the `out`/`inout` names.
 
 ## Mappers — row ↔ aggregate conversion
 
+Part of the DDD layer: import `BasePersistenceMapper` and `PersistenceMapper`
+from `@quilla-be-kit/persistence/aggregate`.
+
 `BasePersistenceMapper` handles the bidirectional row↔aggregate conversion
 with **no explicit column list**. It uses prototype reflection on the
 aggregate to discover persisted properties, then converts names between
@@ -826,7 +1072,7 @@ When every domain property name maps cleanly to its snake_case column
 (e.g. `adminEmail` ↔ `admin_email`), the mapper is just one method:
 
 ```ts
-import { BasePersistenceMapper } from '@quilla-be-kit/persistence';
+import { BasePersistenceMapper } from '@quilla-be-kit/persistence/aggregate';
 
 class TenantMapper extends BasePersistenceMapper<Tenant, TenantProps, TenantRow> {
   protected createDomain(props: TenantProps, id: string): Tenant {
@@ -1008,14 +1254,19 @@ The same resolver applies to `.filters()`, `.orderBy()`, and `.groupBy()`. `this
 | Operator | SQL | Available for |
 | --- | --- | --- |
 | `field` (bare) | `field = $n` (or `IS NULL` if value is `null`) | all kinds |
-| `field__contains` | `field ILIKE '%value%'` | string |
+| `field__eq` | `field = $n`, always — `null` matches no row | code only |
+| `field__ne` | `field <> $n` — `NULL` rows never match | code only |
+| `field__contains` | `field ILIKE '%value%'`, with `%`, `_` and `\` in the value matched literally | string |
 | `field__in` | `field = ANY($n)` | string, number, date, enum |
 | `field__notIn` | `field <> ALL($n) OR field IS NULL` | string, number, date, enum |
+| `field__notInStrict` | `field <> ALL($n)` — SQL `NOT IN`; `NULL` rows never match | code only |
 | `field__gt` / `__gte` / `__lt` / `__lte` | `field > $n` etc. | number, date |
 | `field__isNull` | `field IS NULL` (or `IS NOT NULL` if value is `false`) | all kinds |
 | `field__isNotNull` | `field IS NOT NULL` (inverse of above) | all kinds |
 
-`undefined` values are skipped, so `filters({ name: opts.name })` composes cleanly when `opts.name` is optional. Unknown operator suffixes throw at build time.
+"Code only" operators are available in `.filters(...)` and write-side `where` filters but are never accepted from HTTP query strings. They follow SQL's own comparison rules; the bare key and `__notIn` are the null-tolerant forms. An `__eq` on a timestamp matches only at the exact stored precision.
+
+`undefined` values are skipped, so `filters({ name: opts.name })` composes cleanly when `opts.name` is optional (write-side predicate methods throw instead — see [Predicate writes](#predicate-writes--updateby--deleteby--findsingle)). Unknown operator suffixes throw at build time.
 
 ### Raw WHERE fragments for dialect-specific operators
 
@@ -1095,6 +1346,23 @@ const result = await dao.listPage(query, scopeId);
 If the query uses `GROUP BY`, the count is computed over the grouped set via a subquery wrap — you don't need to do anything special.
 
 When hand-constructing a `QueryProduct` with both `sql` and `countSql`, both queries receive the same `params` array — the caller is responsible for ensuring both are parametrically compatible.
+
+### Single-row reads — `limit` and `findSingle`
+
+`.limit(n)` adds a plain `LIMIT` (it can't be combined with `.paginate`).
+`findSingle` runs a query that must match at most one row — `null` for none,
+`TooManyRowsError` for more (`context.entity` is the DAO's class name).
+Bound the query with `.limit(2)` so a wide match never loads more than the
+two rows needed to detect it:
+
+```ts
+class AccountReadDao extends BaseReadDao {
+  byEmail(email: string) {
+    const q = this.qb<AccountRow>().from('accounts').filters({ email__eq: email }).limit(2).build();
+    return this.findSingle<AccountRow>(q);
+  }
+}
+```
 
 ### Sorting with enforced + default directives
 
@@ -1342,15 +1610,21 @@ The builder covers the common projection shapes. For one-off reads where the bui
 ```
 src/
 ├── database/     Database / DatabaseTransaction / DatabaseResult / DatabaseHealth
-├── db-adapter/   FilterQuery, Read/Write/Routine DbAdapter interfaces + options
+├── db-adapter/   FilterQuery, Read/Write/Routine DbAdapter interfaces + options,
+│                 AUDIT_COLUMNS
 ├── dao/          BaseReadDao, BaseWriteDao, KeyedWriteDao, BaseRoutineDao,
-│                 WriteDao / IdWriteDao contracts, AuditPolicy
+│                 WriteDao / IdWriteDao contracts, ALL_ROWS, ActorProvider, AuditPolicy
 ├── query/        QueryProduct, PaginatedResult, StandardListQuery, FieldDescriptor,
 │                 ColumnResolver + DefaultColumnResolver, SqlQueryBuilder
-├── query-schema/ createQueryParametersSchema (Zod adapter — sub-path export)
-├── repository/   BaseBasic/KeyedBasic/Aggregate/Scoped/Unscoped repositories + mapper
-├── unit-of-work/ UnitOfWork, UnitOfWorkContext, OutboxWriter
-├── errors/       CrossScopeAccessError, OptimisticLockError
+├── query-schema/ createQueryParametersSchema (Zod adapter — `/query-schema`)
+├── unit-of-work/ UnitOfWork, UnitOfWorkContext, DomainEventSource, EventSink
+├── repository/   KeyedBasicRepository, BaseBasicRepository (row repositories)
+├── aggregate/    DDD layer — `/aggregate`: aggregate repositories, mappers,
+│                 DDD-typed UnitOfWork / UnitOfWorkContext
+├── errors/       CrossScopeAccessError, OptimisticLockError, TooManyRowsError
 └── postgres/     PgDatabase, PgTransaction, PgWriteDbAdapter, PgReadDbAdapter,
-                  PgRoutineDbAdapter, PgSqlQueryBuilder
+                  PgRoutineDbAdapter, PgSqlQueryBuilder — `/postgres`
 ```
+
+Each folder imports only from the layers below it; `tests/layers.test.ts`
+enforces this and keeps `@quilla-be-kit/ddd` inside `aggregate/`.

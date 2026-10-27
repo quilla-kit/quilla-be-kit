@@ -1,6 +1,6 @@
 import { AggregateRoot } from '@quilla-be-kit/ddd';
 import { describe, expect, it } from 'vitest';
-import { BasePersistenceMapper } from '../../src/repository/base-persistence.mapper.js';
+import { BasePersistenceMapper } from '../../src/aggregate/base-persistence.mapper.js';
 
 // --------------------------------------------------------------------------
 // Fixtures — a "Tenant" aggregate with pure camelCase↔snake_case mapping.

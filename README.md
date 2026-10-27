@@ -75,7 +75,7 @@ Think of quilla-be-kit as five concentric layers. You reach for the inner layers
 - [`@quilla-be-kit/security`](packages/security) — `TokenService` / `SessionStore` / `PasswordHasher` interfaces plus composable `bearerTokenMiddleware` and `authenticatedSessionMiddleware`
 
 **Durability — where your invariants live**
-- [`@quilla-be-kit/persistence`](packages/persistence) — `UnitOfWork`, `BaseWriteDao`/`BaseReadDao` (CQRS-isolated), scoped repositories, `BasePersistenceMapper` with prototype reflection
+- [`@quilla-be-kit/persistence`](packages/persistence) — layered: `UnitOfWork` and CQRS-isolated DAOs (`BaseWriteDao`/`KeyedWriteDao`/`BaseReadDao`) on their own, with optional row repositories and a DDD layer (`/aggregate`: scoped aggregate repositories, `BasePersistenceMapper`) on top
 - [`@quilla-be-kit/messaging`](packages/messaging) — atomic-claim outbox + worker-queue event bus, Standard Schema v1 payload validation, per-aggregate ordering
 
 **Observability — threaded through all of them**

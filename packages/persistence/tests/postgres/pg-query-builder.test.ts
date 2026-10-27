@@ -293,3 +293,47 @@ describe('PgSqlQueryBuilder — structured from', () => {
     expect(quoted().from('users u').build().sql).toBe('SELECT * FROM users u');
   });
 });
+
+describe('PgSqlQueryBuilder — strict operators and limit', () => {
+  it('renders __eq, __ne and __notInStrict with SQL semantics', () => {
+    const q = qb()
+      .from('users')
+      .filters({ name__eq: null, role__ne: 'admin', id__notInStrict: ['c'] })
+      .build();
+    expect(q.sql).toBe('SELECT * FROM users WHERE name = $1 AND role <> $2 AND id <> ALL($3)');
+    expect(q.params).toEqual([null, 'admin', ['c']]);
+  });
+
+  it('keeps bare null as IS NULL', () => {
+    expect(qb().from('users').filters({ name: null }).build().sql).toBe(
+      'SELECT * FROM users WHERE name IS NULL',
+    );
+  });
+
+  it('escapes LIKE wildcards in __contains', () => {
+    expect(qb().from('users').filters({ name__contains: 'a_b%' }).build().params).toEqual([
+      '%a\\_b\\%%',
+    ]);
+  });
+
+  it('emits LIMIT after ORDER BY', () => {
+    const q = qb()
+      .from('users')
+      .orderBy([{ name: 'asc' }])
+      .limit(2)
+      .build();
+    expect(q.sql).toBe('SELECT * FROM users ORDER BY name ASC LIMIT 2');
+    expect(q.countSql).toBeUndefined();
+  });
+
+  it('rejects a negative or fractional limit', () => {
+    expect(() => qb().limit(-1)).toThrow(/non-negative integer/);
+    expect(() => qb().limit(1.5)).toThrow(/non-negative integer/);
+  });
+
+  it('rejects limit combined with paginate', () => {
+    expect(() => qb().from('users').limit(2).paginate({ page: 1, pageSize: 10 }).build()).toThrow(
+      /either \.limit\(n\) or \.paginate/,
+    );
+  });
+});

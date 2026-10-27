@@ -2,8 +2,8 @@ import type { AggregateRoot } from '@quilla-be-kit/ddd';
 import type { BaseWriteDao } from '../dao/base-write.dao.js';
 import type { IdWriteDao } from '../dao/id-write-dao.interface.js';
 import type { FilterQuery } from '../db-adapter/filter-query.type.js';
-import type { UnitOfWorkContext } from '../unit-of-work/unit-of-work-context.type.js';
 import { BaseAggregateRepository } from './base-aggregate.repository.js';
+import type { UnitOfWorkContext } from './unit-of-work.js';
 
 /**
  * Repository for global aggregates with no scope boundary (e.g. system

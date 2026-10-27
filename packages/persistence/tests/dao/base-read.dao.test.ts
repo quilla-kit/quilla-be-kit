@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { BaseReadDao } from '../../src/dao/base-read.dao.js';
+import { TooManyRowsError } from '../../src/errors/too-many-rows.error.js';
 import { PgSqlQueryBuilder } from '../../src/postgres/pg-query-builder.js';
 import type { ColumnResolver } from '../../src/query/column-resolver.interface.js';
 import { DefaultColumnResolver } from '../../src/query/default.resolver.js';
@@ -26,6 +27,11 @@ class TestReadDao extends BaseReadDao {
       .filters({ id })
       .build();
     return this.findOne<UserRow>(q);
+  }
+
+  singleByEmail(email: string): Promise<UserRow | null> {
+    const q = this.qb<UserRow>().from('users').filters({ email }).limit(2).build();
+    return this.findSingle<UserRow>(q);
   }
 
   listPaginated(page: number, pageSize: number) {
@@ -115,5 +121,32 @@ describe('BaseReadDao', () => {
     });
     await scopedDao.byScope('t1');
     expect(adapter.rawCalls[0]?.sql).toBe('SELECT * FROM users WHERE tenant_id = $1');
+  });
+
+  describe('findSingle', () => {
+    it('runs the query bounded by .limit(2) and returns the only row', async () => {
+      const adapter = new FakeReadDbAdapter();
+      adapter.rawResults = [[{ id: '1', name: 'Ada', createdAt: new Date(0) }]];
+      const dao = new TestReadDao({ adapter, builderFactory });
+
+      await expect(dao.singleByEmail('ada@x')).resolves.toMatchObject({ id: '1' });
+      expect(adapter.rawCalls[0]?.sql).toBe('SELECT * FROM users WHERE email = $1 LIMIT 2');
+      expect(adapter.rawCalls[0]?.params).toEqual(['ada@x']);
+    });
+
+    it('returns null when nothing matches', async () => {
+      const dao = new TestReadDao({ adapter: new FakeReadDbAdapter(), builderFactory });
+      await expect(dao.singleByEmail('none@x')).resolves.toBeNull();
+    });
+
+    it('throws TooManyRowsError naming the DAO when more than one row matches', async () => {
+      const adapter = new FakeReadDbAdapter();
+      adapter.rawResults = [[{ id: '1' }, { id: '2' }]];
+      const dao = new TestReadDao({ adapter, builderFactory });
+
+      const error = await dao.singleByEmail('dup@x').catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(TooManyRowsError);
+      expect((error as TooManyRowsError).context).toEqual({ entity: 'TestReadDao' });
+    });
   });
 });

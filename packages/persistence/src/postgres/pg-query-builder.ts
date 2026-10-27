@@ -1,4 +1,5 @@
 import type { ColumnResolver } from '../query/column-resolver.interface.js';
+import { filterOperator, parseFilterKey } from '../query/filter-key.parser.js';
 import type { SortOption } from '../query/list-query.type.js';
 import type { QueryProduct } from '../query/query-product.type.js';
 import type {
@@ -14,7 +15,6 @@ import {
   NO_QUOTING,
   QUOTED,
   buildFilterClause,
-  parseFilterKey,
 } from './pg-sql.js';
 
 const QUALIFIED_IDENT_RE = new RegExp(`^${IDENT}(\\.${IDENT})?$`);
@@ -34,6 +34,7 @@ type BuilderState = {
   readonly sort: readonly SortOption[] | null;
   readonly sortOptions: OrderByOptions | null;
   readonly pagination: PaginateOptions | null;
+  readonly limit: number | null;
 };
 
 const EMPTY_STATE: BuilderState = {
@@ -46,6 +47,7 @@ const EMPTY_STATE: BuilderState = {
   sort: null,
   sortOptions: null,
   pagination: null,
+  limit: null,
 };
 
 export type PgSqlQueryBuilderOptions = {
@@ -135,9 +137,19 @@ export class PgSqlQueryBuilder<TRow = unknown> implements SqlQueryBuilder<TRow> 
     return this.fork({ pagination: options });
   }
 
+  limit(count: number): SqlQueryBuilder<TRow> {
+    if (!(Number.isSafeInteger(count) && count >= 0)) {
+      throw new Error(`SqlQueryBuilder.limit: expected a non-negative integer, got ${count}`);
+    }
+    return this.fork({ limit: count });
+  }
+
   build(): QueryProduct {
     if (!this.state.table) {
       throw new Error('SqlQueryBuilder.build: .from(table) is required');
+    }
+    if (this.state.limit !== null && this.state.pagination) {
+      throw new Error('SqlQueryBuilder.build: use either .limit(n) or .paginate(...), not both');
     }
 
     const params: unknown[] = [];
@@ -164,6 +176,8 @@ export class PgSqlQueryBuilder<TRow = unknown> implements SqlQueryBuilder<TRow> 
       const offset = Math.max(0, (page - 1) * pageSize);
       sql += ` LIMIT ${pageSize} OFFSET ${offset}`;
       countSql = this.buildCountSql(whereSql);
+    } else if (this.state.limit !== null) {
+      sql += ` LIMIT ${this.state.limit}`;
     }
 
     return countSql !== undefined ? { sql, countSql, params } : { sql, params };
@@ -221,7 +235,9 @@ export class PgSqlQueryBuilder<TRow = unknown> implements SqlQueryBuilder<TRow> 
   }
 
   private filterFragment(rawKey: string, value: unknown, params: unknown[]): string {
-    const { field, operator, hadSuffix } = parseFilterKey(rawKey);
+    const parsed = parseFilterKey(rawKey);
+    const { field, hadSuffix } = parsed;
+    const operator = filterOperator(parsed, value, false);
     const isBareIdent = IDENT_RE.test(field);
     // Only suffixed keys are field-name-validated here: a bare key (no
     // `__operator`) may be a dotted qualified reference, which
