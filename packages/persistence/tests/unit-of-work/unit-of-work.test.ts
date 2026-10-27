@@ -91,7 +91,7 @@ describe('UnitOfWork', () => {
 
       await uow.transaction(async (ctx) => {
         const agg = TestAggregate.create('agg-1', 'foo');
-        ctx.registerAggregate(agg);
+        ctx.registerEventSource(agg);
       });
 
       expect(sink.calls).toHaveLength(1);
@@ -145,7 +145,7 @@ describe('UnitOfWork', () => {
       const uow = new UnitOfWork({ db });
 
       await uow.transaction(async (ctx) => {
-        ctx.registerAggregate(TestAggregate.create('agg-1', 'x'));
+        ctx.registerEventSource(TestAggregate.create('agg-1', 'x'));
       });
 
       expect(db.transaction.committed).toBe(true);
@@ -157,13 +157,70 @@ describe('UnitOfWork', () => {
 
       await expect(
         uow.transaction(async (ctx) => {
-          ctx.registerAggregate(TestAggregate.create('agg-1', 'x'));
+          ctx.registerEventSource(TestAggregate.create('agg-1', 'x'));
           throw new Error('nope');
         }),
       ).rejects.toThrow('nope');
 
       expect(sink.sink).not.toHaveBeenCalled();
       expect(db.transaction.rolledBack).toBe(true);
+    });
+  });
+});
+
+describe('UnitOfWork without DDD', () => {
+  type JobEvent = { readonly type: string };
+
+  const setup = () => {
+    const db = new FakeDatabase();
+    const sink = vi.fn(async () => {});
+    const uow = new UnitOfWork<string, JobEvent>({
+      db,
+      events: { sink: { sink }, serialize: (event) => event.type },
+    });
+    return { db, sink, uow };
+  };
+
+  const source = (type: string) => ({ drainDomainEvents: vi.fn((): JobEvent[] => [{ type }]) });
+
+  it('drains any registered event source into the sink', async () => {
+    const { db, sink, uow } = setup();
+
+    await uow.transaction(async (ctx) => {
+      ctx.registerEventSource(source('job.started'));
+      ctx.registerIntegrationEvent({ type: 'job.audited' });
+    });
+
+    expect(sink).toHaveBeenCalledWith(['job.started', 'job.audited'], db.transaction);
+  });
+
+  it('drains a source registered twice only once', async () => {
+    const { db, sink, uow } = setup();
+    const job = source('job.started');
+
+    await uow.transaction(async (ctx) => {
+      ctx.registerEventSource(job);
+      ctx.registerEventSource(job);
+    });
+
+    expect(job.drainDomainEvents).toHaveBeenCalledTimes(1);
+    expect(sink).toHaveBeenCalledWith(['job.started'], db.transaction);
+  });
+
+  it('drains every distinct source', async () => {
+    const { db, sink, uow } = setup();
+
+    await uow.transaction(async (ctx) => {
+      ctx.registerEventSource(source('first'), source('second'));
+    });
+
+    expect(sink).toHaveBeenCalledWith(['first', 'second'], db.transaction);
+  });
+
+  it('carries no DDD vocabulary on the core context', async () => {
+    const uow = new UnitOfWork({ db: new FakeDatabase() });
+    await uow.transaction(async (ctx) => {
+      expect(ctx).not.toHaveProperty('registerAggregate');
     });
   });
 });

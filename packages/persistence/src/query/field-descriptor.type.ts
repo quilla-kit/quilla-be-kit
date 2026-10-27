@@ -2,9 +2,11 @@ export type FieldKind = 'string' | 'number' | 'boolean' | 'date' | 'enum';
 
 export const ALL_FILTER_OPERATORS = [
   'eq',
+  'ne',
   'contains',
   'in',
   'notIn',
+  'notInStrict',
   'gt',
   'gte',
   'lt',

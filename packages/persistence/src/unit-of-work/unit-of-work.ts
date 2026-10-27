@@ -1,32 +1,44 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
-import type { AggregateRoot, AnyEvent, IntegrationEvent } from '@quilla-be-kit/ddd';
 import type { Database } from '../database/database.interface.js';
+import type { DomainEventSource } from './domain-event-source.interface.js';
 import type { EventSink } from './event-sink.interface.js';
 import type { UnitOfWorkContext } from './unit-of-work-context.type.js';
 
-export type UnitOfWorkOptions<TEntry = unknown> = {
+export type UnitOfWorkOptions<TEntry = unknown, TEvent = unknown> = {
   readonly db: Database;
   readonly events?: {
     readonly sink: EventSink<TEntry>;
-    readonly serialize: (event: AnyEvent) => TEntry;
+    // A method, not a property: its parameter stays bivariant, so a unit of
+    // work built for a specific event type still assigns to `UnitOfWork`.
+    serialize(event: TEvent): TEntry;
   };
 };
 
-export class UnitOfWork<TEntry = unknown> {
+/** `TContext` lets a subclass hand out a richer context; see `extendContext`. */
+export class UnitOfWork<
+  TEntry = unknown,
+  TEvent = unknown,
+  TContext extends UnitOfWorkContext<TEvent> = UnitOfWorkContext<TEvent>,
+> {
   private readonly db: Database;
-  private readonly events: UnitOfWorkOptions<TEntry>['events'];
-  private readonly storage = new AsyncLocalStorage<UnitOfWorkContext>();
+  private readonly events: UnitOfWorkOptions<TEntry, TEvent>['events'];
+  private readonly storage = new AsyncLocalStorage<TContext>();
 
-  constructor(options: UnitOfWorkOptions<TEntry>) {
+  constructor(options: UnitOfWorkOptions<TEntry, TEvent>) {
     this.db = options.db;
     this.events = options.events;
   }
 
-  getContext(): UnitOfWorkContext | undefined {
+  /** Builds the context handed out; a subclass that widens `TContext` must override it. */
+  protected extendContext(ctx: UnitOfWorkContext<TEvent>): TContext {
+    return ctx as TContext;
+  }
+
+  getContext(): TContext | undefined {
     return this.storage.getStore();
   }
 
-  async transaction<T>(operation: (ctx: UnitOfWorkContext) => Promise<T>): Promise<T> {
+  async transaction<T>(operation: (ctx: TContext) => Promise<T>): Promise<T> {
     const existing = this.storage.getStore();
     if (existing) {
       return operation(existing);
@@ -35,20 +47,18 @@ export class UnitOfWork<TEntry = unknown> {
     const trx = await this.db.getDbTransaction();
     await trx.start();
 
-    const tracked = new Map<string, AggregateRoot<object>>();
-    const integrationEvents: IntegrationEvent[] = [];
+    const sources = new Set<DomainEventSource<TEvent>>();
+    const integrationEvents: TEvent[] = [];
 
-    const ctx: UnitOfWorkContext = {
+    const ctx = this.extendContext({
       trx,
-      registerAggregate: (...aggregates) => {
-        for (const agg of aggregates) {
-          tracked.set(`${agg.constructor.name}:${agg.id}`, agg);
-        }
+      registerEventSource: (...registered) => {
+        for (const source of registered) sources.add(source);
       },
       registerIntegrationEvent: (event) => {
         integrationEvents.push(event);
       },
-    };
+    });
 
     try {
       const result = await this.storage.run(ctx, async () => {
@@ -56,8 +66,8 @@ export class UnitOfWork<TEntry = unknown> {
 
         const events = this.events;
         if (events) {
-          const domainEvents = [...tracked.values()].flatMap((a) => a.drainDomainEvents());
-          const allEvents: AnyEvent[] = [...domainEvents, ...integrationEvents];
+          const domainEvents = [...sources].flatMap((source) => source.drainDomainEvents());
+          const allEvents: TEvent[] = [...domainEvents, ...integrationEvents];
           if (allEvents.length > 0) {
             const entries = allEvents.map((e) => events.serialize(e));
             await events.sink.sink(entries, trx);

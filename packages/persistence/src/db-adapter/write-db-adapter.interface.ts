@@ -34,10 +34,15 @@ export type InsertOptions = {
   readonly audit?: AuditTimestamps;
 };
 
+/**
+ * An empty `where` must throw unless `allRows` is set; with `allRows`, `where`
+ * is `{}` and the write reaches every row.
+ */
 export type UpdateOptions<T> = {
   readonly table: string;
   readonly set: Record<string, unknown>;
   readonly where: FilterQuery<T>;
+  readonly allRows?: true;
   readonly optimisticLock?: OptimisticLock;
   readonly returning?: Returning;
   readonly audit?: AuditTimestamps;
@@ -84,9 +89,11 @@ export type LockedSelectOptions<T> = SelectOptions<T> & { readonly onLocked?: On
 export type KeySetSelectOptions = KeySetOptions &
   Pick<LockedSelectOptions<unknown>, 'limit' | 'orderBy' | 'onLocked'>;
 
+/** Same `where` / `allRows` rule as `UpdateOptions`. */
 export type DeleteOptions<T> = {
   readonly table: string;
   readonly where: FilterQuery<T>;
+  readonly allRows?: true;
   readonly optimisticLock?: OptimisticLock;
 };
 

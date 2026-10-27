@@ -1,6 +1,6 @@
 import type { DatabaseTransaction } from '../database/database-transaction.interface.js';
 import type { FilterQuery } from '../db-adapter/filter-query.type.js';
-import type { LockedSelectOptions } from '../db-adapter/write-db-adapter.interface.js';
+import type { LockedSelectOptions, OnLocked } from '../db-adapter/write-db-adapter.interface.js';
 
 type LockedRead = Pick<LockedSelectOptions<unknown>, 'limit' | 'orderBy' | 'onLocked'>;
 
@@ -10,6 +10,20 @@ export type FindManyForUpdateOptions<TRow> = LockedRead & {
 
 export type FindManyForUpdateByKeysOptions<TRow, TKey extends keyof TRow & string> = LockedRead & {
   readonly keys: readonly Pick<TRow, TKey>[];
+};
+
+/**
+ * Pass as a predicate to address every row of the table on purpose. An
+ * empty filter object is rejected instead, so a whole-table write is never
+ * accidental.
+ */
+export const ALL_ROWS: unique symbol = Symbol.for('@quilla-be-kit/persistence/all-rows');
+
+export type WritePredicate<TRow> = FilterQuery<TRow> | typeof ALL_ROWS;
+
+/** `'skip'` is excluded: skipping a locked second row would defeat the single-row check. */
+export type FindSingleForUpdateOptions = {
+  readonly onLocked?: Exclude<OnLocked, 'skip'>;
 };
 
 /**
@@ -58,4 +72,20 @@ export interface WriteDao<TRow extends object, TKey extends keyof TRow & string>
   ): Promise<number>;
 
   deleteMany(keys: readonly Pick<TRow, TKey>[], trx?: DatabaseTransaction): Promise<number>;
+
+  findSingle(where: WritePredicate<TRow>, trx?: DatabaseTransaction): Promise<TRow | null>;
+
+  findSingleForUpdate(
+    where: WritePredicate<TRow>,
+    trx: DatabaseTransaction,
+    options?: FindSingleForUpdateOptions,
+  ): Promise<TRow | null>;
+
+  updateBy(
+    where: WritePredicate<TRow>,
+    set: Partial<TRow>,
+    trx?: DatabaseTransaction,
+  ): Promise<number>;
+
+  deleteBy(where: WritePredicate<TRow>, trx?: DatabaseTransaction): Promise<number>;
 }

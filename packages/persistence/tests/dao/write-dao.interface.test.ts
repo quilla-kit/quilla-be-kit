@@ -1,12 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
+import { BaseScopedAggregateRepository } from '../../src/aggregate/base-scoped-aggregate.repository.js';
+import { BaseUnscopedAggregateRepository } from '../../src/aggregate/base-unscoped-aggregate.repository.js';
+import type { PersistenceMapper } from '../../src/aggregate/mapper.interface.js';
+import type { UnitOfWorkContext } from '../../src/aggregate/unit-of-work.js';
 import type { IdWriteDao } from '../../src/dao/id-write-dao.interface.js';
 import type { WriteDao } from '../../src/dao/write-dao.interface.js';
 import { BaseBasicRepository } from '../../src/repository/base-basic.repository.js';
-import { BaseScopedAggregateRepository } from '../../src/repository/base-scoped-aggregate.repository.js';
-import { BaseUnscopedAggregateRepository } from '../../src/repository/base-unscoped-aggregate.repository.js';
 import { KeyedBasicRepository } from '../../src/repository/keyed-basic.repository.js';
-import type { PersistenceMapper } from '../../src/repository/mapper.interface.js';
-import type { UnitOfWorkContext } from '../../src/unit-of-work/unit-of-work-context.type.js';
 import { FakeDatabaseTransaction } from '../helpers/fake-database.js';
 import { TestAggregate } from '../helpers/test.aggregate.js';
 
@@ -34,6 +34,10 @@ function plainWriteDao<TRow extends object, TKey extends keyof TRow & string>(
     updateMany: vi.fn(async (input: readonly TRow[]) => input.length),
     delete: vi.fn(async () => 1),
     deleteMany: vi.fn(async (keys: readonly unknown[]) => keys.length),
+    findSingle: vi.fn(async () => rows[0] ?? null),
+    findSingleForUpdate: vi.fn(async () => rows[0] ?? null),
+    updateBy: vi.fn(async () => rows.length),
+    deleteBy: vi.fn(async () => rows.length),
   };
 }
 
@@ -58,6 +62,7 @@ class ItemMapper implements PersistenceMapper<TestAggregate, ItemRow> {
 const uowContext = (): UnitOfWorkContext => ({
   trx: new FakeDatabaseTransaction(),
   registerAggregate: vi.fn(),
+  registerEventSource: () => {},
   registerIntegrationEvent: vi.fn(),
 });
 

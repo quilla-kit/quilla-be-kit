@@ -1,4 +1,5 @@
 import type { ReadDbAdapter } from '../db-adapter/read-db-adapter.interface.js';
+import { singleRow } from '../errors/too-many-rows.error.js';
 import type { ColumnResolver } from '../query/column-resolver.interface.js';
 import { DefaultColumnResolver } from '../query/default.resolver.js';
 import type { PaginationOptions } from '../query/list-query.type.js';
@@ -51,6 +52,15 @@ export abstract class BaseReadDao {
   protected async findOne<TRow>(query: QueryProduct): Promise<TRow | null> {
     const rows = await this.adapter.raw<TRow>(query.sql, query.params);
     return rows[0] ?? null;
+  }
+
+  /**
+   * Execute a built query that must match at most one row: `null` for none,
+   * `TooManyRowsError` for more. Build it with `.limit(2)` so a wide match
+   * never loads more than the two rows needed to detect it.
+   */
+  protected async findSingle<TRow>(query: QueryProduct): Promise<TRow | null> {
+    return singleRow(await this.adapter.raw<TRow>(query.sql, query.params), this.constructor.name);
   }
 
   /**

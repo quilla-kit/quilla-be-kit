@@ -1,4 +1,3 @@
-import type { ExecutionContextProvider } from '@quilla-be-kit/execution-context';
 import type { DatabaseResult } from '../database/database-result.type.js';
 import type { DatabaseTransaction } from '../database/database-transaction.interface.js';
 import type { FilterQuery } from '../db-adapter/filter-query.type.js';
@@ -9,12 +8,19 @@ import type {
   WriteDbAdapter,
 } from '../db-adapter/write-db-adapter.interface.js';
 import { OptimisticLockError } from '../errors/optimistic-lock.error.js';
-import { resolveAuditPolicy } from './audit-columns.js';
+import { singleRow } from '../errors/too-many-rows.error.js';
+import type { FilterOperator } from '../query/field-descriptor.type.js';
+import { parseFilterKey } from '../query/filter-key.parser.js';
+import type { ActorProvider } from './actor.provider.js';
+import { resolveAuditPolicy } from './audit-policy.resolver.js';
 import type { AuditPolicy, ResolvedAudit } from './audit-policy.type.js';
-import type {
-  FindManyForUpdateByKeysOptions,
-  FindManyForUpdateOptions,
-  WriteDao,
+import {
+  ALL_ROWS,
+  type FindManyForUpdateByKeysOptions,
+  type FindManyForUpdateOptions,
+  type FindSingleForUpdateOptions,
+  type WriteDao,
+  type WritePredicate,
 } from './write-dao.interface.js';
 
 type Row = Record<string, unknown>;
@@ -29,7 +35,10 @@ type Memo = {
   readonly timestamps: AuditTimestamps;
   readonly insertExcluded: ReadonlySet<string>;
   readonly updateExcluded: ReadonlySet<string>;
+  readonly unsettable: ReadonlySet<string>;
 };
+
+type StrictWhere<TRow> = { readonly where: FilterQuery<TRow>; readonly allRows?: true };
 
 /**
  * Write-side DAO addressed by `keyColumns` (single or composite);
@@ -39,7 +48,9 @@ type Memo = {
  * optimistic lock applies only when an `updatedAt` column is declared and
  * reads the row property named by that column. Unlocked reads take an
  * optional `trx`; locked reads require one. `updateMany`/`deleteMany` have
- * no per-row lock — `findManyForUpdate` first if you need one.
+ * no per-row lock — `findManyForUpdate` first if you need one. Predicate
+ * methods (`findSingle*`, `updateBy`, `deleteBy`) address rows by a strict
+ * `where` instead of the key, so they also work with an empty `keyColumns`.
  */
 export abstract class KeyedWriteDao<TRow extends object, TKey extends keyof TRow & string>
   implements WriteDao<TRow, TKey>
@@ -52,7 +63,7 @@ export abstract class KeyedWriteDao<TRow extends object, TKey extends keyof TRow
 
   constructor(
     protected readonly adapter: WriteDbAdapter,
-    protected readonly contextProvider: ExecutionContextProvider,
+    protected readonly contextProvider?: ActorProvider,
   ) {}
 
   async findOneByKey(key: Pick<TRow, TKey>, trx?: DatabaseTransaction): Promise<TRow | null> {
@@ -158,7 +169,7 @@ export abstract class KeyedWriteDao<TRow extends object, TKey extends keyof TRow
     if (rows.length === 0) return 0;
     const userId = this.actorId('update');
     const prepared = rows.map((row) => ({
-      ...this.pickKey(row),
+      ...this.pickKey('updateMany', row),
       ...this.prepareUpdateRow(row, userId),
     }));
     const result = await this.adapter.updateMany(
@@ -194,14 +205,17 @@ export abstract class KeyedWriteDao<TRow extends object, TKey extends keyof TRow
     if (this.keyColumns.length === 1) {
       return affected(
         await this.adapter.delete<TRow>(
-          { table: this.tableName, where: this.singleKeyWhere(keys) },
+          { table: this.tableName, where: this.singleKeyWhere('deleteMany', keys) },
           trx,
         ),
       );
     }
     if (this.adapter.deleteByKeys) {
       return affected(
-        await this.adapter.deleteByKeys({ table: this.tableName, ...this.keySet(keys) }, trx),
+        await this.adapter.deleteByKeys(
+          { table: this.tableName, ...this.keySet('deleteMany', keys) },
+          trx,
+        ),
       );
     }
     let total = 0;
@@ -232,13 +246,17 @@ export abstract class KeyedWriteDao<TRow extends object, TKey extends keyof TRow
     if (keys.length === 0) return [];
     if (singleKey) {
       return this.adapter.findForUpdate<TRow>(
-        { table: this.tableName, where: this.singleKeyWhere(keys), ...read },
+        {
+          table: this.tableName,
+          where: this.singleKeyWhere('findManyForUpdateByKeys', keys),
+          ...read,
+        },
         trx,
       );
     }
     if (this.adapter.findByKeysForUpdate) {
       return this.adapter.findByKeysForUpdate<TRow>(
-        { table: this.tableName, ...this.keySet(keys), ...read },
+        { table: this.tableName, ...this.keySet('findManyForUpdateByKeys', keys), ...read },
         trx,
       );
     }
@@ -256,6 +274,109 @@ export abstract class KeyedWriteDao<TRow extends object, TKey extends keyof TRow
       );
     }
     return rows.slice(0, limit);
+  }
+
+  async findSingle(where: WritePredicate<TRow>, trx?: DatabaseTransaction): Promise<TRow | null> {
+    const rows = await this.adapter.find<TRow>(
+      { table: this.tableName, ...this.selectWhere('findSingle', where), limit: 2 },
+      trx,
+    );
+    return singleRow(rows, this.tableName);
+  }
+
+  /** Locks every matching row it reads — on `TooManyRowsError`, let the transaction roll back. */
+  async findSingleForUpdate(
+    where: WritePredicate<TRow>,
+    trx: DatabaseTransaction,
+    options: FindSingleForUpdateOptions = {},
+  ): Promise<TRow | null> {
+    const rows = await this.adapter.findForUpdate<TRow>(
+      {
+        table: this.tableName,
+        ...this.selectWhere('findSingleForUpdate', where),
+        limit: 2,
+        ...this.lockedRead(options),
+      },
+      trx,
+    );
+    return singleRow(rows, this.tableName);
+  }
+
+  async updateBy(
+    where: WritePredicate<TRow>,
+    set: Partial<TRow>,
+    trx?: DatabaseTransaction,
+  ): Promise<number> {
+    const target = this.strictWhere('updateBy', where);
+    this.assertSettable('updateBy', set);
+    const result = await this.adapter.update<TRow>(
+      {
+        table: this.tableName,
+        set: this.withUpdatedBy({ ...(set as Row) }, this.actorId('update')),
+        ...target,
+        audit: this.memo().timestamps,
+      },
+      trx,
+    );
+    return affected(result);
+  }
+
+  async deleteBy(where: WritePredicate<TRow>, trx?: DatabaseTransaction): Promise<number> {
+    const target = this.strictWhere('deleteBy', where);
+    return affected(await this.adapter.delete<TRow>({ table: this.tableName, ...target }, trx));
+  }
+
+  /**
+   * Validates a predicate before it reaches a write: `ALL_ROWS` is the only
+   * way to address every row, and no value may silently widen the match.
+   */
+  protected strictWhere(operation: string, where: WritePredicate<TRow>): StrictWhere<TRow> {
+    if (where === ALL_ROWS) return { where: {}, allRows: true };
+    const prototype = Object.getPrototypeOf(where);
+    if (prototype !== Object.prototype && prototype !== null) {
+      throw this.operationError(operation, 'where must be a plain object');
+    }
+    const entries = Object.entries(where);
+    if (entries.length === 0) {
+      throw this.operationError(operation, 'an empty where reaches every row; pass ALL_ROWS');
+    }
+    for (const [key, value] of entries) {
+      if (value === undefined) {
+        throw this.operationError(operation, `where.${key} is undefined`);
+      }
+      if (matchesEveryRow(parseFilterKey(key).operator, value)) {
+        throw this.operationError(operation, `where.${key} would match every row`);
+      }
+    }
+    return { where };
+  }
+
+  private selectWhere(
+    operation: string,
+    where: WritePredicate<TRow>,
+  ): { where?: FilterQuery<TRow> } {
+    const target = this.strictWhere(operation, where);
+    return target.allRows ? {} : { where: target.where };
+  }
+
+  private assertSettable(operation: string, set: Partial<TRow>): void {
+    const entries = Object.entries(set);
+    if (entries.length === 0) {
+      throw this.operationError(operation, 'set has no columns');
+    }
+    const { unsettable } = this.memo();
+    for (const [column, value] of entries) {
+      if (value === undefined) {
+        throw this.operationError(operation, `set.${column} is undefined`);
+      }
+      if (unsettable.has(column)) {
+        throw this.operationError(operation, `${column} is an audit or generated column`);
+      }
+    }
+  }
+
+  private operationError(operation: string, reason: string): Error {
+    return new Error(`${this.tableName}: ${operation}: ${reason}`);
   }
 
   private lockedRead({ limit, orderBy, onLocked }: LockedRead): LockedRead {
@@ -300,7 +421,7 @@ export abstract class KeyedWriteDao<TRow extends object, TKey extends keyof TRow
 
   protected keyWhere(operation: string, source: object): FilterQuery<TRow> {
     this.requireKey(operation);
-    return this.pickKey(source) as FilterQuery<TRow>;
+    return this.pickKey(operation, source) as FilterQuery<TRow>;
   }
 
   protected prepareInsertRow(row: TRow, userId: string | undefined): Row {
@@ -313,11 +434,13 @@ export abstract class KeyedWriteDao<TRow extends object, TKey extends keyof TRow
   }
 
   protected prepareUpdateRow(row: TRow, userId: string | undefined): Row {
-    const { audit, updateExcluded } = this.memo();
-    return {
-      ...this.stripKeys(row, updateExcluded),
-      ...(audit.updatedBy !== undefined ? { [audit.updatedBy]: userId } : {}),
-    };
+    return this.withUpdatedBy(this.stripKeys(row, this.memo().updateExcluded), userId);
+  }
+
+  private withUpdatedBy(values: Row, userId: string | undefined): Row {
+    const { updatedBy } = this.memo().audit;
+    if (updatedBy !== undefined) values[updatedBy] = userId;
+    return values;
   }
 
   protected stripKeys(row: TRow, excluded: ReadonlySet<string>): Row {
@@ -330,21 +453,35 @@ export abstract class KeyedWriteDao<TRow extends object, TKey extends keyof TRow
     return out;
   }
 
-  private singleKeyWhere(keys: readonly object[]): FilterQuery<TRow> {
+  private singleKeyWhere(operation: string, keys: readonly object[]): FilterQuery<TRow> {
     const column = this.keyColumns[0] as string;
-    return { [column]: keys.map((key) => (key as Row)[column]) } as FilterQuery<TRow>;
+    return {
+      [column]: keys.map((key) => this.keyValue(operation, key, column)),
+    } as FilterQuery<TRow>;
   }
 
-  private keySet(keys: readonly object[]): KeySet {
+  private keySet(operation: string, keys: readonly object[]): KeySet {
+    for (const key of keys) {
+      for (const column of this.keyColumns) this.keyValue(operation, key, column);
+    }
     return { keyColumns: this.keyColumns, keys: keys as readonly Row[] };
   }
 
-  private pickKey(source: object): Row {
+  private pickKey(operation: string, source: object): Row {
     const key: Row = {};
     for (const column of this.keyColumns) {
-      key[column] = (source as Row)[column];
+      key[column] = this.keyValue(operation, source, column);
     }
     return key;
+  }
+
+  // An undefined key value would bind as NULL and silently match nothing.
+  private keyValue(operation: string, source: object, column: string): unknown {
+    const value = (source as Row)[column];
+    if (value === undefined) {
+      throw this.operationError(operation, `key column ${column} is undefined`);
+    }
+    return value;
   }
 
   // Only read the context when the policy has an actor column to stamp on
@@ -357,7 +494,13 @@ export abstract class KeyedWriteDao<TRow extends object, TKey extends keyof TRow
       phase === 'insert'
         ? insertedBy !== undefined || updatedBy !== undefined
         : updatedBy !== undefined;
-    return stamps ? this.contextProvider.getContext().session?.userId : undefined;
+    if (!stamps) return undefined;
+    if (!this.contextProvider) {
+      throw new Error(
+        `${this.tableName}: auditPolicy records an actor, but no contextProvider was given`,
+      );
+    }
+    return this.contextProvider.getContext().session?.userId;
   }
 
   private lockFor(source: object): { column: string; expected: unknown } | undefined {
@@ -367,7 +510,7 @@ export abstract class KeyedWriteDao<TRow extends object, TKey extends keyof TRow
   }
 
   private optimisticLockError(source: object): OptimisticLockError {
-    const key = this.pickKey(source);
+    const key = this.pickKey('optimisticLock', source);
     return new OptimisticLockError({
       entity: this.tableName,
       id: this.keyColumns.map((column) => String(key[column])).join(','),
@@ -397,7 +540,22 @@ export abstract class KeyedWriteDao<TRow extends object, TKey extends keyof TRow
         insertedBy,
         ...this.generatedColumns,
       ),
+      unsettable: declared(
+        createdAt,
+        updatedAt,
+        insertedBy,
+        audit.updatedBy,
+        ...this.generatedColumns,
+      ),
     };
     return this.memoized;
   }
+}
+
+// An empty exclusion list or an empty substring filter is true for every row.
+function matchesEveryRow(operator: FilterOperator, value: unknown): boolean {
+  if (operator === 'notIn' || operator === 'notInStrict') {
+    return Array.isArray(value) && value.length === 0;
+  }
+  return operator === 'contains' && value === '';
 }

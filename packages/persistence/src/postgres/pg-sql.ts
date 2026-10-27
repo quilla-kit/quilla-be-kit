@@ -4,11 +4,8 @@ import type { Database } from '../database/database.interface.js';
 import type { FilterQuery } from '../db-adapter/filter-query.type.js';
 import type { SelectOptions } from '../db-adapter/read-db-adapter.interface.js';
 import type { KeySet, OnLocked } from '../db-adapter/write-db-adapter.interface.js';
-import {
-  ALL_FILTER_OPERATORS,
-  FILTER_DELIMITER,
-  type FilterOperator,
-} from '../query/field-descriptor.type.js';
+import type { FilterOperator } from '../query/field-descriptor.type.js';
+import { ARRAY_OPERATORS, filterOperator, parseFilterKey } from '../query/filter-key.parser.js';
 
 export type ColumnTypeMap = Record<string, string>;
 
@@ -52,35 +49,7 @@ export const QUOTED: IdentifierQuoter = {
   },
 };
 
-const KNOWN_OPERATORS: ReadonlySet<FilterOperator> = new Set(ALL_FILTER_OPERATORS);
-
-/**
- * Splits a filter key like `expiresAt__lt` into its field and operator.
- * Keys with no `__` suffix default to `eq` and report `hadSuffix: false`,
- * letting callers apply suffix-only rules (e.g. stricter field-name
- * validation) without re-deriving whether a suffix was present. Shared by
- * the read-side `SqlQueryBuilder` and the write-side `buildWhere` so both
- * sides use one operator vocabulary.
- */
-export function parseFilterKey(rawKey: string): {
-  field: string;
-  operator: FilterOperator;
-  hadSuffix: boolean;
-} {
-  const delimiterIndex = rawKey.indexOf(FILTER_DELIMITER);
-  if (delimiterIndex < 0) {
-    return { field: rawKey, operator: 'eq', hadSuffix: false };
-  }
-  const field = rawKey.slice(0, delimiterIndex);
-  const opString = rawKey.slice(delimiterIndex + FILTER_DELIMITER.length);
-  if (!KNOWN_OPERATORS.has(opString as FilterOperator)) {
-    throw new Error(
-      `unknown operator "${opString}" in key "${rawKey}". ` +
-        `Known operators: ${[...KNOWN_OPERATORS].join(', ')}.`,
-    );
-  }
-  return { field, operator: opString as FilterOperator, hadSuffix: true };
-}
+const escapeLike = (value: string): string => value.replace(/[\\%_]/g, '\\$&');
 
 /**
  * Renders a single filter operator to a SQL fragment. `pushParam` is a
@@ -98,13 +67,17 @@ export function buildFilterClause(
 ): string {
   switch (operator) {
     case 'eq':
-      return value === null ? `${column} IS NULL` : `${column} = ${pushParam(value)}`;
+      return `${column} = ${pushParam(value)}`;
+    case 'ne':
+      return `${column} <> ${pushParam(value)}`;
     case 'contains':
-      return `${column} ILIKE ${pushParam(`%${String(value)}%`)}`;
+      return `${column} ILIKE ${pushParam(`%${escapeLike(String(value))}%`)}`;
     case 'in':
       return `${column} = ANY(${pushParam(value)})`;
     case 'notIn':
       return `(${column} <> ALL(${pushParam(value)}) OR ${column} IS NULL)`;
+    case 'notInStrict':
+      return `${column} <> ALL(${pushParam(value)})`;
     case 'gt':
       return `${column} > ${pushParam(value)}`;
     case 'gte':
@@ -178,8 +151,9 @@ export function mapPostgresType(dataType: string | undefined): string {
  * Builds a parameterised `WHERE` clause from a `FilterQuery`. Bare keys emit
  * `col = $n::TYPE` (or `col = ANY($n::TYPE[])` for an array value, as sugar
  * for `col__in`); a literal `null` emits `col IS NULL` with no parameter.
- * Suffixed keys (`col__lt`, `col__in`, `col__isNull`, etc.) dispatch through
- * the same operator vocabulary as the read-side `SqlQueryBuilder`.
+ * Suffixed keys (`col__eq`, `col__lt`, `col__in`, `col__isNull`, etc.)
+ * dispatch through the same operator vocabulary as the read-side
+ * `SqlQueryBuilder` and carry no sugar: `col__eq: null` binds `col = NULL`.
  *
  * `startIndex` is the placeholder offset — pass the number of params
  * already consumed upstream (e.g. by a SET clause in UPDATE). Read-side
@@ -200,9 +174,10 @@ export function buildWhere<T>(
 
   const values: unknown[] = [];
   const clauses = entries.map(([rawKey, rawValue]) => {
-    const { field, operator: parsedOperator } = parseFilterKey(rawKey);
-    const operator = parsedOperator === 'eq' && Array.isArray(rawValue) ? 'in' : parsedOperator;
-    const isArrayOperator = operator === 'in' || operator === 'notIn';
+    const parsed = parseFilterKey(rawKey);
+    const { field } = parsed;
+    const operator = filterOperator(parsed, rawValue, true);
+    const isArrayOperator = ARRAY_OPERATORS.has(operator);
 
     return buildFilterClause(quoteColumn(field), operator, rawValue, (value) => {
       const pgType = mapPostgresType(types[field]);

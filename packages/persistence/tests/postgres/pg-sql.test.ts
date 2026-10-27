@@ -147,3 +147,47 @@ describe('lockClause', () => {
     expect(() => lockClause('fail' as never)).toThrow(/Unhandled onLocked policy: fail/);
   });
 });
+
+describe('buildWhere strict operators', () => {
+  const arrays: ColumnTypeMap = { ...types, tags: '_text' };
+
+  it('__eq always binds = $n, even for null', () => {
+    expect(buildWhere({ status__eq: 'OPEN' }, types)).toEqual({
+      sql: 'status = $1::TEXT',
+      values: ['OPEN'],
+    });
+    expect(buildWhere({ status__eq: null }, types)).toEqual({
+      sql: 'status = $1::TEXT',
+      values: [null],
+    });
+  });
+
+  it('__eq binds an array value as array equality, not ANY', () => {
+    expect(buildWhere({ tags__eq: ['a', 'b'] }, arrays)).toEqual({
+      sql: 'tags = $1::TEXT[]',
+      values: [['a', 'b']],
+    });
+  });
+
+  it('__ne binds <> $n', () => {
+    expect(buildWhere({ status__ne: 'DONE', amount__ne: null }, types)).toEqual({
+      sql: 'status <> $1::TEXT AND amount <> $2::INTEGER',
+      values: ['DONE', null],
+    });
+  });
+
+  it('__notInStrict binds <> ALL with no IS NULL arm', () => {
+    expect(buildWhere({ status__notInStrict: ['DONE'] }, types)).toEqual({
+      sql: 'status <> ALL($1::TEXT[])',
+      values: [['DONE']],
+    });
+  });
+});
+
+describe('buildWhere __contains escaping', () => {
+  it('matches %, _ and \\ literally', () => {
+    expect(buildWhere({ status__contains: '50%_off\\' }, types).values).toEqual([
+      '%50\\%\\_off\\\\%',
+    ]);
+  });
+});

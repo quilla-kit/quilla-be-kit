@@ -132,7 +132,8 @@ Or pipe the string into drizzle-kit / knex / your migration tool.
 ### 2. Wire the outbox into your UnitOfWork
 
 ```ts
-import { UnitOfWork } from '@quilla-be-kit/persistence';
+// The DDD-typed UnitOfWork: `serialize` receives domain and integration events.
+import { UnitOfWork } from '@quilla-be-kit/persistence/aggregate';
 import { PgDatabase } from '@quilla-be-kit/persistence/postgres';
 import type { LocalOutboxInsertInput } from '@quilla-be-kit/messaging';
 import { PgLocalOutbox } from '@quilla-be-kit/messaging/postgres';

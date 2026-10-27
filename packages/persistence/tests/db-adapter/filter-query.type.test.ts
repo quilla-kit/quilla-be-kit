@@ -6,6 +6,9 @@ type Row = {
   status: string;
   expiresAt: Date;
   count: number;
+  active: boolean;
+  total: bigint;
+  amount: string | null;
 };
 
 describe('FilterQuery<T> operator gating (compile-time)', () => {
@@ -21,9 +24,31 @@ describe('FilterQuery<T> operator gating (compile-time)', () => {
     void ok;
   });
 
+  it('accepts comparison operators on string and bigint fields', () => {
+    const ok: FilterQuery<Row> = { amount__gt: '10.50', status__lte: 'M', total__lt: 5n };
+    void ok;
+  });
+
   it('rejects comparison operators on non-comparable fields', () => {
-    // @ts-expect-error - __lt is not valid on a string field
-    const bad: FilterQuery<Row> = { status__lt: 'PENDING' };
+    // @ts-expect-error - __lt is not valid on a boolean field
+    const bad: FilterQuery<Row> = { active__lt: true };
+    void bad;
+  });
+
+  it('accepts the strict operators, with null', () => {
+    const ok: FilterQuery<Row> = {
+      status__eq: 'PENDING',
+      amount__eq: null,
+      count__ne: 3,
+      id__ne: null,
+      status__notInStrict: ['DONE'],
+    };
+    void ok;
+  });
+
+  it('types strict values by their field', () => {
+    // @ts-expect-error - count is a number
+    const bad: FilterQuery<Row> = { count__eq: 'x' };
     void bad;
   });
 

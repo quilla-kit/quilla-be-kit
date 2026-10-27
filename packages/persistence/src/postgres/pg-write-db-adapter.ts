@@ -1,7 +1,7 @@
-import { AUDIT_COLUMNS } from '../dao/audit-columns.js';
 import type { DatabaseResult } from '../database/database-result.type.js';
 import type { DatabaseTransaction } from '../database/database-transaction.interface.js';
 import type { Database } from '../database/database.interface.js';
+import { AUDIT_COLUMNS } from '../db-adapter/audit-columns.js';
 import type { FilterQuery } from '../db-adapter/filter-query.type.js';
 import type { SelectOptions } from '../db-adapter/read-db-adapter.interface.js';
 import type {
@@ -20,6 +20,7 @@ import type {
   WriteDbAdapter,
 } from '../db-adapter/write-db-adapter.interface.js';
 import {
+  type ColumnTypeMap,
   type IdentifierQuoter,
   NO_QUOTING,
   PgColumnTypeCache,
@@ -150,21 +151,9 @@ export class PgWriteDbAdapter implements WriteDbAdapter {
       return { rows: [], rowCount: 0 };
     }
 
-    const where = buildWhere(opts.where, types, values.length, this.quoter.column);
-    values.push(...where.values);
-
-    let whereSql = where.sql;
-    if (opts.optimisticLock) {
-      values.push(
-        opts.optimisticLock.expected instanceof Date
-          ? opts.optimisticLock.expected.toISOString()
-          : opts.optimisticLock.expected,
-      );
-      whereSql += ` AND ${this.quoter.column(opts.optimisticLock.column)} = ${timestampComparison(values.length)}`;
-    }
-
+    const whereSql = this.writeWhere(opts, types, values);
     const returning = buildReturning(opts.returning, this.quoter);
-    const sql = `UPDATE ${this.quoter.table(opts.table)} SET ${setClauses.join(', ')} WHERE ${whereSql}${returning}`;
+    const sql = `UPDATE ${this.quoter.table(opts.table)} SET ${setClauses.join(', ')}${whereSql}${returning}`;
 
     return this.db.query(sql, values, trx);
   }
@@ -225,21 +214,39 @@ export class PgWriteDbAdapter implements WriteDbAdapter {
 
   async delete<T>(opts: DeleteOptions<T>, trx?: DatabaseTransaction): Promise<DatabaseResult> {
     const types = await this.columnTypes.get(opts.table);
-    const where = buildWhere(opts.where, types, 0, this.quoter.column);
-    const values = [...where.values];
+    const values: unknown[] = [];
+    const whereSql = this.writeWhere(opts, types, values);
+    const sql = `DELETE FROM ${this.quoter.table(opts.table)}${whereSql}`;
+    return this.db.query(sql, values, trx);
+  }
 
-    let whereSql = where.sql;
+  // ` WHERE …` for an update/delete, pushing its params onto `values`. An
+  // empty `where` reaches every row only when the caller said `allRows`.
+  private writeWhere<T>(
+    opts: UpdateOptions<T> | DeleteOptions<T>,
+    types: ColumnTypeMap,
+    values: unknown[],
+  ): string {
+    const clauses: string[] = [];
+    if (opts.allRows && Object.keys(opts.where).length > 0) {
+      throw new Error(`${opts.table}: allRows cannot be combined with a where filter`);
+    }
+    if (!opts.allRows) {
+      const where = buildWhere(opts.where, types, values.length, this.quoter.column);
+      values.push(...where.values);
+      clauses.push(where.sql);
+    }
     if (opts.optimisticLock) {
       values.push(
         opts.optimisticLock.expected instanceof Date
           ? opts.optimisticLock.expected.toISOString()
           : opts.optimisticLock.expected,
       );
-      whereSql += ` AND ${this.quoter.column(opts.optimisticLock.column)} = ${timestampComparison(values.length)}`;
+      clauses.push(
+        `${this.quoter.column(opts.optimisticLock.column)} = ${timestampComparison(values.length)}`,
+      );
     }
-
-    const sql = `DELETE FROM ${this.quoter.table(opts.table)} WHERE ${whereSql}`;
-    return this.db.query(sql, values, trx);
+    return clauses.length > 0 ? ` WHERE ${clauses.join(' AND ')}` : '';
   }
 
   async deleteByKeys(opts: KeySetOptions, trx?: DatabaseTransaction): Promise<DatabaseResult> {

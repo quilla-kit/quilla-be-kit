@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import type { AuditPolicy } from '../../src/dao/audit-policy.type.js';
 import { BaseWriteDao } from '../../src/dao/base-write.dao.js';
 import { KeyedWriteDao } from '../../src/dao/keyed-write.dao.js';
+import { ALL_ROWS } from '../../src/dao/write-dao.interface.js';
 import type { WriteDbAdapter } from '../../src/db-adapter/write-db-adapter.interface.js';
 import { BaseBasicRepository } from '../../src/repository/base-basic.repository.js';
 import { KeyedBasicRepository } from '../../src/repository/keyed-basic.repository.js';
@@ -103,6 +104,19 @@ describe('KeyedBasicRepository', () => {
     const row = await repo.createReturning({ order_id: 'o1', line_no: 0, qty: 1 }, trx);
     expect(row).toEqual({ order_id: 'o1', line_no: 9, qty: 1 });
     expect(adapter.insertCalls[0]?.opts.returning).toBe('all');
+  });
+
+  it('delegates predicate writes and returns the affected counts', async () => {
+    const repo = new LineRepo(new LineDao(adapter, ctx));
+    adapter.updateResults.push({ rows: [], rowCount: 3 });
+    adapter.deleteResults.push({ rows: [], rowCount: 2 });
+
+    await expect(repo.updateBy({ order_id: 'o1' }, { qty: 0 }, trx)).resolves.toBe(3);
+    expect(adapter.updateCalls[0]?.opts.where).toEqual({ order_id: 'o1' });
+    expect(adapter.updateCalls[0]?.trx).toBe(trx);
+
+    await expect(repo.deleteBy(ALL_ROWS, trx)).resolves.toBe(2);
+    expect(adapter.deleteCalls[0]?.opts).toMatchObject({ where: {}, allRows: true });
   });
 });
 

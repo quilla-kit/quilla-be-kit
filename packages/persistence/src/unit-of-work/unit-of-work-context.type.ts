@@ -1,8 +1,8 @@
-import type { AggregateRoot, IntegrationEvent } from '@quilla-be-kit/ddd';
 import type { DatabaseTransaction } from '../database/database-transaction.interface.js';
+import type { DomainEventSource } from './domain-event-source.interface.js';
 
-export type UnitOfWorkContext = {
+export type UnitOfWorkContext<TEvent = unknown> = {
   readonly trx: DatabaseTransaction;
-  registerAggregate(...aggregates: readonly AggregateRoot<object>[]): void;
-  registerIntegrationEvent(event: IntegrationEvent): void;
+  registerEventSource(...sources: readonly DomainEventSource<TEvent>[]): void;
+  registerIntegrationEvent(event: TEvent): void;
 };

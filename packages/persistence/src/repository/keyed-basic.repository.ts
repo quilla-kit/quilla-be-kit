@@ -1,13 +1,14 @@
 import type { KeyedWriteDao } from '../dao/keyed-write.dao.js';
-import type { WriteDao } from '../dao/write-dao.interface.js';
+import type { WriteDao, WritePredicate } from '../dao/write-dao.interface.js';
 import type { DatabaseTransaction } from '../database/database-transaction.interface.js';
 
 /**
  * Repository for non-aggregate rows addressed by the DAO's `keyColumns`
  * (single, composite, or none for insert-only tables). The optimistic-lock
  * column follows the DAO's `auditPolicy`, so `update`/`delete` take the
- * lock value under whatever name the table uses. `BaseBasicRepository` is
- * the `id`-keyed case.
+ * lock value under whatever name the table uses. `updateBy`/`deleteBy`
+ * address rows by a strict predicate and return the affected count.
+ * `BaseBasicRepository` is the `id`-keyed case.
  */
 export abstract class KeyedBasicRepository<
   TRow extends object,
@@ -56,5 +57,17 @@ export abstract class KeyedBasicRepository<
 
   async deleteMany(keys: readonly Pick<TRow, TKey>[], trx?: DatabaseTransaction): Promise<void> {
     await this.writeDao.deleteMany(keys, trx);
+  }
+
+  async updateBy(
+    where: WritePredicate<TRow>,
+    set: Partial<TRow>,
+    trx?: DatabaseTransaction,
+  ): Promise<number> {
+    return this.writeDao.updateBy(where, set, trx);
+  }
+
+  async deleteBy(where: WritePredicate<TRow>, trx?: DatabaseTransaction): Promise<number> {
+    return this.writeDao.deleteBy(where, trx);
   }
 }
