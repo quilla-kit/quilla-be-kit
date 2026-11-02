@@ -3,6 +3,19 @@ export type PostgresSchemaOptions = {
   readonly eventsTable?: string;
 };
 
+// Checks the catalog first: ALTER TABLE takes an exclusive lock even when the column exists.
+function addLeaseColumn(table: string): string {
+  return `DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_attribute
+    WHERE attrelid = '${table}'::regclass AND attname = 'lease_expires_at' AND NOT attisdropped
+  ) THEN
+    ALTER TABLE ${table} ADD COLUMN lease_expires_at TIMESTAMPTZ;
+  END IF;
+END $$;`;
+}
+
 export function getPostgresSchema(options?: PostgresSchemaOptions): string {
   const outboxTable = options?.outboxTable ?? 'outbox_events';
   const eventsTable = options?.eventsTable ?? 'events';
@@ -19,12 +32,14 @@ export function getPostgresSchema(options?: PostgresSchemaOptions): string {
   status TEXT NOT NULL,
   claimed_by TEXT,
   claimed_at TIMESTAMPTZ,
+  lease_expires_at TIMESTAMPTZ,
   retry_count INTEGER NOT NULL,
   last_error TEXT,
   published_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL,
   occurred_at TIMESTAMPTZ NOT NULL
 );`,
+    addLeaseColumn(outboxTable),
     `CREATE INDEX IF NOT EXISTS ${outboxTable}_status_created_at_idx
   ON ${outboxTable} (status, created_at)
   WHERE status = 'PENDING';`,
@@ -44,12 +59,14 @@ export function getPostgresSchema(options?: PostgresSchemaOptions): string {
   status TEXT NOT NULL,
   claimed_by TEXT,
   claimed_at TIMESTAMPTZ,
+  lease_expires_at TIMESTAMPTZ,
   retry_count INTEGER NOT NULL,
   last_error TEXT,
   created_at TIMESTAMPTZ NOT NULL,
   published_at TIMESTAMPTZ NOT NULL,
   occurred_at TIMESTAMPTZ NOT NULL
 );`,
+    addLeaseColumn(eventsTable),
     `CREATE INDEX IF NOT EXISTS ${eventsTable}_event_type_created_at_idx
   ON ${eventsTable} (event_type, created_at)
   WHERE status = 'PENDING';`,

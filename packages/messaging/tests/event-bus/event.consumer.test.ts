@@ -7,10 +7,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import type { EventBusEntry } from '../../src/event-bus/event-bus-entry.type.js';
 import type { EventSubscription } from '../../src/event-bus/event-subscription.interface.js';
-import { EventConsumer, SchemaValidationError } from '../../src/event-bus/event.consumer.js';
+import {
+  EventConsumer,
+  type EventConsumerOptions,
+  SchemaValidationError,
+} from '../../src/event-bus/event.consumer.js';
 import { defineEvent } from '../../src/event-bus/event.descriptor.js';
 import type { HandlerEntry } from '../../src/event-bus/handler-entry.type.js';
 import { FakeEventBusConsumer } from '../helpers/fake-bus.js';
+import { FakeLease } from '../helpers/fake-lease.js';
 
 function makeBusEntry(overrides: Partial<EventBusEntry> = {}): EventBusEntry {
   return {
@@ -550,6 +555,263 @@ describe('EventConsumer', () => {
     consumer.subscribe([{ descriptor: UserCreated, handle: async () => {} }]);
 
     expect(consumer.registeredEventTypes).toEqual(['plain.type', 'order.placed', 'user.created']);
+  });
+});
+
+describe('EventConsumer claim leases', () => {
+  let bus: FakeEventBusConsumer;
+  let lease: FakeLease;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    bus = new FakeEventBusConsumer();
+    lease = new FakeLease(60_000);
+    bus.lease = lease;
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function makeConsumer(overrides: Partial<EventConsumerOptions> = {}): EventConsumer {
+    return new EventConsumer({
+      bus,
+      consumerName: 'test',
+      sourceService: 'svc-a',
+      logger: new NoopLogger(),
+      instanceId: 'replica-1',
+      ...overrides,
+    });
+  }
+
+  function gate(): { promise: Promise<void>; open: () => void } {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    return { promise, open: resolve };
+  }
+
+  it('renews only the in-flight row while its handler runs', async () => {
+    const slow = gate();
+    const consumer = makeConsumer();
+    consumer.on('test.happened', async (entry) => {
+      if (entry.id === 'evt-1') await slow.promise;
+    });
+    bus.enqueueBatch([makeBusEntry({ id: 'evt-1' }), makeBusEntry({ id: 'evt-2' })]);
+
+    consumer.start();
+    await vi.advanceTimersByTimeAsync(1000);
+    await vi.advanceTimersByTimeAsync(40_000);
+
+    expect(lease.renewCalls).toEqual([
+      { instanceId: 'replica-1', ids: ['evt-1'] },
+      { instanceId: 'replica-1', ids: ['evt-1'] },
+    ]);
+
+    slow.open();
+    await vi.advanceTimersByTimeAsync(0);
+    await consumer.dispose();
+
+    // The tail row aged past one interval, so it is confirmed before dispatch.
+    expect(lease.renewCalls[2]).toEqual({ instanceId: 'replica-1', ids: ['evt-2'] });
+    expect(bus.marksDone).toEqual(['evt-1', 'evt-2']);
+  });
+
+  it('does not query before dispatch while the claim is fresh', async () => {
+    const consumer = makeConsumer();
+    consumer.on('test.happened', async () => {});
+    bus.enqueueBatch([makeBusEntry({ id: 'evt-1' }), makeBusEntry({ id: 'evt-2' })]);
+
+    consumer.start();
+    await vi.advanceTimersByTimeAsync(1000);
+    await consumer.dispose();
+
+    expect(lease.renewCalls).toHaveLength(0);
+    expect(bus.marksDone).toEqual(['evt-1', 'evt-2']);
+  });
+
+  it('skips a tail row whose claim was lost before dispatch', async () => {
+    const slow = gate();
+    const handled: string[] = [];
+    const onLeaseLost = vi.fn();
+    const consumer = makeConsumer({ onLeaseLost });
+    consumer.on('test.happened', async (entry) => {
+      handled.push(entry.id);
+      if (entry.id === 'evt-1') await slow.promise;
+    });
+    lease.lost.add('evt-2');
+    bus.enqueueBatch([makeBusEntry({ id: 'evt-1' }), makeBusEntry({ id: 'evt-2' })]);
+
+    consumer.start();
+    await vi.advanceTimersByTimeAsync(1000);
+    await vi.advanceTimersByTimeAsync(30_000);
+    slow.open();
+    await vi.advanceTimersByTimeAsync(0);
+    await consumer.dispose();
+
+    expect(handled).toEqual(['evt-1']);
+    expect(bus.marksDone).toEqual(['evt-1']);
+    expect(onLeaseLost).toHaveBeenCalledTimes(1);
+    expect(onLeaseLost).toHaveBeenCalledWith({
+      id: 'evt-2',
+      eventType: 'test.happened',
+      stage: 'renew',
+    });
+  });
+
+  it('reports a lease lost mid-handler once and still completes the row', async () => {
+    const slow = gate();
+    const logger = new NoopLogger();
+    const warn = vi.spyOn(logger, 'warn');
+    const onLeaseLost = vi.fn();
+    const consumer = makeConsumer({ logger, onLeaseLost });
+    consumer.on('test.happened', async () => {
+      await slow.promise;
+    });
+    lease.lost.add('evt-1');
+    bus.enqueueBatch([makeBusEntry({ id: 'evt-1' })]);
+
+    consumer.start();
+    await vi.advanceTimersByTimeAsync(1000);
+    await vi.advanceTimersByTimeAsync(60_000);
+    slow.open();
+    await vi.advanceTimersByTimeAsync(0);
+    await consumer.dispose();
+
+    expect(lease.renewCalls).toHaveLength(1);
+    expect(onLeaseLost).toHaveBeenCalledTimes(1);
+    expect(onLeaseLost).toHaveBeenCalledWith({
+      id: 'evt-1',
+      eventType: 'test.happened',
+      stage: 'renew',
+    });
+    expect(warn).toHaveBeenCalledWith(
+      'claim lease lost; event may run more than once',
+      expect.objectContaining({ meta: expect.objectContaining({ eventId: 'evt-1' }) }),
+    );
+    expect(bus.marksDone).toEqual(['evt-1']);
+  });
+
+  it('does not report a row that completes while a renew is in flight', async () => {
+    const slow = gate();
+    const renewing = gate();
+    const onLeaseLost = vi.fn();
+    vi.spyOn(lease, 'renew').mockImplementation(async () => {
+      await renewing.promise;
+      return [];
+    });
+    const consumer = makeConsumer({ onLeaseLost });
+    consumer.on('test.happened', async () => {
+      await slow.promise;
+    });
+    bus.enqueueBatch([makeBusEntry({ id: 'evt-1' })]);
+
+    consumer.start();
+    await vi.advanceTimersByTimeAsync(1000);
+    await vi.advanceTimersByTimeAsync(20_000);
+    slow.open();
+    await vi.advanceTimersByTimeAsync(0);
+    renewing.open();
+    await vi.advanceTimersByTimeAsync(0);
+    await consumer.dispose();
+
+    expect(bus.marksDone).toEqual(['evt-1']);
+    expect(onLeaseLost).not.toHaveBeenCalled();
+  });
+
+  it('reports ClaimLostError from markDone and keeps processing the batch', async () => {
+    const onLeaseLost = vi.fn();
+    const consumer = makeConsumer({ onLeaseLost });
+    consumer.on('test.happened', async () => {});
+    bus.claimLost.add('evt-1');
+    bus.enqueueBatch([makeBusEntry({ id: 'evt-1' }), makeBusEntry({ id: 'evt-2' })]);
+
+    consumer.start();
+    await vi.advanceTimersByTimeAsync(1000);
+    await consumer.dispose();
+
+    expect(onLeaseLost).toHaveBeenCalledWith({
+      id: 'evt-1',
+      eventType: 'test.happened',
+      stage: 'done',
+    });
+    expect(bus.marksDone).toEqual(['evt-2']);
+  });
+
+  it('reports ClaimLostError from markFailed with stage failed', async () => {
+    const onLeaseLost = vi.fn();
+    const consumer = makeConsumer({ onLeaseLost, retryDelaysMs: [] });
+    consumer.on('test.happened', async () => {
+      throw new Error('boom');
+    });
+    bus.claimLost.add('evt-1');
+    bus.enqueueBatch([makeBusEntry({ id: 'evt-1' })]);
+
+    consumer.start();
+    await vi.advanceTimersByTimeAsync(1000);
+    await consumer.dispose();
+
+    expect(onLeaseLost).toHaveBeenCalledWith({
+      id: 'evt-1',
+      eventType: 'test.happened',
+      stage: 'failed',
+    });
+  });
+
+  it('passes its instanceId to markDone and markFailed', async () => {
+    const consumer = makeConsumer({ retryDelaysMs: [] });
+    consumer.on('test.happened', async (entry) => {
+      if (entry.id === 'evt-2') throw new Error('boom');
+    });
+    bus.enqueueBatch([makeBusEntry({ id: 'evt-1' }), makeBusEntry({ id: 'evt-2' })]);
+
+    consumer.start();
+    await vi.advanceTimersByTimeAsync(1000);
+    await consumer.dispose();
+
+    expect(bus.markInstanceIds).toEqual(['replica-1', 'replica-1']);
+  });
+
+  it('renewIntervalMs: 0 disables renewal and warns at start', async () => {
+    const slow = gate();
+    const logger = new NoopLogger();
+    const warn = vi.spyOn(logger, 'warn');
+    const consumer = makeConsumer({ logger, renewIntervalMs: 0 });
+    consumer.on('test.happened', async () => {
+      await slow.promise;
+    });
+    bus.enqueueBatch([makeBusEntry({ id: 'evt-1' })]);
+
+    consumer.start();
+    await vi.advanceTimersByTimeAsync(1000);
+    await vi.advanceTimersByTimeAsync(60_000);
+    slow.open();
+    await consumer.dispose();
+
+    expect(lease.renewCalls).toHaveLength(0);
+    expect(warn).toHaveBeenCalledWith(
+      'claim renewal disabled; work longer than the lease will be re-dispatched',
+      { meta: { leaseMs: 60_000 } },
+    );
+  });
+
+  it('does not renew or warn when the bus has no lease', async () => {
+    const plainBus = new FakeEventBusConsumer();
+    const logger = new NoopLogger();
+    const warn = vi.spyOn(logger, 'warn');
+    const consumer = makeConsumer({ bus: plainBus, logger });
+    consumer.on('test.happened', async () => {});
+    plainBus.enqueueBatch([makeBusEntry({ id: 'evt-1' })]);
+
+    consumer.start();
+    await vi.advanceTimersByTimeAsync(1000);
+    await consumer.dispose();
+
+    expect(warn).not.toHaveBeenCalled();
+    expect(plainBus.marksDone).toEqual(['evt-1']);
+  });
+
+  it('rejects a renew interval at or above the lease', () => {
+    expect(() => makeConsumer({ renewIntervalMs: 60_000 })).toThrow(/renewIntervalMs/);
+    expect(() => makeConsumer({ renewIntervalMs: -1 })).toThrow(/renewIntervalMs/);
   });
 });
 

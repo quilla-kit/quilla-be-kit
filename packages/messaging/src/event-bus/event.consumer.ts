@@ -7,6 +7,8 @@ import type {
 } from '@quilla-be-kit/execution-context';
 import type { Logger } from '@quilla-be-kit/observability';
 import type { Disposable } from '@quilla-be-kit/runtime';
+import { ClaimLeaseManager } from './claim-lease.manager.js';
+import type { LeaseLostInfo } from './claim-lease.type.js';
 import {
   DEFAULT_BATCH_SIZE,
   DEFAULT_POLL_INTERVAL_MS,
@@ -32,11 +34,13 @@ export type EventConsumerOptions = {
   readonly retryDelaysMs?: readonly number[];
   readonly skipOwnEventKinds?: readonly string[];
   readonly staleClaimAfterMs?: number;
+  readonly renewIntervalMs?: number;
   readonly instanceId?: string;
   readonly executionContext?: {
     readonly provider: ExecutionContextProvider;
   };
   readonly onProcessed?: (entry: EventBusEntry) => void;
+  readonly onLeaseLost?: (info: LeaseLostInfo) => void;
   readonly subscriptions?: ReadonlyArray<EventSubscription<unknown>>;
 };
 
@@ -92,6 +96,7 @@ export class EventConsumer implements Disposable {
   private readonly instanceId: string;
   private readonly executionContext: EventConsumerOptions['executionContext'];
   private readonly onProcessed: ((entry: EventBusEntry) => void) | undefined;
+  private readonly leases: ClaimLeaseManager;
   private readonly handlers = new Map<string, EventHandler[]>();
   private topicKeys: readonly string[] = [];
 
@@ -112,6 +117,13 @@ export class EventConsumer implements Disposable {
     this.instanceId = options.instanceId ?? randomUUID();
     this.executionContext = options.executionContext;
     this.onProcessed = options.onProcessed;
+    this.leases = new ClaimLeaseManager({
+      lease: options.bus.lease,
+      instanceId: this.instanceId,
+      renewIntervalMs: options.renewIntervalMs,
+      logger: this.logger,
+      onLeaseLost: options.onLeaseLost,
+    });
     if (options.subscriptions) {
       this.subscribe(options.subscriptions);
     }
@@ -161,8 +173,11 @@ export class EventConsumer implements Disposable {
         batchSize: this.batchSize,
         registeredTypeCount: this.handlers.size,
         instanceId: this.instanceId,
+        leaseMs: this.leases.leaseMs,
+        renewIntervalMs: this.leases.renewIntervalMs,
       },
     });
+    this.leases.warnIfDisabled();
     this.logger.debug('registered event types', {
       meta: { registeredTypes: this.registeredEventTypes },
     });
@@ -191,15 +206,19 @@ export class EventConsumer implements Disposable {
       await this.sweepStale();
       if (this.topicKeys.length === 0) return;
       const events = await this.bus.claim(this.instanceId, this.batchSize, this.topicKeys);
+      this.leases.begin(events);
 
       for (const event of events) {
         if (this.stopping) break;
+        if (!(await this.leases.acquire(event))) continue;
 
         if (
           event.sourceService === this.sourceService &&
           this.skipOwnEventKinds.has(event.eventKind)
         ) {
-          await this.bus.markDone(event.id);
+          await this.leases.settle(event, 'done', () =>
+            this.bus.markDone(event.id, this.instanceId),
+          );
           continue;
         }
 
@@ -212,6 +231,7 @@ export class EventConsumer implements Disposable {
           continue;
         }
 
+        this.leases.hold(event);
         let allSucceeded = true;
         let lastError: string | undefined;
         for (const handler of handlers) {
@@ -224,13 +244,19 @@ export class EventConsumer implements Disposable {
 
         if (allSucceeded) {
           this.onProcessed?.(event);
-          await this.bus.markDone(event.id);
+          await this.leases.settle(event, 'done', () =>
+            this.bus.markDone(event.id, this.instanceId),
+          );
         } else {
-          await this.bus.markFailed(event.id, lastError ?? 'unknown failure');
+          await this.leases.settle(event, 'failed', () =>
+            this.bus.markFailed(event.id, lastError ?? 'unknown failure', this.instanceId),
+          );
         }
       }
     } catch (err) {
       this.logger.error('tick error', err);
+    } finally {
+      this.leases.end();
     }
   }
 

@@ -1,5 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import type { EventBusConsumer, EventBusEntry, EventBusPublisher } from '../../src/index.js';
+import {
+  ClaimLostError,
+  type EventBusConsumer,
+  type EventBusEntry,
+  type EventBusPublisher,
+} from '../../src/index.js';
+import type { FakeLease } from './fake-lease.js';
 
 export class FakeEventBusPublisher implements EventBusPublisher {
   readonly published: { id: string; event: Parameters<EventBusPublisher['publish']>[0] }[] = [];
@@ -34,6 +40,9 @@ export class FakeEventBusConsumer implements EventBusConsumer {
   }[] = [];
   readonly marksDone: string[] = [];
   readonly marksFailed: { id: string; reason: string }[] = [];
+  readonly markInstanceIds: (string | undefined)[] = [];
+  readonly claimLost = new Set<string>();
+  lease?: FakeLease;
   private batches: EventBusEntry[][] = [];
 
   enqueueBatch(events: readonly EventBusEntry[]): void {
@@ -52,11 +61,15 @@ export class FakeEventBusConsumer implements EventBusConsumer {
     return next.filter((e) => allowed.has(e.eventType));
   }
 
-  async markDone(id: string): Promise<void> {
+  async markDone(id: string, instanceId?: string): Promise<void> {
+    this.markInstanceIds.push(instanceId);
+    if (this.claimLost.has(id)) throw new ClaimLostError(id);
     this.marksDone.push(id);
   }
 
-  async markFailed(id: string, reason: string): Promise<void> {
+  async markFailed(id: string, reason: string, instanceId?: string): Promise<void> {
+    this.markInstanceIds.push(instanceId);
+    if (this.claimLost.has(id)) throw new ClaimLostError(id);
     this.marksFailed.push({ id, reason });
   }
 

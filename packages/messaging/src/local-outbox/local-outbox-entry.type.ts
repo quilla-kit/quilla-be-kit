@@ -12,6 +12,7 @@ export type LocalOutboxEntry = {
   readonly status: LocalOutboxStatus;
   readonly claimedBy?: string | undefined;
   readonly claimedAt?: Date | undefined;
+  readonly leaseExpiresAt?: Date | undefined;
   readonly retryCount: number;
   readonly lastError?: string | undefined;
   readonly publishedAt?: Date | undefined;

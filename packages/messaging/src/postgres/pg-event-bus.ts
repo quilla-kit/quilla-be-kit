@@ -1,8 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import type { Pool } from 'pg';
+import type { ClaimLease } from '../event-bus/claim-lease.type.js';
+import { DEFAULT_LEASE_MS } from '../event-bus/defaults.js';
 import type { EventBusConsumer } from '../event-bus/event-bus-consumer.interface.js';
 import type { EventBusEntry, EventBusStatus } from '../event-bus/event-bus-entry.type.js';
 import type { EventBusPublisher } from '../event-bus/event-bus-publisher.interface.js';
+import { ClaimLeaseDao } from './claim-lease.dao.js';
 
 const DEFAULT_EVENTS_TABLE = 'events';
 const DEFAULT_MAX_RETRIES = 3;
@@ -20,6 +23,7 @@ type EventsRow = {
   status: EventBusStatus;
   claimed_by: string | null;
   claimed_at: Date | null;
+  lease_expires_at: Date | null;
   retry_count: number;
   last_error: string | null;
   created_at: Date;
@@ -31,16 +35,25 @@ export type PgEventBusOptions = {
   readonly pool: Pool;
   readonly eventsTableName?: string;
   readonly maxRetries?: number;
+  readonly leaseMs?: number;
 };
 export class PgEventBus implements EventBusPublisher, EventBusConsumer {
   private readonly pool: Pool;
   private readonly eventsTable: string;
   private readonly maxRetries: number;
+  readonly lease: ClaimLease;
+  private readonly claims: ClaimLeaseDao;
 
   constructor(options: PgEventBusOptions) {
     this.pool = options.pool;
     this.eventsTable = options.eventsTableName ?? DEFAULT_EVENTS_TABLE;
     this.maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
+    this.claims = new ClaimLeaseDao(
+      this.pool,
+      this.eventsTable,
+      options.leaseMs ?? DEFAULT_LEASE_MS,
+    );
+    this.lease = this.claims;
   }
 
   async publish(
@@ -48,12 +61,12 @@ export class PgEventBus implements EventBusPublisher, EventBusConsumer {
   ): Promise<{ id: string; inserted: boolean }> {
     const id = randomUUID();
     const publishedAt = new Date();
-    const result = await this.pool.query<{ id: string }>(
+    const result = await this.claims.query<{ id: string }>(
       `INSERT INTO ${this.eventsTable}
          (id, event_type, event_version, event_kind, payload, source_service,
           aggregate_id, correlation_id, origin_event_id, status, claimed_by, claimed_at,
-          retry_count, last_error, created_at, published_at, occurred_at)
-       VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+          retry_count, last_error, created_at, published_at, occurred_at, lease_expires_at)
+       VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
        ON CONFLICT (origin_event_id) WHERE origin_event_id IS NOT NULL DO NOTHING
        RETURNING id`,
       [
@@ -74,6 +87,7 @@ export class PgEventBus implements EventBusPublisher, EventBusConsumer {
         event.createdAt,
         publishedAt,
         event.occurredAt,
+        null,
       ],
     );
     if (result.rows.length > 0) {
@@ -104,10 +118,13 @@ export class PgEventBus implements EventBusPublisher, EventBusConsumer {
   ): Promise<readonly EventBusEntry[]> {
     const hasFilter = allowedTopics !== undefined && allowedTopics.length > 0;
     const topicPredicate = hasFilter ? 'AND e.event_type = ANY($4)' : '';
-    const params: unknown[] = [batchSize, instanceId, new Date()];
+    const now = new Date();
+    const params: unknown[] = [batchSize, instanceId, now];
     if (hasFilter) params.push([...allowedTopics]);
+    params.push(this.claims.expiryFrom(now));
+    const leaseParam = `$${params.length}`;
 
-    const result = await this.pool.query<EventsRow>(
+    const result = await this.claims.query<EventsRow>(
       `WITH claimed AS (
          SELECT id FROM ${this.eventsTable} e
          WHERE e.status = 'PENDING'
@@ -125,7 +142,7 @@ export class PgEventBus implements EventBusPublisher, EventBusConsumer {
          FOR UPDATE SKIP LOCKED
        )
        UPDATE ${this.eventsTable} t
-       SET status = 'CLAIMED', claimed_by = $2, claimed_at = $3
+       SET status = 'CLAIMED', claimed_by = $2, claimed_at = $3, lease_expires_at = ${leaseParam}
        FROM claimed c
        WHERE t.id = c.id
        RETURNING t.*`,
@@ -134,31 +151,35 @@ export class PgEventBus implements EventBusPublisher, EventBusConsumer {
     return result.rows.map((r) => this.rowToEntry(r));
   }
 
-  async markDone(id: string): Promise<void> {
-    await this.pool.query(`DELETE FROM ${this.eventsTable} WHERE id = $1`, [id]);
+  async markDone(id: string, instanceId?: string): Promise<void> {
+    const params: unknown[] = [id];
+    const owned = this.claims.ownedBy(params, instanceId);
+    const result = await this.claims.query(
+      `DELETE FROM ${this.eventsTable} WHERE id = $1${owned}`,
+      params,
+    );
+    this.claims.assertOwned(result, id, instanceId);
   }
 
-  async markFailed(id: string, reason: string): Promise<void> {
-    await this.pool.query(
+  async markFailed(id: string, reason: string, instanceId?: string): Promise<void> {
+    const params: unknown[] = [reason, id, this.maxRetries];
+    const owned = this.claims.ownedBy(params, instanceId);
+    const result = await this.claims.query(
       `UPDATE ${this.eventsTable}
        SET retry_count = retry_count + 1,
            last_error = $1,
            status = CASE WHEN retry_count + 1 >= $3 THEN 'FAILED' ELSE 'PENDING' END,
            claimed_by = NULL,
-           claimed_at = NULL
-       WHERE id = $2`,
-      [reason, id, this.maxRetries],
+           claimed_at = NULL,
+           lease_expires_at = NULL
+       WHERE id = $2${owned}`,
+      params,
     );
+    this.claims.assertOwned(result, id, instanceId);
   }
 
-  async resetStale(olderThan: Date): Promise<number> {
-    const result = await this.pool.query(
-      `UPDATE ${this.eventsTable}
-       SET status = 'PENDING', claimed_by = NULL, claimed_at = NULL
-       WHERE status = 'CLAIMED' AND claimed_at < $1`,
-      [olderThan],
-    );
-    return result.rowCount ?? 0;
+  resetStale(olderThan: Date): Promise<number> {
+    return this.claims.resetStale(olderThan);
   }
 
   async cleanupFailed(olderThan: Date, options?: { readonly limit?: number }): Promise<number> {
@@ -197,6 +218,7 @@ export class PgEventBus implements EventBusPublisher, EventBusConsumer {
       status: row.status,
       ...(row.claimed_by !== null ? { claimedBy: row.claimed_by } : {}),
       ...(row.claimed_at !== null ? { claimedAt: row.claimed_at } : {}),
+      ...(row.lease_expires_at !== null ? { leaseExpiresAt: row.lease_expires_at } : {}),
       retryCount: row.retry_count,
       ...(row.last_error !== null ? { lastError: row.last_error } : {}),
       createdAt: row.created_at,

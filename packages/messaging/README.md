@@ -257,7 +257,8 @@ WITH claimed AS (
   FOR UPDATE SKIP LOCKED
 )
 UPDATE events
-SET status = 'CLAIMED', claimed_by = $2, claimed_at = $3
+SET status = 'CLAIMED', claimed_by = $2, claimed_at = $3,
+    lease_expires_at = $5                             -- claim time + leaseMs
 FROM claimed
 WHERE events.id = claimed.id
 RETURNING *;
@@ -282,12 +283,51 @@ replica in order":
 Events with `aggregate_id IS NULL` are processed freely — no ordering
 constraint to preserve.
 
-### Stale-claim recovery
+### Claim leases
 
-A replica that crashes mid-batch leaves rows stuck in CLAIMED. Both
-`OutboxForwarder` and `EventConsumer` run a periodic `resetStale(cutoff)`
-sweep (default: rows CLAIMED longer than 5 minutes). The stale rows flip
-back to PENDING and any replica picks them up on the next tick.
+A claim is a lease: the claiming replica writes `lease_expires_at`
+(claim time + `leaseMs`, default 60 s). Both `OutboxForwarder` and
+`EventConsumer` keep their claims alive and recover everyone else's:
+
+- **Renewal.** While a row is being handled, the replica extends its lease
+  every `renewIntervalMs` (default: a third of the lease). A handler can
+  run for as long as it needs; only a replica that stops renewing (crash,
+  kill, partition) loses its rows.
+- **In-flight only.** Only the row currently being handled is renewed.
+  The rest of a claimed batch keeps its original lease, so if the batch
+  runs long, the unprocessed tail expires and idle replicas take it.
+  Before dispatching each row, the replica confirms it still holds the
+  claim (one query, only when the claim is older than one renewal
+  interval) and skips rows it lost.
+- **Recovery.** Every tick runs `resetStale`, which flips CLAIMED rows
+  whose lease has expired back to PENDING. Each row carries its own
+  deadline, so a consumer's `leaseMs` is honoured no matter which consumer
+  runs the sweep.
+- **Owner-checked completion.** `markDone` / `markFailed` / `markSent`
+  only act on a row this replica still owns (or that was reset and not
+  re-claimed). A replica that lost a claim can't delete or reset a row
+  another replica is processing.
+- **Rows without a lease** (claimed by a messaging version before 0.8.0)
+  are recovered by the older rule: CLAIMED longer than `staleClaimAfterMs`
+  (default 5 min).
+
+Caveats:
+
+- Renewal runs on a timer, so it needs the event loop. A long synchronous
+  CPU-bound handler blocks renewal and loses its lease — move that work to
+  a worker thread or yield periodically.
+- Renewal queries share the `pg.Pool` with your handlers. If handlers
+  saturate the pool, renewals queue; keep the lease well above the
+  renewal interval.
+- `instanceId` must be unique per process (the default `randomUUID()` is).
+  Two processes sharing one renew and complete each other's claims.
+
+When a replica finds a claim is no longer its own — a renewal or
+pre-dispatch check comes back empty, or an owner-checked completion
+matches nothing — it logs `claim lease lost; event may run more than
+once` at `warn` and calls `onLeaseLost({ id, eventType, stage })` with
+`stage` set to `'renew'`, `'done'` or `'failed'`. Wire the hook to a
+counter: it's the signal that a duplicate run may have happened.
 
 ### No DLQ table
 
@@ -308,8 +348,14 @@ once:
   PENDING with `retry_count++`, and the whole event is re-dispatched. All
   handlers for that event re-run, including ones that already succeeded.
 - **Crash after handler success but before `markDone`:** the row stays
-  CLAIMED, `resetStale` flips it back to PENDING, the next replica
-  re-dispatches **the same bus row** — same `id`, same payload.
+  CLAIMED, `resetStale` flips it back to PENDING once the lease expires,
+  the next replica re-dispatches **the same bus row** — same `id`, same
+  payload.
+- **Lost lease:** a replica that can't renew in time (blocked event loop,
+  database outage, long pause) loses its claim while still running;
+  another replica may run the same row concurrently. Owner-checked
+  completion keeps the two runs from clobbering each other, and
+  `onLeaseLost` reports it.
 
 In both cases the *same bus row* is re-dispatched: the bus row `id` is
 stable across these re-dispatches. (Contrast with forwarder replay, which
@@ -538,6 +584,7 @@ new PgLocalOutbox({
   pool,
   tableName: 'outbox_events',   // override if you prefix tables per-service
   maxRetries: 3,                // flips status to FAILED after N failed markFailed calls
+  leaseMs: 60_000,              // DEFAULT_LEASE_MS — claim lease duration
 });
 ```
 
@@ -552,6 +599,7 @@ new PgEventBus({
   pool,
   eventsTableName: 'events',
   maxRetries: 3,
+  leaseMs: 60_000,              // DEFAULT_LEASE_MS — claim lease duration
 });
 ```
 
@@ -565,8 +613,10 @@ new OutboxForwarder({
   logger,
   pollIntervalMs: 1000,          // DEFAULT_POLL_INTERVAL_MS
   batchSize: 100,                // DEFAULT_BATCH_SIZE
-  staleClaimAfterMs: 5 * 60_000, // reset CLAIMED rows older than this
-  instanceId: 'replica-<id>',    // defaults to randomUUID()
+  staleClaimAfterMs: 5 * 60_000, // recovery cutoff for claims without a lease
+  renewIntervalMs: 20_000,       // defaults to a third of the reader's lease; 0 disables
+  instanceId: 'replica-<id>',    // defaults to randomUUID(); must be unique per process
+  onLeaseLost: (info) => bumpMetric(info),
 });
 ```
 
@@ -588,12 +638,18 @@ new EventConsumer({
   batchSize: 100,
   retryDelaysMs: [1000, 5000, 15000], // length = max retry attempts
   skipOwnEventKinds: ['integration'],
-  staleClaimAfterMs: 5 * 60_000,
-  instanceId: 'replica-<id>',
+  staleClaimAfterMs: 5 * 60_000,     // recovery cutoff for claims without a lease
+  renewIntervalMs: 20_000,           // defaults to a third of the bus's lease; 0 disables
+  instanceId: 'replica-<id>',        // must be unique per process
   executionContext: { provider }, // optional: reconstruct + scope per handler (factory is reached via provider.factory)
   onProcessed: (entry) => bumpMetric(entry),
+  onLeaseLost: ({ id, eventType, stage }) => bumpMetric({ id, eventType, stage }),
 });
 ```
+
+`renewIntervalMs` must be below the lease. With renewal disabled
+(`renewIntervalMs: 0`) the component logs a warning at start: any row
+handled for longer than the lease is re-dispatched.
 
 ---
 
@@ -610,6 +666,44 @@ const sql = getPostgresSchema({
 });
 await pool.query(sql);
 ```
+
+Running it against existing tables is safe: it also adds columns
+introduced by later versions, checking the catalog first so tables that
+already have them aren't locked.
+
+### Upgrading to 0.8.0
+
+0.8.0 adds a nullable `lease_expires_at` column to both tables. **Apply
+it before any 0.8.0 process starts** — a 0.8.0 process on an unmigrated
+table fails every claim with `MissingLeaseColumnError`. If you run
+`getPostgresSchema()` at boot, that already does it. Otherwise, for
+migration tools (one statement per table; adjust the table names):
+
+```sql
+-- events table
+SET LOCAL lock_timeout = '5s';
+ALTER TABLE events ADD COLUMN IF NOT EXISTS lease_expires_at TIMESTAMPTZ;
+```
+
+```sql
+-- outbox table
+SET LOCAL lock_timeout = '5s';
+ALTER TABLE outbox_events ADD COLUMN IF NOT EXISTS lease_expires_at TIMESTAMPTZ;
+```
+
+No backfill and no index change. Adding a nullable column without a
+default doesn't rewrite the table, but it takes a brief exclusive lock;
+`lock_timeout` makes the statement fail fast instead of queueing behind a
+long transaction (retry it if it times out).
+
+After migrating, upgrade processes in any order. Older versions keep
+working on the migrated table: they ignore the column, and rows they
+claim are recovered with the `staleClaimAfterMs` rule. Live claims held
+by 0.8.0 processes are never reset by an older process's sweep, as long
+as `renewIntervalMs` stays below every older consumer's
+`staleClaimAfterMs` (20 s vs 5 min by default). Owner-checked completion
+applies once every process on a table runs 0.8.0. To roll back, downgrade
+the processes; the column can stay.
 
 ### Dumb-DB principle
 
@@ -629,12 +723,12 @@ ordering cursor — events are FIFO-drained by `created_at`.
 
 - **Outbox** — partial index on `(status, created_at) WHERE status = 'PENDING'`
   for the forwarder's claim query, plus `(claimed_at) WHERE status = 'CLAIMED'`
-  for stale-claim scans.
+  for the lease-expiry sweep.
 - **Events** — partial index on `(event_type, created_at) WHERE status = 'PENDING'`
   matches `EventConsumer`'s topic-filtered claim query. Plus partial indexes on
   `(aggregate_id, status) WHERE aggregate_id IS NOT NULL AND status = 'CLAIMED'`
   for the `NOT EXISTS` aggregate guard, `(claimed_at) WHERE status = 'CLAIMED'`
-  for `resetStale`, and a **partial unique index** on `(origin_event_id) WHERE
+  for the lease-expiry sweep in `resetStale`, and a **partial unique index** on `(origin_event_id) WHERE
   origin_event_id IS NOT NULL` that enforces the publisher dedup contract
   described in [At-least-once delivery](#at-least-once-delivery--handlers-must-be-idempotent).
 
@@ -651,9 +745,10 @@ All replicas compete for the same PENDING rows via atomic claim.
   preserved regardless of N — any given aggregate's events serialize
   naturally through the advisory-lock guard.
 
-Scale up: add replicas. Scale down: remove them — in-flight CLAIMED rows
-get reset to PENDING on the next `resetStale` sweep (default 5 min
-cutoff).
+Scale up: add replicas. Scale down: remove them — a removed replica's
+CLAIMED rows go back to PENDING once their lease expires (default 60 s).
+Long-running handlers are safe to scale out: renewal keeps a live claim
+from being picked up by a second replica.
 
 ---
 
@@ -708,7 +803,7 @@ processing chatter:
 | --- | --- |
 | `info` | Lifecycle transitions: `starting`, `stopped`. One-shot per component per replica. |
 | `debug` | Per-tick / per-batch processing: `forwarding N event(s)`, `registered event types`. High frequency. |
-| `warn` | Recoverable anomalies: handler retry, stale-claim sweep hits, transient handler failures. |
+| `warn` | Recoverable anomalies: handler retry, stale-claim sweep hits, lost claim leases, renewal disabled at start, transient handler failures. |
 | `error` | Terminal failures: handler exhausted retries, schema validation failed, tick crashed. |
 
 `EventConsumer` splits its startup log to avoid unbounded `meta`
@@ -747,8 +842,8 @@ import type {
 class KafkaBus implements EventBusPublisher, EventBusConsumer {
   async publish(event) { /* produce to topic; return generated id */ }
   async claim(instanceId, batchSize, allowedTopics) { /* pull + transition; filter by allowedTopics */ }
-  async markDone(id) { /* commit offset */ }
-  async markFailed(id, reason) { /* retry or DLQ per broker semantics */ }
+  async markDone(id, instanceId) { /* commit offset */ }
+  async markFailed(id, reason, instanceId) { /* retry or DLQ per broker semantics */ }
   async resetStale(olderThan) { /* broker-specific recovery */ }
 }
 
@@ -760,6 +855,28 @@ const forwarder = new OutboxForwarder({
   logger,
 });
 ```
+
+**Claim leases are optional for adapters.**
+
+- `lease` — expose `{ durationMs, renew(instanceId, ids) }` when the
+  broker can extend a single message's claim; `renew` resolves to the ids
+  still held. Consumers then renew automatically. Leave it out when the
+  broker manages liveness itself.
+- `instanceId` on `markDone` / `markFailed` — when the broker reports that
+  an ack didn't count (the claim moved elsewhere), throw `ClaimLostError`
+  so the consumer reports it via `onLeaseLost` and carries on. Detect it
+  with `ClaimLostError.is(err)`.
+
+| Broker | `lease.renew` | Lost-claim signal → `ClaimLostError` |
+| --- | --- | --- |
+| SQS | `ChangeMessageVisibility` | stale receipt handle |
+| Google Pub/Sub | `modifyAckDeadline` | ack after the deadline |
+| NATS JetStream | `msg.working()` | redelivered to another consumer |
+| RabbitMQ | omit (`consumer_timeout`, channel liveness) | ack on a closed channel |
+| Kafka | omit (consumer-group heartbeat) | `CommitFailedException` after a rebalance |
+
+`LocalOutboxReader` takes the same optional `lease` and `instanceId` on
+`markSent` / `markFailed`.
 
 The claim pattern decouples "persist the event atomically" from "deliver
 it reliably." You can mix — Postgres outbox on the emit side, Kafka bus
