@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
+import { ClaimLostError } from '../../src/event-bus/claim-lost.error.js';
+import { MissingLeaseColumnError } from '../../src/postgres/missing-lease-column.error.js';
 import { PgLocalOutbox } from '../../src/postgres/pg-local-outbox.js';
 import { CapturingTrx } from '../helpers/capturing-trx.js';
 import { FakePgPool } from '../helpers/fake-pg-pool.js';
@@ -106,7 +108,7 @@ describe('PgLocalOutbox', () => {
     });
 
     describe('past the parameter limit', () => {
-      const PER_STATEMENT = Math.floor(65535 / 15);
+      const PER_STATEMENT = Math.floor(65535 / 16);
       const entries = (count: number) =>
         Array.from({ length: count }, (_, i) => ({
           id: `e${i}`,
@@ -120,7 +122,7 @@ describe('PgLocalOutbox', () => {
         const trx = new CapturingTrx();
         await outbox.insert(entries(PER_STATEMENT), trx);
         expect(trx.calls).toHaveLength(1);
-        expect(trx.calls[0]?.params).toHaveLength(PER_STATEMENT * 15);
+        expect(trx.calls[0]?.params).toHaveLength(PER_STATEMENT * 16);
       });
 
       it('splits a larger batch into statements on the same trx, in order', async () => {
@@ -131,10 +133,10 @@ describe('PgLocalOutbox', () => {
           expect(call.params.length).toBeLessThanOrEqual(65535);
         }
         expect(trx.calls[0]?.params[0]).toBe('e0');
-        expect(trx.calls[1]?.params).toHaveLength(15);
+        expect(trx.calls[1]?.params).toHaveLength(16);
         expect(trx.calls[1]?.params[0]).toBe(`e${PER_STATEMENT}`);
         expect(trx.calls[1]?.sql).toContain('($1, $2,');
-        expect(trx.calls[1]?.sql).not.toContain('$16');
+        expect(trx.calls[1]?.sql).not.toContain('$17');
       });
     });
   });
@@ -214,8 +216,12 @@ describe('PgLocalOutbox', () => {
       expect(reset).toBe(4);
       const call = pool.calls[0];
       expect(call?.sql).toContain("SET status = 'PENDING'");
-      expect(call?.sql).toContain("WHERE status = 'CLAIMED' AND claimed_at < $1");
-      expect(call?.params).toEqual([cutoff]);
+      expect(call?.sql).toContain('lease_expires_at > claimed_at AND lease_expires_at < $2');
+      expect(call?.sql).toContain(
+        '(lease_expires_at IS NULL OR lease_expires_at <= claimed_at) AND claimed_at < $1',
+      );
+      expect(call?.params[0]).toBe(cutoff);
+      expect(call?.params[1]).toBeInstanceOf(Date);
     });
   });
 
@@ -238,6 +244,77 @@ describe('PgLocalOutbox', () => {
       expect(deleted).toBe(3);
       expect(pool.calls[0]?.sql).toContain('LIMIT $2');
       expect(pool.calls[0]?.params[1]).toBe(100);
+    });
+  });
+
+  describe('claim leases', () => {
+    it('writes a lease of leaseMs past the claim time', async () => {
+      const custom = new PgLocalOutbox({ pool: pool.asPool(), leaseMs: 30_000 });
+      pool.enqueue([]);
+      await custom.claim('replica-1', 10);
+
+      const call = pool.calls[0];
+      expect(call?.sql).toContain('lease_expires_at = $4');
+      const claimedAt = call?.params[2] as Date;
+      const leaseExpiresAt = call?.params[3] as Date;
+      expect(leaseExpiresAt.getTime() - claimedAt.getTime()).toBe(30_000);
+    });
+
+    it('renews owned CLAIMED rows and returns held ids', async () => {
+      pool.enqueue([{ id: 'e1' }]);
+      const held = await outbox.lease.renew('replica-1', ['e1', 'e2']);
+
+      const call = pool.calls[0];
+      expect(call?.sql).toContain('UPDATE outbox_events');
+      expect(call?.sql).toContain('SET claimed_at = $3, lease_expires_at = $4');
+      expect(call?.sql).toContain("WHERE id = ANY($1) AND claimed_by = $2 AND status = 'CLAIMED'");
+      expect(held).toEqual(['e1']);
+    });
+
+    it('owner-checks markSent and throws ClaimLostError when nothing matched', async () => {
+      pool.enqueue([], 0);
+      const publishedAt = new Date('2026-01-01T00:00:00Z');
+      await expect(outbox.markSent('e1', publishedAt, 'replica-1')).rejects.toSatisfy(
+        ClaimLostError.is,
+      );
+
+      const call = pool.calls[0];
+      expect(call?.sql).toContain('lease_expires_at = NULL');
+      expect(call?.sql).toContain('WHERE id = $2 AND (claimed_by = $3 OR claimed_by IS NULL)');
+      expect(call?.params).toEqual([publishedAt, 'e1', 'replica-1']);
+    });
+
+    it('unfenced markSent keeps the id-only predicate', async () => {
+      const publishedAt = new Date('2026-01-01T00:00:00Z');
+      await outbox.markSent('e1', publishedAt);
+      expect(pool.calls[0]?.sql).not.toContain('claimed_by = $3');
+      expect(pool.calls[0]?.params).toEqual([publishedAt, 'e1']);
+    });
+
+    it('owner-checks markFailed', async () => {
+      pool.enqueue([], 0);
+      await expect(outbox.markFailed('e1', 'boom', 'replica-1')).rejects.toSatisfy(
+        ClaimLostError.is,
+      );
+      expect(pool.calls[0]?.params).toEqual(['boom', 'e1', 3, 'replica-1']);
+    });
+
+    it('writes lease_expires_at = NULL as the last insert column', async () => {
+      const trx = new CapturingTrx();
+      await outbox.insert(
+        [{ eventType: 't', eventKind: 'domain', payload: {}, occurredAt: OCCURRED_AT }],
+        trx,
+      );
+      expect(trx.calls[0]?.sql).toContain('occurred_at, lease_expires_at)');
+      expect(trx.calls[0]?.params).toHaveLength(16);
+      expect(trx.calls[0]?.params[15]).toBeNull();
+    });
+
+    it('turns a missing lease column into MissingLeaseColumnError', async () => {
+      pool.failNext(
+        Object.assign(new Error('column "lease_expires_at" does not exist'), { code: '42703' }),
+      );
+      await expect(outbox.claim('replica-1', 10)).rejects.toBeInstanceOf(MissingLeaseColumnError);
     });
   });
 });

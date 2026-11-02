@@ -13,6 +13,7 @@ export type EventBusEntry = {
   readonly status: EventBusStatus;
   readonly claimedBy?: string | undefined;
   readonly claimedAt?: Date | undefined;
+  readonly leaseExpiresAt?: Date | undefined;
   readonly retryCount: number;
   readonly lastError?: string | undefined;
   readonly createdAt: Date;

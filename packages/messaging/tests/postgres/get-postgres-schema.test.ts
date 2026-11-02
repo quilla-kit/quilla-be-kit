@@ -79,4 +79,12 @@ describe('getPostgresSchema', () => {
     expect(sql).toContain('svc_events_origin_event_id_uq');
     expect(sql).not.toContain('events_origin_event_id_uq ');
   });
+
+  it('includes lease_expires_at and upgrades existing tables in place', () => {
+    const sql = getPostgresSchema();
+    expect(sql.match(/lease_expires_at TIMESTAMPTZ,/g) ?? []).toHaveLength(2);
+    expect(sql).toContain('ALTER TABLE outbox_events ADD COLUMN lease_expires_at TIMESTAMPTZ;');
+    expect(sql).toContain('ALTER TABLE events ADD COLUMN lease_expires_at TIMESTAMPTZ;');
+    expect(sql).toContain("attrelid = 'events'::regclass AND attname = 'lease_expires_at'");
+  });
 });

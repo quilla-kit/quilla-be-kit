@@ -2,6 +2,7 @@ import { NoopLogger } from '@quilla-be-kit/observability';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { OutboxForwarder } from '../../src/local-outbox/outbox.forwarder.js';
 import { FakeEventBusPublisher } from '../helpers/fake-bus.js';
+import { FakeLease } from '../helpers/fake-lease.js';
 import { FakeLocalOutboxReader, makeOutboxEntry } from '../helpers/fake-outbox.js';
 
 describe('OutboxForwarder', () => {
@@ -188,5 +189,88 @@ describe('OutboxForwarder', () => {
     release();
     await disposePromise;
     expect(reader.markedSent).toEqual([expect.objectContaining({ id: 'e1' })]);
+  });
+
+  describe('claim leases', () => {
+    let lease: FakeLease;
+
+    beforeEach(() => {
+      lease = new FakeLease(60_000);
+      reader.lease = lease;
+    });
+
+    it('renews the in-flight entry while publish is slow', async () => {
+      const { promise: pending, resolve: release } = Promise.withResolvers<void>();
+      const publish = publisher.publish.bind(publisher);
+      vi.spyOn(publisher, 'publish').mockImplementation(async (event) => {
+        await pending;
+        return publish(event);
+      });
+      reader.enqueueBatch([makeOutboxEntry({ id: 'e1' })]);
+      const fwd = new OutboxForwarder({
+        reader,
+        publisher,
+        sourceService: 'svc-a',
+        logger: new NoopLogger(),
+        instanceId: 'replica-1',
+      });
+
+      fwd.start();
+      await vi.advanceTimersByTimeAsync(1000);
+      await vi.advanceTimersByTimeAsync(40_000);
+      release();
+      await fwd.dispose();
+
+      expect(lease.renewCalls).toEqual([
+        { instanceId: 'replica-1', ids: ['e1'] },
+        { instanceId: 'replica-1', ids: ['e1'] },
+      ]);
+      expect(reader.markedSent.map((m) => m.id)).toEqual(['e1']);
+      expect(reader.markInstanceIds).toEqual(['replica-1']);
+    });
+
+    it('reports ClaimLostError from markSent without marking the entry failed', async () => {
+      const onLeaseLost = vi.fn();
+      reader.claimLost.add('e1');
+      reader.enqueueBatch([makeOutboxEntry({ id: 'e1' })]);
+      const fwd = new OutboxForwarder({
+        reader,
+        publisher,
+        sourceService: 'svc-a',
+        logger: new NoopLogger(),
+        onLeaseLost,
+      });
+
+      fwd.start();
+      await vi.advanceTimersByTimeAsync(1000);
+      await fwd.dispose();
+
+      expect(onLeaseLost).toHaveBeenCalledWith({
+        id: 'e1',
+        eventType: 'test.happened',
+        stage: 'done',
+      });
+      expect(reader.markedFailed).toHaveLength(0);
+    });
+
+    it('renewIntervalMs: 0 disables renewal and warns at start', async () => {
+      const logger = new NoopLogger();
+      const warn = vi.spyOn(logger, 'warn');
+      const fwd = new OutboxForwarder({
+        reader,
+        publisher,
+        sourceService: 'svc-a',
+        logger,
+        renewIntervalMs: 0,
+      });
+
+      fwd.start();
+      await fwd.dispose();
+
+      expect(warn).toHaveBeenCalledWith(
+        'claim renewal disabled; work longer than the lease will be re-dispatched',
+        { meta: { leaseMs: 60_000 } },
+      );
+    });
   });
 });

@@ -6,6 +6,11 @@ export class FakePgPool {
   calls: { sql: string; params: readonly unknown[] }[] = [];
   clientCalls: { sql: string; params: readonly unknown[] }[] = [];
   private resultQueue: QueryResult<ResultRow>[] = [];
+  private nextError: unknown = undefined;
+
+  failNext(error: unknown): void {
+    this.nextError = error;
+  }
 
   enqueue(rows: ResultRow[] = [], rowCount?: number): void {
     this.resultQueue.push({
@@ -23,6 +28,11 @@ export class FakePgPool {
 
   async query(sql: string, params: readonly unknown[] = []): Promise<QueryResult<ResultRow>> {
     this.calls.push({ sql, params });
+    if (this.nextError !== undefined) {
+      const error = this.nextError;
+      this.nextError = undefined;
+      throw error;
+    }
     return (
       this.resultQueue.shift() ??
       ({

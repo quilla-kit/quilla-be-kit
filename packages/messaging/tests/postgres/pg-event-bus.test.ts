@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
+import { ClaimLostError } from '../../src/event-bus/claim-lost.error.js';
+import { MissingLeaseColumnError } from '../../src/postgres/missing-lease-column.error.js';
 import { PgEventBus } from '../../src/postgres/pg-event-bus.js';
 import { FakePgPool } from '../helpers/fake-pg-pool.js';
 
@@ -166,7 +168,7 @@ describe('PgEventBus', () => {
 
       const call = pool.calls[0];
       expect(call?.sql).not.toContain('event_type');
-      expect(call?.params).toHaveLength(3);
+      expect(call?.params).toHaveLength(4);
     });
 
     it('omits the topic predicate when allowedTopics is empty', async () => {
@@ -175,7 +177,7 @@ describe('PgEventBus', () => {
 
       const call = pool.calls[0];
       expect(call?.sql).not.toContain('event_type');
-      expect(call?.params).toHaveLength(3);
+      expect(call?.params).toHaveLength(4);
     });
 
     it('inlines event_type = ANY($4) and passes the topic array', async () => {
@@ -184,8 +186,9 @@ describe('PgEventBus', () => {
 
       const call = pool.calls[0];
       expect(call?.sql).toContain('AND e.event_type = ANY($4)');
-      expect(call?.params).toHaveLength(4);
+      expect(call?.params).toHaveLength(5);
       expect(call?.params[3]).toEqual(['order.placed', 'order.cancelled']);
+      expect(call?.sql).toContain('lease_expires_at = $5');
     });
   });
 
@@ -220,7 +223,14 @@ describe('PgEventBus', () => {
 
       expect(reset).toBe(2);
       expect(pool.calls[0]?.sql).toContain("SET status = 'PENDING'");
-      expect(pool.calls[0]?.sql).toContain("WHERE status = 'CLAIMED' AND claimed_at < $1");
+      expect(pool.calls[0]?.sql).toContain(
+        'lease_expires_at > claimed_at AND lease_expires_at < $2',
+      );
+      expect(pool.calls[0]?.sql).toContain(
+        '(lease_expires_at IS NULL OR lease_expires_at <= claimed_at) AND claimed_at < $1',
+      );
+      expect(pool.calls[0]?.params[0]).toBe(cutoff);
+      expect(pool.calls[0]?.params[1]).toBeInstanceOf(Date);
     });
   });
 
@@ -243,6 +253,133 @@ describe('PgEventBus', () => {
       expect(deleted).toBe(4);
       expect(pool.calls[0]?.sql).toContain('LIMIT $2');
       expect(pool.calls[0]?.params[1]).toBe(50);
+    });
+  });
+
+  describe('claim leases', () => {
+    it('writes a lease of leaseMs past the claim time', async () => {
+      const custom = new PgEventBus({ pool: pool.asPool(), leaseMs: 30_000 });
+      pool.enqueue([]);
+      await custom.claim('replica-1', 10);
+
+      const call = pool.calls[0];
+      expect(call?.sql).toContain('lease_expires_at = $4');
+      const claimedAt = call?.params[2] as Date;
+      const leaseExpiresAt = call?.params[3] as Date;
+      expect(leaseExpiresAt.getTime() - claimedAt.getTime()).toBe(30_000);
+      expect(custom.lease.durationMs).toBe(30_000);
+    });
+
+    it('defaults the lease to 60 s', () => {
+      expect(bus.lease.durationMs).toBe(60_000);
+    });
+
+    it('maps lease_expires_at onto the entry', async () => {
+      const leaseExpiresAt = new Date('2026-01-01T00:01:05Z');
+      pool.enqueue([
+        {
+          id: 'evt-1',
+          event_type: 'order.placed',
+          event_version: 1,
+          event_kind: 'domain',
+          payload: {},
+          source_service: 'svc-a',
+          aggregate_id: null,
+          correlation_id: null,
+          status: 'CLAIMED',
+          claimed_by: 'replica-1',
+          claimed_at: new Date('2026-01-01T00:00:05Z'),
+          lease_expires_at: leaseExpiresAt,
+          retry_count: 0,
+          last_error: null,
+          created_at: new Date('2026-01-01T00:00:00Z'),
+          published_at: new Date('2026-01-01T00:00:01Z'),
+          occurred_at: OCCURRED_AT,
+        },
+      ]);
+      const [entry] = await bus.claim('replica-1', 10);
+      expect(entry?.leaseExpiresAt).toBe(leaseExpiresAt);
+    });
+
+    it('renews owned CLAIMED rows, moving claimed_at with the lease, and returns held ids', async () => {
+      pool.enqueue([{ id: 'evt-1' }]);
+      const held = await bus.lease.renew('replica-1', ['evt-1', 'evt-2']);
+
+      const call = pool.calls[0];
+      expect(call?.sql).toContain('SET claimed_at = $3, lease_expires_at = $4');
+      expect(call?.sql).toContain("WHERE id = ANY($1) AND claimed_by = $2 AND status = 'CLAIMED'");
+      expect(call?.params[0]).toEqual(['evt-1', 'evt-2']);
+      expect(call?.params[1]).toBe('replica-1');
+      expect((call?.params[3] as Date).getTime() - (call?.params[2] as Date).getTime()).toBe(
+        60_000,
+      );
+      expect(held).toEqual(['evt-1']);
+    });
+
+    it('skips the query when there is nothing to renew', async () => {
+      expect(await bus.lease.renew('replica-1', [])).toEqual([]);
+      expect(pool.calls).toHaveLength(0);
+    });
+
+    it('owner-checks markDone and throws ClaimLostError when nothing matched', async () => {
+      pool.enqueue([], 0);
+      await expect(bus.markDone('evt-1', 'replica-1')).rejects.toSatisfy(ClaimLostError.is);
+
+      const call = pool.calls[0];
+      expect(call?.sql).toContain('WHERE id = $1 AND (claimed_by = $2 OR claimed_by IS NULL)');
+      expect(call?.params).toEqual(['evt-1', 'replica-1']);
+    });
+
+    it('owner-checked markDone resolves when the row matched', async () => {
+      pool.enqueue([], 1);
+      await expect(bus.markDone('evt-1', 'replica-1')).resolves.toBeUndefined();
+    });
+
+    it('owner-checks markFailed and clears the lease', async () => {
+      pool.enqueue([], 0);
+      await expect(bus.markFailed('evt-1', 'boom', 'replica-1')).rejects.toSatisfy(
+        ClaimLostError.is,
+      );
+
+      const call = pool.calls[0];
+      expect(call?.sql).toContain('lease_expires_at = NULL');
+      expect(call?.sql).toContain('WHERE id = $2 AND (claimed_by = $4 OR claimed_by IS NULL)');
+      expect(call?.params).toEqual(['boom', 'evt-1', 3, 'replica-1']);
+    });
+
+    it('unfenced markFailed ignores rowCount', async () => {
+      pool.enqueue([], 0);
+      await expect(bus.markFailed('evt-1', 'boom')).resolves.toBeUndefined();
+    });
+
+    it('writes lease_expires_at = NULL on publish', async () => {
+      pool.enqueue([{ id: 'x' }]);
+      await bus.publish({
+        eventType: 'order.placed',
+        eventVersion: 1,
+        eventKind: 'integration',
+        payload: {},
+        sourceService: 'svc-a',
+        occurredAt: OCCURRED_AT,
+        createdAt: new Date('2026-01-01T00:00:00Z'),
+      });
+      const call = pool.calls[0];
+      expect(call?.sql).toContain('occurred_at, lease_expires_at)');
+      expect(call?.params).toHaveLength(18);
+      expect(call?.params[17]).toBeNull();
+    });
+
+    it('turns a missing lease column into MissingLeaseColumnError', async () => {
+      pool.failNext(
+        Object.assign(new Error('column "lease_expires_at" does not exist'), { code: '42703' }),
+      );
+      await expect(bus.claim('replica-1', 10)).rejects.toBeInstanceOf(MissingLeaseColumnError);
+    });
+
+    it('passes other query errors through untouched', async () => {
+      const boom = Object.assign(new Error('column "nope" does not exist'), { code: '42703' });
+      pool.failNext(boom);
+      await expect(bus.claim('replica-1', 10)).rejects.toBe(boom);
     });
   });
 });

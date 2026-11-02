@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Pool } from 'pg';
+import type { ClaimLease } from '../event-bus/claim-lease.type.js';
+import { DEFAULT_LEASE_MS } from '../event-bus/defaults.js';
 import type {
   LocalOutboxEntry,
   LocalOutboxInsertInput,
@@ -8,10 +10,12 @@ import type {
 import type { LocalOutboxReader } from '../local-outbox/local-outbox-reader.interface.js';
 import type { LocalOutboxWriter } from '../local-outbox/local-outbox-writer.interface.js';
 import type { TransactionHandle } from '../local-outbox/transaction-handle.interface.js';
+import { ClaimLeaseDao } from './claim-lease.dao.js';
+import { withLeaseColumnHint } from './missing-lease-column.error.js';
 
 const DEFAULT_TABLE_NAME = 'outbox_events';
 const DEFAULT_MAX_RETRIES = 3;
-const INSERT_COLUMN_COUNT = 15;
+const INSERT_COLUMN_COUNT = 16;
 // Postgres' bind message counts parameters in a 16-bit field.
 const MAX_PARAMETERS = 65535;
 const ENTRIES_PER_STATEMENT = Math.floor(MAX_PARAMETERS / INSERT_COLUMN_COUNT);
@@ -27,6 +31,7 @@ type OutboxRow = {
   status: LocalOutboxStatus;
   claimed_by: string | null;
   claimed_at: Date | null;
+  lease_expires_at: Date | null;
   retry_count: number;
   last_error: string | null;
   published_at: Date | null;
@@ -38,17 +43,22 @@ export type PgLocalOutboxOptions = {
   readonly pool: Pool;
   readonly tableName?: string;
   readonly maxRetries?: number;
+  readonly leaseMs?: number;
 };
 
 export class PgLocalOutbox implements LocalOutboxWriter, LocalOutboxReader {
   private readonly pool: Pool;
   private readonly tableName: string;
   private readonly maxRetries: number;
+  readonly lease: ClaimLease;
+  private readonly claims: ClaimLeaseDao;
 
   constructor(options: PgLocalOutboxOptions) {
     this.pool = options.pool;
     this.tableName = options.tableName ?? DEFAULT_TABLE_NAME;
     this.maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
+    this.claims = new ClaimLeaseDao(this.pool, this.tableName, options.leaseMs ?? DEFAULT_LEASE_MS);
+    this.lease = this.claims;
   }
 
   async insert(entries: readonly LocalOutboxInsertInput[], trx: TransactionHandle): Promise<void> {
@@ -57,7 +67,7 @@ export class PgLocalOutbox implements LocalOutboxWriter, LocalOutboxReader {
       statements.push(this.insertStatement(entries.slice(start, start + ENTRIES_PER_STATEMENT)));
     }
     for (const { sql, params } of statements) {
-      await trx.query(sql, params);
+      await withLeaseColumnHint(trx.query(sql, params), this.tableName);
     }
   }
 
@@ -73,7 +83,8 @@ export class PgLocalOutbox implements LocalOutboxWriter, LocalOutboxReader {
       valueGroups.push(
         `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}::jsonb, ` +
           `$${base + 6}, $${base + 7}, $${base + 8}, $${base + 9}, $${base + 10}, ` +
-          `$${base + 11}, $${base + 12}, $${base + 13}, $${base + 14}, $${base + 15})`,
+          `$${base + 11}, $${base + 12}, $${base + 13}, $${base + 14}, $${base + 15}, ` +
+          `$${base + 16})`,
       );
       params.push(
         entry.id ?? randomUUID(),
@@ -91,6 +102,7 @@ export class PgLocalOutbox implements LocalOutboxWriter, LocalOutboxReader {
         null,
         entry.createdAt ?? new Date(),
         entry.occurredAt,
+        null,
       );
     }
 
@@ -98,14 +110,15 @@ export class PgLocalOutbox implements LocalOutboxWriter, LocalOutboxReader {
       sql: `INSERT INTO ${this.tableName}
         (id, event_type, event_version, event_kind, payload,
          aggregate_id, correlation_id, status, claimed_by, claimed_at,
-         retry_count, last_error, published_at, created_at, occurred_at)
+         retry_count, last_error, published_at, created_at, occurred_at, lease_expires_at)
        VALUES ${valueGroups.join(', ')}`,
       params,
     };
   }
 
   async claim(instanceId: string, batchSize: number): Promise<readonly LocalOutboxEntry[]> {
-    const result = await this.pool.query<OutboxRow>(
+    const now = new Date();
+    const result = await this.claims.query<OutboxRow>(
       `WITH claimed AS (
          SELECT id FROM ${this.tableName}
          WHERE status = 'PENDING'
@@ -114,45 +127,47 @@ export class PgLocalOutbox implements LocalOutboxWriter, LocalOutboxReader {
          FOR UPDATE SKIP LOCKED
        )
        UPDATE ${this.tableName} t
-       SET status = 'CLAIMED', claimed_by = $2, claimed_at = $3
+       SET status = 'CLAIMED', claimed_by = $2, claimed_at = $3, lease_expires_at = $4
        FROM claimed c
        WHERE t.id = c.id
        RETURNING t.*`,
-      [batchSize, instanceId, new Date()],
+      [batchSize, instanceId, now, this.claims.expiryFrom(now)],
     );
     return result.rows.map((r) => this.rowToEntry(r));
   }
 
-  async markSent(id: string, publishedAt: Date): Promise<void> {
-    await this.pool.query(
+  async markSent(id: string, publishedAt: Date, instanceId?: string): Promise<void> {
+    const params: unknown[] = [publishedAt, id];
+    const owned = this.claims.ownedBy(params, instanceId);
+    const result = await this.claims.query(
       `UPDATE ${this.tableName}
-       SET status = 'SENT', published_at = $1, claimed_by = NULL, claimed_at = NULL
-       WHERE id = $2`,
-      [publishedAt, id],
+       SET status = 'SENT', published_at = $1, claimed_by = NULL, claimed_at = NULL,
+           lease_expires_at = NULL
+       WHERE id = $2${owned}`,
+      params,
     );
+    this.claims.assertOwned(result, id, instanceId);
   }
 
-  async markFailed(id: string, reason: string): Promise<void> {
-    await this.pool.query(
+  async markFailed(id: string, reason: string, instanceId?: string): Promise<void> {
+    const params: unknown[] = [reason, id, this.maxRetries];
+    const owned = this.claims.ownedBy(params, instanceId);
+    const result = await this.claims.query(
       `UPDATE ${this.tableName}
        SET retry_count = retry_count + 1,
            last_error = $1,
            status = CASE WHEN retry_count + 1 >= $3 THEN 'FAILED' ELSE 'PENDING' END,
            claimed_by = NULL,
-           claimed_at = NULL
-       WHERE id = $2`,
-      [reason, id, this.maxRetries],
+           claimed_at = NULL,
+           lease_expires_at = NULL
+       WHERE id = $2${owned}`,
+      params,
     );
+    this.claims.assertOwned(result, id, instanceId);
   }
 
-  async resetStale(olderThan: Date): Promise<number> {
-    const result = await this.pool.query(
-      `UPDATE ${this.tableName}
-       SET status = 'PENDING', claimed_by = NULL, claimed_at = NULL
-       WHERE status = 'CLAIMED' AND claimed_at < $1`,
-      [olderThan],
-    );
-    return result.rowCount ?? 0;
+  resetStale(olderThan: Date): Promise<number> {
+    return this.claims.resetStale(olderThan);
   }
 
   async cleanup(olderThan: Date, options?: { readonly limit?: number }): Promise<number> {
@@ -191,6 +206,7 @@ export class PgLocalOutbox implements LocalOutboxWriter, LocalOutboxReader {
       status: row.status,
       ...(row.claimed_by !== null ? { claimedBy: row.claimed_by } : {}),
       ...(row.claimed_at !== null ? { claimedAt: row.claimed_at } : {}),
+      ...(row.lease_expires_at !== null ? { leaseExpiresAt: row.lease_expires_at } : {}),
       retryCount: row.retry_count,
       ...(row.last_error !== null ? { lastError: row.last_error } : {}),
       ...(row.published_at !== null ? { publishedAt: row.published_at } : {}),
