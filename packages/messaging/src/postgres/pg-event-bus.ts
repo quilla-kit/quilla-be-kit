@@ -5,7 +5,7 @@ import { DEFAULT_LEASE_MS } from '../event-bus/defaults.js';
 import type { EventBusConsumer } from '../event-bus/event-bus-consumer.interface.js';
 import type { EventBusEntry, EventBusStatus } from '../event-bus/event-bus-entry.type.js';
 import type { EventBusPublisher } from '../event-bus/event-bus-publisher.interface.js';
-import { ClaimLeaseDao } from './claim-lease.dao.js';
+import { ClaimDao } from './claim.dao.js';
 
 const DEFAULT_EVENTS_TABLE = 'events';
 const DEFAULT_MAX_RETRIES = 3;
@@ -24,6 +24,8 @@ type EventsRow = {
   claimed_by: string | null;
   claimed_at: Date | null;
   lease_expires_at: Date | null;
+  failed_at: Date | null;
+  seq: string | null;
   retry_count: number;
   last_error: string | null;
   created_at: Date;
@@ -42,17 +44,18 @@ export class PgEventBus implements EventBusPublisher, EventBusConsumer {
   private readonly eventsTable: string;
   private readonly maxRetries: number;
   readonly lease: ClaimLease;
-  private readonly claims: ClaimLeaseDao;
+  private readonly claims: ClaimDao;
 
   constructor(options: PgEventBusOptions) {
     this.pool = options.pool;
     this.eventsTable = options.eventsTableName ?? DEFAULT_EVENTS_TABLE;
     this.maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
-    this.claims = new ClaimLeaseDao(
-      this.pool,
-      this.eventsTable,
-      options.leaseMs ?? DEFAULT_LEASE_MS,
-    );
+    this.claims = new ClaimDao({
+      pool: this.pool,
+      table: this.eventsTable,
+      durationMs: options.leaseMs ?? DEFAULT_LEASE_MS,
+      lockScope: 'aggregate',
+    });
     this.lease = this.claims;
   }
 
@@ -106,49 +109,13 @@ export class PgEventBus implements EventBusPublisher, EventBusConsumer {
     return { id: existingId, inserted: false };
   }
 
-  // NOT EXISTS guards against claiming a second event for an aggregate while
-  // an earlier one is still CLAIMED. Advisory xact lock closes the race
-  // between NOT EXISTS and UPDATE across overlapping transactions.
-  // The topic predicate is conditionally inlined (not `$4 IS NULL OR ...`) so
-  // Postgres can plan each variant against the partial index optimally.
   async claim(
     instanceId: string,
     batchSize: number,
     allowedTopics?: readonly string[],
   ): Promise<readonly EventBusEntry[]> {
-    const hasFilter = allowedTopics !== undefined && allowedTopics.length > 0;
-    const topicPredicate = hasFilter ? 'AND e.event_type = ANY($4)' : '';
-    const now = new Date();
-    const params: unknown[] = [batchSize, instanceId, now];
-    if (hasFilter) params.push([...allowedTopics]);
-    params.push(this.claims.expiryFrom(now));
-    const leaseParam = `$${params.length}`;
-
-    const result = await this.claims.query<EventsRow>(
-      `WITH claimed AS (
-         SELECT id FROM ${this.eventsTable} e
-         WHERE e.status = 'PENDING'
-           ${topicPredicate}
-           AND NOT EXISTS (
-             SELECT 1 FROM ${this.eventsTable} e2
-             WHERE e2.aggregate_id IS NOT NULL
-               AND e2.aggregate_id = e.aggregate_id
-               AND e2.status = 'CLAIMED'
-           )
-           AND (e.aggregate_id IS NULL
-                OR pg_try_advisory_xact_lock(hashtext(e.aggregate_id)::bigint))
-         ORDER BY e.created_at
-         LIMIT $1
-         FOR UPDATE SKIP LOCKED
-       )
-       UPDATE ${this.eventsTable} t
-       SET status = 'CLAIMED', claimed_by = $2, claimed_at = $3, lease_expires_at = ${leaseParam}
-       FROM claimed c
-       WHERE t.id = c.id
-       RETURNING t.*`,
-      params,
-    );
-    return result.rows.map((r) => this.rowToEntry(r));
+    const rows = await this.claims.claim<EventsRow>(instanceId, batchSize, allowedTopics);
+    return rows.map((r) => this.rowToEntry(r));
   }
 
   async markDone(id: string, instanceId?: string): Promise<void> {
@@ -161,47 +128,16 @@ export class PgEventBus implements EventBusPublisher, EventBusConsumer {
     this.claims.assertOwned(result, id, instanceId);
   }
 
-  async markFailed(id: string, reason: string, instanceId?: string): Promise<void> {
-    const params: unknown[] = [reason, id, this.maxRetries];
-    const owned = this.claims.ownedBy(params, instanceId);
-    const result = await this.claims.query(
-      `UPDATE ${this.eventsTable}
-       SET retry_count = retry_count + 1,
-           last_error = $1,
-           status = CASE WHEN retry_count + 1 >= $3 THEN 'FAILED' ELSE 'PENDING' END,
-           claimed_by = NULL,
-           claimed_at = NULL,
-           lease_expires_at = NULL
-       WHERE id = $2${owned}`,
-      params,
-    );
-    this.claims.assertOwned(result, id, instanceId);
+  markFailed(id: string, reason: string, instanceId?: string): Promise<void> {
+    return this.claims.markFailed(id, reason, this.maxRetries, instanceId);
   }
 
   resetStale(olderThan: Date): Promise<number> {
     return this.claims.resetStale(olderThan);
   }
 
-  async cleanupFailed(olderThan: Date, options?: { readonly limit?: number }): Promise<number> {
-    const limit = options?.limit;
-    const result = limit
-      ? await this.pool.query(
-          `WITH cte AS (
-             SELECT id FROM ${this.eventsTable}
-             WHERE status = 'FAILED' AND created_at < $1
-             ORDER BY created_at ASC
-             LIMIT $2
-           )
-           DELETE FROM ${this.eventsTable} t
-           USING cte
-           WHERE t.id = cte.id`,
-          [olderThan, limit],
-        )
-      : await this.pool.query(
-          `DELETE FROM ${this.eventsTable} WHERE status = 'FAILED' AND created_at < $1`,
-          [olderThan],
-        );
-    return result.rowCount ?? 0;
+  cleanupFailed(olderThan: Date, options?: { readonly limit?: number }): Promise<number> {
+    return this.claims.cleanupFailed(olderThan, options?.limit);
   }
 
   private rowToEntry(row: EventsRow): EventBusEntry {
@@ -221,6 +157,7 @@ export class PgEventBus implements EventBusPublisher, EventBusConsumer {
       ...(row.lease_expires_at !== null ? { leaseExpiresAt: row.lease_expires_at } : {}),
       retryCount: row.retry_count,
       ...(row.last_error !== null ? { lastError: row.last_error } : {}),
+      ...(row.failed_at !== null ? { failedAt: row.failed_at } : {}),
       createdAt: row.created_at,
       publishedAt: row.published_at,
     };

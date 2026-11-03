@@ -10,8 +10,8 @@ import type {
 import type { LocalOutboxReader } from '../local-outbox/local-outbox-reader.interface.js';
 import type { LocalOutboxWriter } from '../local-outbox/local-outbox-writer.interface.js';
 import type { TransactionHandle } from '../local-outbox/transaction-handle.interface.js';
-import { ClaimLeaseDao } from './claim-lease.dao.js';
-import { withLeaseColumnHint } from './missing-lease-column.error.js';
+import { ClaimDao, RELEASE_CLAIM } from './claim.dao.js';
+import { withColumnHint } from './missing-column.error.js';
 
 const DEFAULT_TABLE_NAME = 'outbox_events';
 const DEFAULT_MAX_RETRIES = 3;
@@ -32,6 +32,8 @@ type OutboxRow = {
   claimed_by: string | null;
   claimed_at: Date | null;
   lease_expires_at: Date | null;
+  failed_at: Date | null;
+  seq: string | null;
   retry_count: number;
   last_error: string | null;
   published_at: Date | null;
@@ -51,13 +53,18 @@ export class PgLocalOutbox implements LocalOutboxWriter, LocalOutboxReader {
   private readonly tableName: string;
   private readonly maxRetries: number;
   readonly lease: ClaimLease;
-  private readonly claims: ClaimLeaseDao;
+  private readonly claims: ClaimDao;
 
   constructor(options: PgLocalOutboxOptions) {
     this.pool = options.pool;
     this.tableName = options.tableName ?? DEFAULT_TABLE_NAME;
     this.maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
-    this.claims = new ClaimLeaseDao(this.pool, this.tableName, options.leaseMs ?? DEFAULT_LEASE_MS);
+    this.claims = new ClaimDao({
+      pool: this.pool,
+      table: this.tableName,
+      durationMs: options.leaseMs ?? DEFAULT_LEASE_MS,
+      lockScope: 'table',
+    });
     this.lease = this.claims;
   }
 
@@ -67,7 +74,7 @@ export class PgLocalOutbox implements LocalOutboxWriter, LocalOutboxReader {
       statements.push(this.insertStatement(entries.slice(start, start + ENTRIES_PER_STATEMENT)));
     }
     for (const { sql, params } of statements) {
-      await withLeaseColumnHint(trx.query(sql, params), this.tableName);
+      await withColumnHint(trx.query(sql, params), this.tableName);
     }
   }
 
@@ -116,24 +123,11 @@ export class PgLocalOutbox implements LocalOutboxWriter, LocalOutboxReader {
     };
   }
 
+  // Same per-aggregate guard as the bus, so one aggregate's entries are forwarded by one replica
+  // at a time and reach the bus in seq order.
   async claim(instanceId: string, batchSize: number): Promise<readonly LocalOutboxEntry[]> {
-    const now = new Date();
-    const result = await this.claims.query<OutboxRow>(
-      `WITH claimed AS (
-         SELECT id FROM ${this.tableName}
-         WHERE status = 'PENDING'
-         ORDER BY created_at
-         LIMIT $1
-         FOR UPDATE SKIP LOCKED
-       )
-       UPDATE ${this.tableName} t
-       SET status = 'CLAIMED', claimed_by = $2, claimed_at = $3, lease_expires_at = $4
-       FROM claimed c
-       WHERE t.id = c.id
-       RETURNING t.*`,
-      [batchSize, instanceId, now, this.claims.expiryFrom(now)],
-    );
-    return result.rows.map((r) => this.rowToEntry(r));
+    const rows = await this.claims.claim<OutboxRow>(instanceId, batchSize);
+    return rows.map((r) => this.rowToEntry(r));
   }
 
   async markSent(id: string, publishedAt: Date, instanceId?: string): Promise<void> {
@@ -141,56 +135,27 @@ export class PgLocalOutbox implements LocalOutboxWriter, LocalOutboxReader {
     const owned = this.claims.ownedBy(params, instanceId);
     const result = await this.claims.query(
       `UPDATE ${this.tableName}
-       SET status = 'SENT', published_at = $1, claimed_by = NULL, claimed_at = NULL,
-           lease_expires_at = NULL
+       SET status = 'SENT', published_at = $1, ${RELEASE_CLAIM}
        WHERE id = $2${owned}`,
       params,
     );
     this.claims.assertOwned(result, id, instanceId);
   }
 
-  async markFailed(id: string, reason: string, instanceId?: string): Promise<void> {
-    const params: unknown[] = [reason, id, this.maxRetries];
-    const owned = this.claims.ownedBy(params, instanceId);
-    const result = await this.claims.query(
-      `UPDATE ${this.tableName}
-       SET retry_count = retry_count + 1,
-           last_error = $1,
-           status = CASE WHEN retry_count + 1 >= $3 THEN 'FAILED' ELSE 'PENDING' END,
-           claimed_by = NULL,
-           claimed_at = NULL,
-           lease_expires_at = NULL
-       WHERE id = $2${owned}`,
-      params,
-    );
-    this.claims.assertOwned(result, id, instanceId);
+  markFailed(id: string, reason: string, instanceId?: string): Promise<void> {
+    return this.claims.markFailed(id, reason, this.maxRetries, instanceId);
   }
 
   resetStale(olderThan: Date): Promise<number> {
     return this.claims.resetStale(olderThan);
   }
 
-  async cleanup(olderThan: Date, options?: { readonly limit?: number }): Promise<number> {
-    const limit = options?.limit;
-    const result = limit
-      ? await this.pool.query(
-          `WITH cte AS (
-             SELECT id FROM ${this.tableName}
-             WHERE status = 'SENT' AND published_at < $1
-             ORDER BY published_at ASC
-             LIMIT $2
-           )
-           DELETE FROM ${this.tableName} t
-           USING cte
-           WHERE t.id = cte.id`,
-          [olderThan, limit],
-        )
-      : await this.pool.query(
-          `DELETE FROM ${this.tableName}
-           WHERE status = 'SENT' AND published_at < $1`,
-          [olderThan],
-        );
-    return result.rowCount ?? 0;
+  cleanup(olderThan: Date, options?: { readonly limit?: number }): Promise<number> {
+    return this.claims.deleteOlderThan('SENT', 'published_at', olderThan, options?.limit);
+  }
+
+  cleanupFailed(olderThan: Date, options?: { readonly limit?: number }): Promise<number> {
+    return this.claims.cleanupFailed(olderThan, options?.limit);
   }
 
   private rowToEntry(row: OutboxRow): LocalOutboxEntry {
@@ -209,6 +174,7 @@ export class PgLocalOutbox implements LocalOutboxWriter, LocalOutboxReader {
       ...(row.lease_expires_at !== null ? { leaseExpiresAt: row.lease_expires_at } : {}),
       retryCount: row.retry_count,
       ...(row.last_error !== null ? { lastError: row.last_error } : {}),
+      ...(row.failed_at !== null ? { failedAt: row.failed_at } : {}),
       ...(row.published_at !== null ? { publishedAt: row.published_at } : {}),
       createdAt: row.created_at,
     };

@@ -203,6 +203,62 @@ describe('ClaimLeaseManager', () => {
     });
   });
 
+  describe('aggregate blocking', () => {
+    const X1 = { id: 'x1', eventType: 't', aggregateId: 'X' };
+    const X2 = { id: 'x2', eventType: 't', aggregateId: 'X' };
+    const N1 = { id: 'n1', eventType: 't' };
+
+    it('refuses later entries of an aggregate once one fails', async () => {
+      const manager = makeManager();
+      manager.begin([X1, X2, N1]);
+      await manager.acquire(X1);
+      await manager.settle(X1, 'failed', async () => {});
+      expect(await manager.acquire(X2)).toBe(false);
+      expect(await manager.acquire(N1)).toBe(true);
+      manager.end();
+    });
+
+    it('refuses later entries of an aggregate once its claim is lost on completion', async () => {
+      const manager = makeManager();
+      manager.begin([X1, X2]);
+      await manager.acquire(X1);
+      await manager.settle(X1, 'done', async () => {
+        throw new ClaimLostError('x1');
+      });
+      expect(await manager.acquire(X2)).toBe(false);
+      manager.end();
+    });
+
+    it('keeps an aggregate open after a lost renewal even if completion succeeds', async () => {
+      const manager = makeManager();
+      manager.begin([X1, X2]);
+      await manager.acquire(X1);
+      manager.reportLost(X1, 'renew');
+      await manager.settle(X1, 'done', async () => {});
+      expect(await manager.acquire(X2)).toBe(false);
+      manager.end();
+    });
+
+    it('lets the next entry of an aggregate through once the previous one is done', async () => {
+      const manager = makeManager();
+      manager.begin([X1, X2]);
+      await manager.acquire(X1);
+      await manager.settle(X1, 'done', async () => {});
+      expect(await manager.acquire(X2)).toBe(true);
+      manager.end();
+    });
+
+    it('clears blocked aggregates for the next batch', async () => {
+      const manager = makeManager();
+      manager.begin([X1]);
+      await manager.acquire(X1);
+      await manager.settle(X1, 'failed', async () => {});
+      manager.begin([X2]);
+      expect(await manager.acquire(X2)).toBe(true);
+      manager.end();
+    });
+  });
+
   describe('reportLost', () => {
     it('reports each entry once per batch', () => {
       const onLeaseLost = vi.fn();

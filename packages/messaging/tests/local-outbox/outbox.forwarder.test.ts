@@ -273,4 +273,31 @@ describe('OutboxForwarder', () => {
       );
     });
   });
+
+  it('skips the rest of an aggregate after one of its entries fails to publish', async () => {
+    const publish = publisher.publish.bind(publisher);
+    vi.spyOn(publisher, 'publish').mockImplementation(async (event) => {
+      if (event.originEventId === 'x1') throw new Error('bus down');
+      return publish(event);
+    });
+    reader.enqueueBatch([
+      makeOutboxEntry({ id: 'x1', aggregateId: 'X' }),
+      makeOutboxEntry({ id: 'y1', aggregateId: 'Y' }),
+      makeOutboxEntry({ id: 'x2', aggregateId: 'X' }),
+    ]);
+    const fwd = new OutboxForwarder({
+      reader,
+      publisher,
+      sourceService: 'svc-a',
+      logger: new NoopLogger(),
+    });
+
+    fwd.start();
+    await vi.advanceTimersByTimeAsync(1000);
+    await fwd.dispose();
+
+    expect(publisher.published.map((p) => p.event.originEventId)).toEqual(['y1']);
+    expect(reader.markedFailed.map((m) => m.id)).toEqual(['x1']);
+    expect(reader.markedSent.map((m) => m.id)).toEqual(['y1']);
+  });
 });

@@ -815,6 +815,120 @@ describe('EventConsumer claim leases', () => {
   });
 });
 
+describe('EventConsumer per-aggregate ordering within a batch', () => {
+  let bus: FakeEventBusConsumer;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    bus = new FakeEventBusConsumer();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function run(handle: (entry: HandlerEntry<unknown>) => Promise<void>, lease?: FakeLease) {
+    if (lease) bus.lease = lease;
+    const consumer = new EventConsumer({
+      bus,
+      consumerName: 'test',
+      sourceService: 'svc-a',
+      logger: new NoopLogger(),
+      retryDelaysMs: [],
+    });
+    consumer.on('test.happened', handle);
+    return consumer;
+  }
+
+  it('skips the rest of an aggregate after one of its events fails', async () => {
+    const handled: string[] = [];
+    const consumer = run(async (entry) => {
+      handled.push(entry.id);
+      if (entry.id === 'x1') throw new Error('boom');
+    });
+    bus.enqueueBatch([
+      makeBusEntry({ id: 'x1', aggregateId: 'X' }),
+      makeBusEntry({ id: 'y1', aggregateId: 'Y' }),
+      makeBusEntry({ id: 'x2', aggregateId: 'X' }),
+      makeBusEntry({ id: 'n1' }),
+    ]);
+
+    consumer.start();
+    await vi.advanceTimersByTimeAsync(1000);
+    await consumer.dispose();
+
+    expect(handled).toEqual(['x1', 'y1', 'n1']);
+    expect(bus.marksFailed.map((m) => m.id)).toEqual(['x1']);
+    expect(bus.marksDone).toEqual(['y1', 'n1']);
+  });
+
+  it('skips the rest of an aggregate after a lost claim before dispatch', async () => {
+    const lease = new FakeLease(60_000);
+    const slow = Promise.withResolvers<void>();
+    const handled: string[] = [];
+    const consumer = run(async (entry) => {
+      handled.push(entry.id);
+      if (entry.id === 'y1') await slow.promise;
+    }, lease);
+    lease.lost.add('x1');
+    bus.enqueueBatch([
+      makeBusEntry({ id: 'y1', aggregateId: 'Y' }),
+      makeBusEntry({ id: 'x1', aggregateId: 'X' }),
+      makeBusEntry({ id: 'x2', aggregateId: 'X' }),
+    ]);
+
+    consumer.start();
+    await vi.advanceTimersByTimeAsync(1000);
+    await vi.advanceTimersByTimeAsync(30_000);
+    slow.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    await consumer.dispose();
+
+    expect(handled).toEqual(['y1']);
+    expect(bus.marksDone).toEqual(['y1']);
+  });
+
+  it('skips the rest of an aggregate after an unregistered event type', async () => {
+    const handled: string[] = [];
+    const consumer = run(async (entry) => {
+      handled.push(entry.id);
+    });
+    // A broker that ignores allowedTopics hands over an unregistered type.
+    vi.spyOn(bus, 'claim').mockResolvedValueOnce([
+      makeBusEntry({ id: 'x1', aggregateId: 'X', eventType: 'unknown.type' }),
+      makeBusEntry({ id: 'x2', aggregateId: 'X' }),
+      makeBusEntry({ id: 'y1', aggregateId: 'Y' }),
+    ]);
+
+    consumer.start();
+    await vi.advanceTimersByTimeAsync(1000);
+    await consumer.dispose();
+
+    expect(handled).toEqual(['y1']);
+  });
+
+  it('starts every batch with no blocked aggregates', async () => {
+    let failOnce = true;
+    const handled: string[] = [];
+    const consumer = run(async (entry) => {
+      handled.push(entry.id);
+      if (failOnce) {
+        failOnce = false;
+        throw new Error('boom');
+      }
+    });
+    bus.enqueueBatch([makeBusEntry({ id: 'x1', aggregateId: 'X' })]);
+    bus.enqueueBatch([makeBusEntry({ id: 'x1', aggregateId: 'X' })]);
+
+    consumer.start();
+    await vi.advanceTimersByTimeAsync(2000);
+    await consumer.dispose();
+
+    expect(handled).toEqual(['x1', 'x1']);
+    expect(bus.marksDone).toEqual(['x1']);
+  });
+});
+
 describe('EventConsumer execution context reconstruction', () => {
   let bus: FakeEventBusConsumer;
 

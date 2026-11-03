@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { ClaimLostError } from '../../src/event-bus/claim-lost.error.js';
-import { MissingLeaseColumnError } from '../../src/postgres/missing-lease-column.error.js';
+import { MissingColumnError } from '../../src/postgres/missing-column.error.js';
 import { PgLocalOutbox } from '../../src/postgres/pg-local-outbox.js';
 import { CapturingTrx } from '../helpers/capturing-trx.js';
 import { FakePgPool } from '../helpers/fake-pg-pool.js';
@@ -165,7 +165,7 @@ describe('PgLocalOutbox', () => {
 
       const entries = await outbox.claim('replica-1', 10);
 
-      const call = pool.calls[0];
+      const call = pool.clientCalls[1];
       expect(call?.sql).toContain('FOR UPDATE SKIP LOCKED');
       expect(call?.sql).toContain("SET status = 'CLAIMED'");
       expect(call?.params[0]).toBe(10); // batchSize
@@ -203,7 +203,7 @@ describe('PgLocalOutbox', () => {
         `CASE WHEN retry_count + 1 >= $3 THEN 'FAILED' ELSE 'PENDING' END`,
       );
       expect(call?.sql).toContain('claimed_by = NULL');
-      expect(call?.params).toEqual(['transient error', 'e1', 3]);
+      expect(call?.params.slice(0, 3)).toEqual(['transient error', 'e1', 3]);
     });
   });
 
@@ -253,7 +253,7 @@ describe('PgLocalOutbox', () => {
       pool.enqueue([]);
       await custom.claim('replica-1', 10);
 
-      const call = pool.calls[0];
+      const call = pool.clientCalls[1];
       expect(call?.sql).toContain('lease_expires_at = $4');
       const claimedAt = call?.params[2] as Date;
       const leaseExpiresAt = call?.params[3] as Date;
@@ -296,7 +296,7 @@ describe('PgLocalOutbox', () => {
       await expect(outbox.markFailed('e1', 'boom', 'replica-1')).rejects.toSatisfy(
         ClaimLostError.is,
       );
-      expect(pool.calls[0]?.params).toEqual(['boom', 'e1', 3, 'replica-1']);
+      expect(pool.calls[0]?.params[4]).toBe('replica-1');
     });
 
     it('writes lease_expires_at = NULL as the last insert column', async () => {
@@ -314,7 +314,43 @@ describe('PgLocalOutbox', () => {
       pool.failNext(
         Object.assign(new Error('column "lease_expires_at" does not exist'), { code: '42703' }),
       );
-      await expect(outbox.claim('replica-1', 10)).rejects.toBeInstanceOf(MissingLeaseColumnError);
+      await expect(outbox.claim('replica-1', 10)).rejects.toBeInstanceOf(MissingColumnError);
+    });
+  });
+
+  describe('kit-owned ordering and retention', () => {
+    it('claims with the per-aggregate guard and a table-scoped advisory lock, in seq order', async () => {
+      pool.enqueue([]);
+      await outbox.claim('replica-1', 10);
+
+      const sql = pool.clientCalls[1]?.sql ?? '';
+      expect(sql).toContain('NOT EXISTS');
+      expect(sql).toContain(
+        "pg_try_advisory_xact_lock(hashtext('outbox_events'), hashtext(e.aggregate_id))",
+      );
+      expect(sql).toContain('ORDER BY e.seq NULLS FIRST, e.created_at');
+    });
+
+    it('never writes seq on insert', async () => {
+      const trx = new CapturingTrx();
+      await outbox.insert(
+        [{ eventType: 't', eventKind: 'domain', payload: {}, occurredAt: OCCURRED_AT }],
+        trx,
+      );
+      expect(trx.calls[0]?.sql).not.toMatch(/\bseq\b/);
+    });
+
+    it('cleanupFailed deletes FAILED rows by failed_at, keeping rows without one', async () => {
+      pool.enqueue([], 3);
+      const cutoff = new Date('2026-01-01T00:00:00Z');
+      const deleted = await outbox.cleanupFailed(cutoff, { limit: 100 });
+
+      expect(deleted).toBe(3);
+      const call = pool.calls[0];
+      expect(call?.sql).toContain('DELETE FROM outbox_events');
+      expect(call?.sql).toContain("WHERE status = 'FAILED' AND failed_at < $1");
+      expect(call?.sql).toContain('ORDER BY failed_at ASC');
+      expect(call?.params).toEqual([cutoff, 100]);
     });
   });
 });

@@ -5,6 +5,7 @@ import { ClaimLostError } from './claim-lost.error.js';
 type ClaimedEntry = {
   readonly id: string;
   readonly eventType: string;
+  readonly aggregateId?: string | undefined;
 };
 
 export type ClaimLeaseManagerOptions = {
@@ -34,6 +35,10 @@ function resolveRenewInterval(
 // Drives one batch at a time. Only the in-flight entry is renewed; the rest of the batch is
 // left to expire so idle replicas can take it. Renewal runs on a timer, so a handler that
 // blocks the event loop (CPU-bound sync work) starves it.
+// An aggregate stays open from acquire until its entry settles 'done'; while it is open, later
+// entries of that aggregate in the batch are refused. So any entry that fails, loses its claim
+// or is otherwise left unsettled holds back the rest of its aggregate: those entries keep the
+// batch's claim-time lease, expire together, and come back in seq order behind it.
 export class ClaimLeaseManager {
   readonly leaseMs: number | undefined;
   readonly renewIntervalMs: number;
@@ -43,6 +48,7 @@ export class ClaimLeaseManager {
   private readonly onLeaseLost: ((info: LeaseLostInfo) => void) | undefined;
   private readonly confirmedAt = new Map<string, number>();
   private readonly reported = new Set<string>();
+  private readonly openAggregates = new Set<string>();
   private timer: ReturnType<typeof setInterval> | null = null;
   private held: ClaimedEntry | null = null;
   private renewing = false;
@@ -81,9 +87,14 @@ export class ClaimLeaseManager {
     this.held = null;
     this.confirmedAt.clear();
     this.reported.clear();
+    this.openAggregates.clear();
   }
 
   async acquire(entry: ClaimedEntry): Promise<boolean> {
+    if (entry.aggregateId !== undefined) {
+      if (this.openAggregates.has(entry.aggregateId)) return false;
+      this.openAggregates.add(entry.aggregateId);
+    }
     if (!this.renewLease) return true;
     const confirmed = this.confirmedAt.get(entry.id) ?? 0;
     if (Date.now() - confirmed <= this.renewIntervalMs) return true;
@@ -108,6 +119,11 @@ export class ClaimLeaseManager {
     } catch (err) {
       if (!ClaimLostError.is(err)) throw err;
       this.reportLost(entry, stage);
+      return;
+    }
+    // An entry reported lost keeps its aggregate open: later entries may have been reset too.
+    if (stage === 'done' && entry.aggregateId !== undefined && !this.reported.has(entry.id)) {
+      this.openAggregates.delete(entry.aggregateId);
     }
   }
 
