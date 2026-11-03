@@ -50,6 +50,7 @@
     "build": "tsc -b",
     "typecheck": "tsc -p tsconfig.test.json",
     "test": "vitest run --passWithNoTests",
+    "test:pg": "vitest run tests/integration",
     "clean": "rm -rf dist *.tsbuildinfo"
   },
   "dependencies": {

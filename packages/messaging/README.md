@@ -243,16 +243,18 @@ batches, no partition config, per-aggregate ordering preserved.
 
 ### Atomic claim
 
-Both `PgLocalOutbox.claim()` and `PgEventBus.claim()` run a single CTE:
+Both `PgLocalOutbox.claim()` and `PgEventBus.claim()` run one transaction:
+a claim CTE, then a verify statement (see
+[Per-aggregate ordering](#per-aggregate-ordering)).
 
 ```sql
 WITH claimed AS (
   SELECT id FROM events
   WHERE status = 'PENDING'
-    AND ($4::text[] IS NULL OR event_type = ANY($4))  -- topic filter (bus only)
-    AND NOT EXISTS (...)                              -- aggregate-ordering guard (bus only)
-    AND pg_try_advisory_xact_lock(...)                -- concurrent-claim guard (bus only)
-  ORDER BY created_at
+    AND event_type = ANY($4)                          -- topic filter (bus only)
+    AND NOT EXISTS (...)                              -- aggregate has no CLAIMED row
+    AND pg_try_advisory_xact_lock(...)                -- one claim per aggregate at a time
+  ORDER BY seq NULLS FIRST, created_at
   LIMIT $1
   FOR UPDATE SKIP LOCKED
 )
@@ -268,17 +270,48 @@ RETURNING *;
 replicas hitting the same query get disjoint batches. No replica ever
 double-claims a row.
 
-### Per-aggregate ordering (bus side)
+Claim order is `seq`, a counter the database assigns on insert, so it is
+strictly increasing and never tied. `UPDATE … RETURNING` has no defined
+row order, so the adapter sorts the batch by `seq` before handing it
+over; events are dispatched in that order. `createdAt` on `publish()` and
+`insert()` is informational: it doesn't affect ordering or retention.
 
-Two guards together preserve "events for aggregate A go to the same
-replica in order":
+### Per-aggregate ordering
 
-1. **`NOT EXISTS`** — don't claim an event for aggregate A if another
-   CLAIMED row for A exists (handler is still running elsewhere).
-2. **`pg_try_advisory_xact_lock(hashtext(aggregate_id))`** — closes the
-   race window where two replicas read "no CLAIMED for A" concurrently.
-   Only one of the concurrent transactions acquires the advisory lock;
-   the other skips events for A.
+Events of one aggregate are handled one at a time, in `seq` order, by
+the outbox forwarder and by consumers. Four mechanisms hold that
+together:
+
+1. **`NOT EXISTS`** — don't claim an event for aggregate A while another
+   row of A is CLAIMED (it's being handled elsewhere).
+2. **`pg_try_advisory_xact_lock`** — only one in-flight claim
+   transaction can take A's rows at a time; the others skip A.
+3. **Verify before commit** — a claim statement reads one snapshot and
+   tests the advisory lock row by row, so it can take a later event of A
+   while missing an earlier one (another claim held A's lock and then
+   committed). In the same transaction, a second statement with a fresh
+   snapshot gives back any claimed row whose aggregate has, outside this
+   batch, a CLAIMED row or an earlier PENDING row. For consumers, "earlier
+   PENDING" only counts event types the consumer subscribes to.
+4. **Stop the aggregate after a failure** — when an event of A fails (or
+   its claim is lost), the rest of A in the same batch is skipped. Those
+   rows keep their claim-time lease and come back together, behind the
+   retried event, once it expires. A retry within one aggregate therefore
+   waits up to one lease (`leaseMs`) plus one poll interval, as long as
+   some replica is polling. An event that reaches FAILED stops blocking
+   its aggregate.
+
+Preconditions and limits:
+
+- **Writers of one aggregate must be serialized.** `seq` follows insert
+  order, not commit order. Kit aggregates saved through the unit of work
+  with optimistic locking are serialized by their row lock; two
+  concurrent transactions that emit events for the same `aggregateId`
+  without a shared lock can commit out of `seq` order.
+- **Rows written before 0.9.0** have no `seq`. They drain first, in their
+  old `created_at` order, including that order's arbitrary ties. The
+  guarantee applies to rows written once every process on the table runs
+  0.9.0.
 
 Events with `aggregate_id IS NULL` are processed freely — no ordering
 constraint to preserve.
@@ -332,9 +365,9 @@ counter: it's the signal that a duplicate run may have happened.
 ### No DLQ table
 
 FAILED rows stay in the main table with full context — `status='FAILED'`,
-`retry_count`, `last_error`, `claimed_by`. Query them to inspect, replay
-by flipping `status='PENDING'` and `retry_count=0`. One less table to
-reason about.
+`retry_count`, `last_error`, `failed_at`. Query them to inspect, replay
+by setting `status='PENDING'`, `retry_count=0` and `failed_at=NULL`. One
+less table to reason about.
 
 ### At-least-once delivery — handlers must be idempotent
 
@@ -667,15 +700,99 @@ const sql = getPostgresSchema({
 await pool.query(sql);
 ```
 
-Running it against existing tables is safe: it also adds columns
-introduced by later versions, checking the catalog first so tables that
-already have them aren't locked.
+It is meant for **new installs**. Running it again is safe — every step
+checks the catalog first, so tables that are already up to date aren't
+locked. On an existing table that lacks a later version's indexes, it
+builds them without `CONCURRENTLY`, which scans the whole table and blocks
+writes while it runs: for production tables, apply the upgrade SQL below
+instead.
+
+### Upgrading to 0.9.0
+
+0.9.0 adds `failed_at` and a database-generated `seq` to both tables, plus
+indexes for the new claim order. **Apply the migration before any 0.9.0
+process starts**; a 0.9.0 process on an unmigrated table fails with
+`MissingColumnError`. Split it into two changesets per database (adjust
+the table names; the defaults are `events` and `outbox_events`).
+
+Changeset 1 — transactional:
+
+```sql
+SET LOCAL lock_timeout = '5s';
+ALTER TABLE events ADD COLUMN IF NOT EXISTS failed_at TIMESTAMPTZ;
+-- Add seq without a default first: ADD COLUMN … DEFAULT nextval() rewrites the table.
+ALTER TABLE events ADD COLUMN IF NOT EXISTS seq BIGINT;
+CREATE SEQUENCE IF NOT EXISTS events_seq OWNED BY events.seq;  -- keep the default CACHE 1
+ALTER TABLE events ALTER COLUMN seq SET DEFAULT nextval('events_seq');
+```
+
+```sql
+SET LOCAL lock_timeout = '5s';
+ALTER TABLE outbox_events ADD COLUMN IF NOT EXISTS failed_at TIMESTAMPTZ;
+ALTER TABLE outbox_events ADD COLUMN IF NOT EXISTS seq BIGINT;
+CREATE SEQUENCE IF NOT EXISTS outbox_events_seq OWNED BY outbox_events.seq;
+ALTER TABLE outbox_events ALTER COLUMN seq SET DEFAULT nextval('outbox_events_seq');
+```
+
+Changeset 2 — outside a transaction (Liquibase `runInTransaction: false`):
+
+```sql
+CREATE INDEX CONCURRENTLY IF NOT EXISTS events_event_type_seq_idx
+  ON events (event_type, seq NULLS FIRST, created_at) WHERE status = 'PENDING';
+CREATE INDEX CONCURRENTLY IF NOT EXISTS events_aggregate_id_seq_idx
+  ON events (aggregate_id, seq NULLS FIRST)
+  WHERE aggregate_id IS NOT NULL AND status = 'PENDING';
+CREATE INDEX CONCURRENTLY IF NOT EXISTS events_failed_at_idx
+  ON events (failed_at) WHERE status = 'FAILED';
+```
+
+```sql
+CREATE INDEX CONCURRENTLY IF NOT EXISTS outbox_events_seq_idx
+  ON outbox_events (seq NULLS FIRST, created_at) WHERE status = 'PENDING';
+CREATE INDEX CONCURRENTLY IF NOT EXISTS outbox_events_aggregate_id_status_idx
+  ON outbox_events (aggregate_id, status)
+  WHERE aggregate_id IS NOT NULL AND status = 'CLAIMED';
+CREATE INDEX CONCURRENTLY IF NOT EXISTS outbox_events_aggregate_id_seq_idx
+  ON outbox_events (aggregate_id, seq NULLS FIRST)
+  WHERE aggregate_id IS NOT NULL AND status = 'PENDING';
+CREATE INDEX CONCURRENTLY IF NOT EXISTS outbox_events_failed_at_idx
+  ON outbox_events (failed_at) WHERE status = 'FAILED';
+```
+
+A `CONCURRENTLY` build that fails leaves an INVALID index, which
+`IF NOT EXISTS` then skips. Check with
+`SELECT indexrelid::regclass FROM pg_index WHERE NOT indisvalid;`, drop
+any it lists, and run the statement again.
+
+`seq` must keep the sequence's default `CACHE 1`; a larger cache hands out
+values per session, out of order. The old claim indexes
+(`events_event_type_created_at_idx`, `outbox_events_status_created_at_idx`)
+are no longer used and can be dropped.
+
+Rolling out:
+
+- Older versions keep working on the migrated table. Their inserts get a
+  `seq` from the default.
+- Older forwarders and consumers don't verify claims or stop an aggregate
+  after a failure, so per-aggregate ordering is guaranteed once every
+  process on a table runs 0.9.0.
+- Rows failed by older versions have no `failed_at` and are kept by
+  `cleanupFailed`. **After the last older process stops**, start their
+  retention window with:
+
+  ```sql
+  UPDATE events SET failed_at = now() WHERE status = 'FAILED' AND failed_at IS NULL;
+  UPDATE outbox_events SET failed_at = now() WHERE status = 'FAILED' AND failed_at IS NULL;
+  ```
+
+  It is idempotent and safe to re-run.
 
 ### Upgrading to 0.8.0
 
 0.8.0 adds a nullable `lease_expires_at` column to both tables. **Apply
 it before any 0.8.0 process starts** — a 0.8.0 process on an unmigrated
-table fails every claim with `MissingLeaseColumnError`. If you run
+table fails every claim with `MissingColumnError` (exported as
+`MissingLeaseColumnError` too, its 0.8.0 name). If you run
 `getPostgresSchema()` at boot, that already does it. Otherwise, for
 migration tools (one statement per table; adjust the table names):
 
@@ -707,27 +824,35 @@ the processes; the column can stay.
 
 ### Dumb-DB principle
 
-No `DEFAULT` clauses. Every value (`id`, `status`, `retry_count`,
-timestamps) is written explicitly by library code. Benefits:
+No `DEFAULT` clauses, with one exception. Every value (`id`, `status`,
+`retry_count`, timestamps) is written explicitly by library code.
+Benefits:
 
 - Portable — any DB with `NOT NULL` support works.
 - Testable — no DB defaults to simulate in fakes.
 - Errors surface in TypeScript, not SQL.
 - Migrations stay simple — no `ALTER COLUMN SET DEFAULT` drift.
 
-UUIDs generated via `node:crypto.randomUUID()`. Monotonic sequence IDs
-would normally need `BIGSERIAL`, but in the claim model there's no
-ordering cursor — events are FIFO-drained by `created_at`.
+UUIDs generated via `node:crypto.randomUUID()`. The exception is `seq`,
+the claim order: only the database can hand out a counter that increases
+across every process that writes, so it comes from
+`DEFAULT nextval('<table>_seq')` and library code never writes it.
 
 ### Indexes created
 
-- **Outbox** — partial index on `(status, created_at) WHERE status = 'PENDING'`
-  for the forwarder's claim query, plus `(claimed_at) WHERE status = 'CLAIMED'`
-  for the lease-expiry sweep.
-- **Events** — partial index on `(event_type, created_at) WHERE status = 'PENDING'`
+- **Both tables** — `(failed_at) WHERE status = 'FAILED'` for `cleanupFailed`.
+- **Outbox** — partial index on `(seq NULLS FIRST, created_at) WHERE status = 'PENDING'`
+  for the forwarder's claim query, `(aggregate_id, status) WHERE aggregate_id
+  IS NOT NULL AND status = 'CLAIMED'` and `(aggregate_id, seq NULLS FIRST)
+  WHERE aggregate_id IS NOT NULL AND status = 'PENDING'` for its aggregate
+  guard and claim verification, plus
+  `(claimed_at) WHERE status = 'CLAIMED'` for the lease-expiry sweep.
+- **Events** — partial index on `(event_type, seq NULLS FIRST, created_at) WHERE status = 'PENDING'`
   matches `EventConsumer`'s topic-filtered claim query. Plus partial indexes on
   `(aggregate_id, status) WHERE aggregate_id IS NOT NULL AND status = 'CLAIMED'`
-  for the `NOT EXISTS` aggregate guard, `(claimed_at) WHERE status = 'CLAIMED'`
+  for the `NOT EXISTS` aggregate guard, `(aggregate_id, seq NULLS FIRST) WHERE
+  aggregate_id IS NOT NULL AND status = 'PENDING'` for claim verification,
+  `(claimed_at) WHERE status = 'CLAIMED'`
   for the lease-expiry sweep in `resetStale`, and a **partial unique index** on `(origin_event_id) WHERE
   origin_event_id IS NOT NULL` that enforces the publisher dedup contract
   described in [At-least-once delivery](#at-least-once-delivery--handlers-must-be-idempotent).
@@ -740,10 +865,12 @@ Just deploy more replicas. Each instantiates its own `OutboxForwarder` /
 `EventConsumer` with a unique `instanceId` (auto-generated by default).
 All replicas compete for the same PENDING rows via atomic claim.
 
-- **Outbox side**: N forwarders drain N× as fast. No configuration.
+- **Outbox side**: N forwarders drain N× as fast. No configuration. One
+  aggregate's events are forwarded by one replica at a time, so they reach
+  the bus in outbox order.
 - **Bus side**: N consumers handle N× as fast. Per-aggregate ordering is
-  preserved regardless of N — any given aggregate's events serialize
-  naturally through the advisory-lock guard.
+  preserved regardless of N (see
+  [Per-aggregate ordering](#per-aggregate-ordering) for its preconditions).
 
 Scale up: add replicas. Scale down: remove them — a removed replica's
 CLAIMED rows go back to PENDING once their lease expires (default 60 s).
@@ -762,6 +889,11 @@ from being picked up by a second replica.
   const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
   await bus.cleanupFailed(cutoff, { limit: 1000 });
   ```
+  The window is measured from `failed_at`, which the kit stamps when a
+  row is dead-lettered — not from `createdAt` or any other value a
+  publisher supplies. Rows with no `failed_at` (dead-lettered before
+  0.9.0) are kept until the backfill in
+  [Upgrading to 0.9.0](#upgrading-to-090) starts their window.
 
 ### Local outbox (`outbox_events` table)
 
@@ -771,8 +903,12 @@ from being picked up by a second replica.
   const cutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
   await outbox.cleanup(cutoff, { limit: 1000 });
   ```
-- FAILED rows (outbox) stay put — handled the same way as the bus side:
-  inspect manually, reset to PENDING to retry.
+- FAILED rows stay put — handled the same way as the bus side: inspect
+  them, reset to PENDING to retry, and clean up on your cadence (same
+  `failed_at` window):
+  ```ts
+  await outbox.cleanupFailed(cutoff, { limit: 1000 });
+  ```
 
 ---
 

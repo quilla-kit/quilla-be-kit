@@ -38,9 +38,12 @@ describe('getPostgresSchema', () => {
     expect(matches.length).toBe(2);
   });
 
-  it('declares no DEFAULT clauses (dumb-DB principle)', () => {
-    const sql = getPostgresSchema();
-    expect(sql).not.toMatch(/\bDEFAULT\b/i);
+  it('declares no DEFAULT clauses except the database-generated seq (dumb-DB principle)', () => {
+    const defaults = getPostgresSchema().match(/\bDEFAULT\b.*$/gim) ?? [];
+    expect(defaults).toEqual([
+      "DEFAULT nextval('outbox_events_seq');",
+      "DEFAULT nextval('events_seq');",
+    ]);
   });
 
   it('uses plain UUID primary keys — no BIGSERIAL, no sequence_id', () => {
@@ -69,15 +72,15 @@ describe('getPostgresSchema', () => {
 
   it('creates a partial unique index on origin_event_id (NULLs do not conflict)', () => {
     const sql = getPostgresSchema();
-    expect(sql).toMatch(
-      /CREATE UNIQUE INDEX IF NOT EXISTS events_origin_event_id_uq\s+ON events \(origin_event_id\)\s+WHERE origin_event_id IS NOT NULL/,
+    expect(sql).toContain(
+      'CREATE UNIQUE INDEX events_origin_event_id_uq ON events (origin_event_id) WHERE origin_event_id IS NOT NULL;',
     );
   });
 
   it('honors eventsTable override for the origin_event_id index name', () => {
     const sql = getPostgresSchema({ eventsTable: 'svc_events' });
     expect(sql).toContain('svc_events_origin_event_id_uq');
-    expect(sql).not.toContain('events_origin_event_id_uq ');
+    expect(sql).not.toContain(' events_origin_event_id_uq ');
   });
 
   it('includes lease_expires_at and upgrades existing tables in place', () => {
@@ -86,5 +89,30 @@ describe('getPostgresSchema', () => {
     expect(sql).toContain('ALTER TABLE outbox_events ADD COLUMN lease_expires_at TIMESTAMPTZ;');
     expect(sql).toContain('ALTER TABLE events ADD COLUMN lease_expires_at TIMESTAMPTZ;');
     expect(sql).toContain("attrelid = 'events'::regclass AND attname = 'lease_expires_at'");
+  });
+
+  it('adds failed_at and a database-generated seq, each step catalog-checked', () => {
+    const sql = getPostgresSchema();
+    for (const table of ['outbox_events', 'events']) {
+      expect(sql).toContain(`ALTER TABLE ${table} ADD COLUMN failed_at TIMESTAMPTZ;`);
+      expect(sql).toContain(`ALTER TABLE ${table} ADD COLUMN seq BIGINT;`);
+      expect(sql).toContain(`CREATE SEQUENCE IF NOT EXISTS ${table}_seq OWNED BY ${table}.seq;`);
+      expect(sql).toContain(
+        `ALTER TABLE ${table} ALTER COLUMN seq SET DEFAULT nextval('${table}_seq');`,
+      );
+    }
+    expect(sql).not.toMatch(/ADD COLUMN seq BIGINT DEFAULT/);
+  });
+
+  it('orders claims through seq indexes and guards the outbox per aggregate', () => {
+    const sql = getPostgresSchema();
+    expect(sql).toContain("IF to_regclass('outbox_events_seq_idx') IS NULL");
+    expect(sql).toContain("outbox_events (seq NULLS FIRST, created_at) WHERE status = 'PENDING'");
+    expect(sql).toContain(
+      "events (event_type, seq NULLS FIRST, created_at) WHERE status = 'PENDING'",
+    );
+    expect(sql).toContain('INDEX outbox_events_aggregate_id_status_idx ON outbox_events');
+    expect(sql).not.toContain('created_at_idx');
+    expect(sql).toContain("events (failed_at) WHERE status = 'FAILED'");
   });
 });

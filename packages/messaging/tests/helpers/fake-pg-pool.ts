@@ -62,6 +62,11 @@ export class FakePgPool {
         if (upper === 'BEGIN' || upper === 'COMMIT' || upper === 'ROLLBACK') {
           return empty;
         }
+        if (self.nextError !== undefined) {
+          const error = self.nextError;
+          self.nextError = undefined;
+          throw error;
+        }
         return self.resultQueue.shift() ?? empty;
       },
       release() {},

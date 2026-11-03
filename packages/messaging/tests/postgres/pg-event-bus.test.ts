@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { ClaimLostError } from '../../src/event-bus/claim-lost.error.js';
-import { MissingLeaseColumnError } from '../../src/postgres/missing-lease-column.error.js';
+import { MissingColumnError } from '../../src/postgres/missing-column.error.js';
 import { PgEventBus } from '../../src/postgres/pg-event-bus.js';
 import { FakePgPool } from '../helpers/fake-pg-pool.js';
 
@@ -146,7 +146,7 @@ describe('PgEventBus', () => {
 
       const entries = await bus.claim('replica-1', 10);
 
-      const call = pool.calls[0];
+      const call = pool.clientCalls[1];
       expect(call?.sql).toContain('FOR UPDATE SKIP LOCKED');
       expect(call?.sql).toContain("SET status = 'CLAIMED'");
       expect(call?.sql).toContain('NOT EXISTS');
@@ -166,7 +166,7 @@ describe('PgEventBus', () => {
       pool.enqueue([]);
       await bus.claim('replica-1', 10);
 
-      const call = pool.calls[0];
+      const call = pool.clientCalls[1];
       expect(call?.sql).not.toContain('event_type');
       expect(call?.params).toHaveLength(4);
     });
@@ -175,7 +175,7 @@ describe('PgEventBus', () => {
       pool.enqueue([]);
       await bus.claim('replica-1', 10, []);
 
-      const call = pool.calls[0];
+      const call = pool.clientCalls[1];
       expect(call?.sql).not.toContain('event_type');
       expect(call?.params).toHaveLength(4);
     });
@@ -184,7 +184,7 @@ describe('PgEventBus', () => {
       pool.enqueue([]);
       await bus.claim('replica-1', 10, ['order.placed', 'order.cancelled']);
 
-      const call = pool.calls[0];
+      const call = pool.clientCalls[1];
       expect(call?.sql).toContain('AND e.event_type = ANY($4)');
       expect(call?.params).toHaveLength(5);
       expect(call?.params[3]).toEqual(['order.placed', 'order.cancelled']);
@@ -211,7 +211,11 @@ describe('PgEventBus', () => {
         `CASE WHEN retry_count + 1 >= $3 THEN 'FAILED' ELSE 'PENDING' END`,
       );
       expect(call?.sql).toContain('claimed_by = NULL');
-      expect(call?.params).toEqual(['handler exception', 'evt-1', 3]);
+      expect(call?.sql).toContain(
+        'failed_at = CASE WHEN retry_count + 1 >= $3 THEN $4::timestamptz ELSE NULL END',
+      );
+      expect(call?.params.slice(0, 3)).toEqual(['handler exception', 'evt-1', 3]);
+      expect(call?.params[3]).toBeInstanceOf(Date);
     });
   });
 
@@ -242,7 +246,7 @@ describe('PgEventBus', () => {
 
       expect(deleted).toBe(7);
       expect(pool.calls[0]?.sql).toContain("status = 'FAILED'");
-      expect(pool.calls[0]?.sql).toContain('created_at < $1');
+      expect(pool.calls[0]?.sql).toContain('failed_at < $1');
       expect(pool.calls[0]?.params).toEqual([cutoff]);
     });
 
@@ -262,7 +266,7 @@ describe('PgEventBus', () => {
       pool.enqueue([]);
       await custom.claim('replica-1', 10);
 
-      const call = pool.calls[0];
+      const call = pool.clientCalls[1];
       expect(call?.sql).toContain('lease_expires_at = $4');
       const claimedAt = call?.params[2] as Date;
       const leaseExpiresAt = call?.params[3] as Date;
@@ -343,8 +347,8 @@ describe('PgEventBus', () => {
 
       const call = pool.calls[0];
       expect(call?.sql).toContain('lease_expires_at = NULL');
-      expect(call?.sql).toContain('WHERE id = $2 AND (claimed_by = $4 OR claimed_by IS NULL)');
-      expect(call?.params).toEqual(['boom', 'evt-1', 3, 'replica-1']);
+      expect(call?.sql).toContain('WHERE id = $2 AND (claimed_by = $5 OR claimed_by IS NULL)');
+      expect(call?.params[4]).toBe('replica-1');
     });
 
     it('unfenced markFailed ignores rowCount', async () => {
@@ -373,13 +377,123 @@ describe('PgEventBus', () => {
       pool.failNext(
         Object.assign(new Error('column "lease_expires_at" does not exist'), { code: '42703' }),
       );
-      await expect(bus.claim('replica-1', 10)).rejects.toBeInstanceOf(MissingLeaseColumnError);
+      await expect(bus.claim('replica-1', 10)).rejects.toBeInstanceOf(MissingColumnError);
     });
 
     it('passes other query errors through untouched', async () => {
       const boom = Object.assign(new Error('column "nope" does not exist'), { code: '42703' });
       pool.failNext(boom);
       await expect(bus.claim('replica-1', 10)).rejects.toBe(boom);
+    });
+  });
+
+  describe('kit-owned ordering', () => {
+    function row(id: string, seq: string | null, aggregateId: string | null = null) {
+      return {
+        id,
+        event_type: 'order.placed',
+        event_version: 1,
+        event_kind: 'domain',
+        payload: {},
+        source_service: 'svc-a',
+        aggregate_id: aggregateId,
+        correlation_id: null,
+        status: 'CLAIMED',
+        claimed_by: 'replica-1',
+        claimed_at: new Date('2026-01-01T00:00:05Z'),
+        lease_expires_at: null,
+        failed_at: null,
+        seq,
+        retry_count: 0,
+        last_error: null,
+        created_at: new Date('2026-01-01T00:00:00Z'),
+        published_at: new Date('2026-01-01T00:00:01Z'),
+        occurred_at: OCCURRED_AT,
+      };
+    }
+
+    it('claims in seq order inside a transaction', async () => {
+      pool.enqueue([]);
+      await bus.claim('replica-1', 10);
+
+      const sqls = pool.clientCalls.map((c) => c.sql.trim());
+      expect(sqls[0]).toBe('BEGIN');
+      expect(sqls[1]).toContain('ORDER BY e.seq NULLS FIRST, e.created_at');
+      expect(sqls.at(-1)).toBe('COMMIT');
+    });
+
+    it('returns the claimed rows ordered by seq, legacy rows (no seq) first', async () => {
+      pool.enqueue([]);
+      await bus.claim('replica-1', 10);
+      expect(pool.clientCalls[1]?.sql).toContain(
+        'SELECT * FROM updated ORDER BY seq NULLS FIRST, created_at',
+      );
+    });
+
+    it('keeps the returned order after verify gives rows back', async () => {
+      pool.enqueue([row('a', null, 'agg-1'), row('b', '9', 'agg-2'), row('c', '10', 'agg-3')]);
+      pool.enqueue([{ id: 'b' }]);
+      const entries = await bus.claim('replica-1', 10);
+      expect(entries.map((e) => e.id)).toEqual(['a', 'c']);
+    });
+
+    it('verifies aggregate ownership and drops rows another claim already holds', async () => {
+      pool.enqueue([row('e1', '1', 'agg-1'), row('e2', '2', 'agg-2')]);
+      pool.enqueue([{ id: 'e1' }]);
+      const entries = await bus.claim('replica-1', 10);
+
+      const verify = pool.clientCalls[2];
+      expect(verify?.sql).toContain("o.status = 'CLAIMED'");
+      expect(verify?.sql).toContain('NOT (o.id = ANY($1))');
+      expect(verify?.params).toEqual([['e1', 'e2']]);
+      expect(entries.map((e) => e.id)).toEqual(['e2']);
+    });
+
+    it('scopes the earlier-PENDING check to the claimed topics', async () => {
+      pool.enqueue([row('e1', '1', 'agg-1')]);
+      await bus.claim('replica-1', 10, ['order.placed']);
+
+      const verify = pool.clientCalls[2];
+      expect(verify?.sql).toContain("o.status = 'PENDING' AND o.event_type = ANY($2)");
+      expect(verify?.sql).toContain('o.seq < t.seq');
+      expect(verify?.params).toEqual([['e1'], ['order.placed']]);
+    });
+
+    it('skips the verify step when no claimed row has an aggregate', async () => {
+      pool.enqueue([row('e1', '1')]);
+      await bus.claim('replica-1', 10);
+      expect(pool.clientCalls.map((c) => c.sql.trim())).toEqual([
+        'BEGIN',
+        expect.stringContaining('WITH claimed AS'),
+        'COMMIT',
+      ]);
+    });
+
+    it('rolls back when the claim fails', async () => {
+      pool.failNext(new Error('boom'));
+      await expect(bus.claim('replica-1', 10)).rejects.toThrow('boom');
+      expect(pool.clientCalls.at(-1)?.sql).toBe('ROLLBACK');
+    });
+
+    it('never writes seq on publish', async () => {
+      pool.enqueue([{ id: 'x' }]);
+      await bus.publish({
+        eventType: 'order.placed',
+        eventVersion: 1,
+        eventKind: 'integration',
+        payload: {},
+        sourceService: 'svc-a',
+        occurredAt: OCCURRED_AT,
+        createdAt: new Date(0),
+      });
+      expect(pool.calls[0]?.sql).not.toMatch(/\bseq\b/);
+    });
+
+    it('maps failed_at onto the entry', async () => {
+      const failedAt = new Date('2026-02-01T00:00:00Z');
+      pool.enqueue([{ ...row('e1', '1'), failed_at: failedAt }]);
+      const [entry] = await bus.claim('replica-1', 10);
+      expect(entry?.failedAt).toBe(failedAt);
     });
   });
 });

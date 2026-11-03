@@ -15,6 +15,7 @@ export type LocalOutboxEntry = {
   readonly leaseExpiresAt?: Date | undefined;
   readonly retryCount: number;
   readonly lastError?: string | undefined;
+  readonly failedAt?: Date | undefined;
   readonly publishedAt?: Date | undefined;
   readonly createdAt: Date;
 };

@@ -16,6 +16,7 @@ export type EventBusEntry = {
   readonly leaseExpiresAt?: Date | undefined;
   readonly retryCount: number;
   readonly lastError?: string | undefined;
+  readonly failedAt?: Date | undefined;
   readonly createdAt: Date;
   readonly publishedAt: Date;
 };

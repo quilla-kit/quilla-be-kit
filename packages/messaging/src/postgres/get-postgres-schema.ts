@@ -3,17 +3,58 @@ export type PostgresSchemaOptions = {
   readonly eventsTable?: string;
 };
 
-// Checks the catalog first: ALTER TABLE takes an exclusive lock even when the column exists.
-function addLeaseColumn(table: string): string {
+// Every upgrade step checks the catalog first: ALTER TABLE and CREATE INDEX take table locks
+// even when the column or index already exists.
+function doIf(condition: string, statement: string): string {
   return `DO $$
 BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_attribute
-    WHERE attrelid = '${table}'::regclass AND attname = 'lease_expires_at' AND NOT attisdropped
-  ) THEN
-    ALTER TABLE ${table} ADD COLUMN lease_expires_at TIMESTAMPTZ;
+  IF ${condition} THEN
+    ${statement};
   END IF;
 END $$;`;
+}
+
+function addColumn(table: string, column: string, type: string): string {
+  return doIf(
+    `NOT EXISTS (SELECT 1 FROM pg_attribute
+      WHERE attrelid = '${table}'::regclass AND attname = '${column}' AND NOT attisdropped)`,
+    `ALTER TABLE ${table} ADD COLUMN ${column} ${type}`,
+  );
+}
+
+function createIndex(name: string, on: string, unique = false): string {
+  return doIf(
+    `to_regclass('${name}') IS NULL`,
+    `CREATE ${unique ? 'UNIQUE ' : ''}INDEX ${name} ON ${on}`,
+  );
+}
+
+// Columns and indexes the claim, lease and retention SQL rely on, shared by both tables.
+// seq and its default are separate steps: ADD COLUMN with a volatile default (nextval)
+// rewrites the table. CACHE stays 1 so values follow nextval order across sessions.
+function claimSupport(table: string): string[] {
+  return [
+    addColumn(table, 'lease_expires_at', 'TIMESTAMPTZ'),
+    addColumn(table, 'failed_at', 'TIMESTAMPTZ'),
+    addColumn(table, 'seq', 'BIGINT'),
+    `CREATE SEQUENCE IF NOT EXISTS ${table}_seq OWNED BY ${table}.seq;`,
+    doIf(
+      `NOT EXISTS (SELECT 1 FROM pg_attrdef d
+      JOIN pg_attribute a ON a.attrelid = d.adrelid AND a.attnum = d.adnum
+      WHERE d.adrelid = '${table}'::regclass AND a.attname = 'seq')`,
+      `ALTER TABLE ${table} ALTER COLUMN seq SET DEFAULT nextval('${table}_seq')`,
+    ),
+    createIndex(
+      `${table}_aggregate_id_seq_idx`,
+      `${table} (aggregate_id, seq NULLS FIRST) WHERE aggregate_id IS NOT NULL AND status = 'PENDING'`,
+    ),
+    createIndex(
+      `${table}_aggregate_id_status_idx`,
+      `${table} (aggregate_id, status) WHERE aggregate_id IS NOT NULL AND status = 'CLAIMED'`,
+    ),
+    createIndex(`${table}_claimed_at_idx`, `${table} (claimed_at) WHERE status = 'CLAIMED'`),
+    createIndex(`${table}_failed_at_idx`, `${table} (failed_at) WHERE status = 'FAILED'`),
+  ];
 }
 
 export function getPostgresSchema(options?: PostgresSchemaOptions): string {
@@ -35,17 +76,16 @@ export function getPostgresSchema(options?: PostgresSchemaOptions): string {
   lease_expires_at TIMESTAMPTZ,
   retry_count INTEGER NOT NULL,
   last_error TEXT,
+  failed_at TIMESTAMPTZ,
   published_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL,
   occurred_at TIMESTAMPTZ NOT NULL
 );`,
-    addLeaseColumn(outboxTable),
-    `CREATE INDEX IF NOT EXISTS ${outboxTable}_status_created_at_idx
-  ON ${outboxTable} (status, created_at)
-  WHERE status = 'PENDING';`,
-    `CREATE INDEX IF NOT EXISTS ${outboxTable}_claimed_at_idx
-  ON ${outboxTable} (claimed_at)
-  WHERE status = 'CLAIMED';`,
+    ...claimSupport(outboxTable),
+    createIndex(
+      `${outboxTable}_seq_idx`,
+      `${outboxTable} (seq NULLS FIRST, created_at) WHERE status = 'PENDING'`,
+    ),
     `CREATE TABLE IF NOT EXISTS ${eventsTable} (
   id UUID PRIMARY KEY,
   event_type TEXT NOT NULL,
@@ -62,23 +102,21 @@ export function getPostgresSchema(options?: PostgresSchemaOptions): string {
   lease_expires_at TIMESTAMPTZ,
   retry_count INTEGER NOT NULL,
   last_error TEXT,
+  failed_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL,
   published_at TIMESTAMPTZ NOT NULL,
   occurred_at TIMESTAMPTZ NOT NULL
 );`,
-    addLeaseColumn(eventsTable),
-    `CREATE INDEX IF NOT EXISTS ${eventsTable}_event_type_created_at_idx
-  ON ${eventsTable} (event_type, created_at)
-  WHERE status = 'PENDING';`,
-    `CREATE INDEX IF NOT EXISTS ${eventsTable}_aggregate_id_status_idx
-  ON ${eventsTable} (aggregate_id, status)
-  WHERE aggregate_id IS NOT NULL AND status = 'CLAIMED';`,
-    `CREATE INDEX IF NOT EXISTS ${eventsTable}_claimed_at_idx
-  ON ${eventsTable} (claimed_at)
-  WHERE status = 'CLAIMED';`,
-    `CREATE UNIQUE INDEX IF NOT EXISTS ${eventsTable}_origin_event_id_uq
-  ON ${eventsTable} (origin_event_id)
-  WHERE origin_event_id IS NOT NULL;`,
+    ...claimSupport(eventsTable),
+    createIndex(
+      `${eventsTable}_event_type_seq_idx`,
+      `${eventsTable} (event_type, seq NULLS FIRST, created_at) WHERE status = 'PENDING'`,
+    ),
+    createIndex(
+      `${eventsTable}_origin_event_id_uq`,
+      `${eventsTable} (origin_event_id) WHERE origin_event_id IS NOT NULL`,
+      true,
+    ),
   ];
 
   return `${statements.join('\n\n')}\n`;
