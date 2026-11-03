@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { ClaimLostError } from '../../src/event-bus/claim-lost.error.js';
+import { RELEASE_CLAIM } from '../../src/postgres/claim.dao.js';
 import { MissingColumnError } from '../../src/postgres/missing-column.error.js';
 import { PgEventBus } from '../../src/postgres/pg-event-bus.js';
 import { FakePgPool } from '../helpers/fake-pg-pool.js';
@@ -487,6 +488,49 @@ describe('PgEventBus', () => {
         createdAt: new Date(0),
       });
       expect(pool.calls[0]?.sql).not.toMatch(/\bseq\b/);
+    });
+
+    it('markFailed returns the updated row as an entry', async () => {
+      const failedAt = new Date('2026-02-01T00:00:00Z');
+      pool.enqueue([
+        {
+          ...row('e1', '1'),
+          status: 'FAILED',
+          claimed_by: null,
+          claimed_at: null,
+          retry_count: 3,
+          last_error: 'boom',
+          failed_at: failedAt,
+        },
+      ]);
+      const entry = await bus.markFailed('e1', 'boom', 'replica-1');
+
+      expect(pool.calls[0]?.sql).toContain('RETURNING *');
+      expect(entry).toMatchObject({
+        id: 'e1',
+        status: 'FAILED',
+        retryCount: 3,
+        lastError: 'boom',
+        failedAt,
+      });
+      expect(entry?.claimedBy).toBeUndefined();
+    });
+
+    it('releases owned CLAIMED rows back to PENDING and returns the released ids', async () => {
+      pool.enqueue([{ id: 'e1' }]);
+      const released = await bus.lease.release?.('replica-1', ['e1', 'e2']);
+
+      const call = pool.calls[0];
+      expect(call?.sql).toContain(`SET status = 'PENDING', ${RELEASE_CLAIM}`);
+      expect(call?.sql).toContain("WHERE id = ANY($1) AND claimed_by = $2 AND status = 'CLAIMED'");
+      expect(call?.sql).not.toContain('retry_count');
+      expect(call?.params).toEqual([['e1', 'e2'], 'replica-1']);
+      expect(released).toEqual(['e1']);
+    });
+
+    it('skips the release query when there is nothing to release', async () => {
+      expect(await bus.lease.release?.('replica-1', [])).toEqual([]);
+      expect(pool.calls).toHaveLength(0);
     });
 
     it('maps failed_at onto the entry', async () => {

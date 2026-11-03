@@ -40,6 +40,9 @@ export type EventConsumerOptions = {
     readonly provider: ExecutionContextProvider;
   };
   readonly onProcessed?: (entry: EventBusEntry) => void;
+  // After each failed attempt is recorded; `entry.status === 'FAILED'` means dead-lettered.
+  // Not called when the claim was lost (onLeaseLost reports it).
+  readonly onFailed?: (entry: EventBusEntry) => void;
   readonly onLeaseLost?: (info: LeaseLostInfo) => void;
   readonly subscriptions?: ReadonlyArray<EventSubscription<unknown>>;
 };
@@ -96,6 +99,7 @@ export class EventConsumer implements Disposable {
   private readonly instanceId: string;
   private readonly executionContext: EventConsumerOptions['executionContext'];
   private readonly onProcessed: ((entry: EventBusEntry) => void) | undefined;
+  private readonly onFailed: ((entry: EventBusEntry) => void) | undefined;
   private readonly leases: ClaimLeaseManager;
   private readonly handlers = new Map<string, EventHandler[]>();
   private topicKeys: readonly string[] = [];
@@ -117,6 +121,7 @@ export class EventConsumer implements Disposable {
     this.instanceId = options.instanceId ?? randomUUID();
     this.executionContext = options.executionContext;
     this.onProcessed = options.onProcessed;
+    this.onFailed = options.onFailed;
     this.leases = new ClaimLeaseManager({
       lease: options.bus.lease,
       instanceId: this.instanceId,
@@ -243,20 +248,33 @@ export class EventConsumer implements Disposable {
         }
 
         if (allSucceeded) {
-          this.onProcessed?.(event);
+          this.callHook('onProcessed', this.onProcessed, event);
           await this.leases.settle(event, 'done', () =>
             this.bus.markDone(event.id, this.instanceId),
           );
         } else {
-          await this.leases.settle(event, 'failed', () =>
+          const failed = await this.leases.settle(event, 'failed', () =>
             this.bus.markFailed(event.id, lastError ?? 'unknown failure', this.instanceId),
           );
+          if (failed) this.callHook('onFailed', this.onFailed, failed);
         }
       }
     } catch (err) {
       this.logger.error('tick error', err);
     } finally {
-      this.leases.end();
+      await this.leases.finish();
+    }
+  }
+
+  private callHook(
+    name: string,
+    hook: ((entry: EventBusEntry) => void) | undefined,
+    entry: EventBusEntry,
+  ): void {
+    try {
+      hook?.(entry);
+    } catch (err) {
+      this.logger.error(`${name} hook threw`, err, { meta: { eventId: entry.id } });
     }
   }
 
@@ -303,7 +321,7 @@ export class EventConsumer implements Disposable {
       } catch (err) {
         lastError = err instanceof Error ? err.message : String(err);
         if (err instanceof SchemaValidationError) {
-          this.logger.error('schema validation failed; marking FAILED (no retries)', err, {
+          this.logger.error('schema validation failed; skipping in-process retries', err, {
             meta: { eventId: event.id, eventType: event.eventType, issues: err.issues },
           });
           return lastError;
