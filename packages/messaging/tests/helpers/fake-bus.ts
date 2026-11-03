@@ -5,7 +5,7 @@ import {
   type EventBusEntry,
   type EventBusPublisher,
 } from '../../src/index.js';
-import type { FakeLease } from './fake-lease.js';
+import { type FakeLease, failedCopy } from './fake-lease.js';
 
 export class FakeEventBusPublisher implements EventBusPublisher {
   readonly published: { id: string; event: Parameters<EventBusPublisher['publish']>[0] }[] = [];
@@ -43,9 +43,12 @@ export class FakeEventBusConsumer implements EventBusConsumer {
   readonly markInstanceIds: (string | undefined)[] = [];
   readonly claimLost = new Set<string>();
   lease?: FakeLease;
+  failedStatus: 'PENDING' | 'FAILED' = 'PENDING';
   private batches: EventBusEntry[][] = [];
+  private readonly entries = new Map<string, EventBusEntry>();
 
   enqueueBatch(events: readonly EventBusEntry[]): void {
+    for (const event of events) this.entries.set(event.id, event);
     this.batches.push([...events]);
   }
 
@@ -67,10 +70,17 @@ export class FakeEventBusConsumer implements EventBusConsumer {
     this.marksDone.push(id);
   }
 
-  async markFailed(id: string, reason: string, instanceId?: string): Promise<void> {
+  async markFailed(
+    id: string,
+    reason: string,
+    instanceId?: string,
+  ): Promise<EventBusEntry | undefined> {
     this.markInstanceIds.push(instanceId);
     if (this.claimLost.has(id)) throw new ClaimLostError(id);
     this.marksFailed.push({ id, reason });
+    const entry = this.entries.get(id);
+    if (!entry) return undefined;
+    return failedCopy(entry, reason, this.failedStatus);
   }
 
   async resetStale(_olderThan: Date): Promise<number> {

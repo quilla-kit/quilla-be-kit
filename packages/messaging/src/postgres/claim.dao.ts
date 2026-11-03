@@ -130,25 +130,27 @@ export class ClaimDao implements ClaimLease {
     if (instanceId !== undefined && (result.rowCount ?? 0) === 0) throw new ClaimLostError(id);
   }
 
-  async markFailed(
+  async markFailed<R extends QueryResultRow>(
     id: string,
     reason: string,
     maxRetries: number,
     instanceId: string | undefined,
-  ): Promise<void> {
+  ): Promise<R | undefined> {
     const params: unknown[] = [reason, id, maxRetries, new Date()];
     const owned = this.ownedBy(params, instanceId);
-    const result = await this.query(
+    const result = await this.query<R>(
       `UPDATE ${this.table}
        SET retry_count = retry_count + 1,
            last_error = $1,
            status = CASE WHEN retry_count + 1 >= $3 THEN 'FAILED' ELSE 'PENDING' END,
            failed_at = CASE WHEN retry_count + 1 >= $3 THEN $4::timestamptz ELSE NULL END,
            ${RELEASE_CLAIM}
-       WHERE id = $2${owned}`,
+       WHERE id = $2${owned}
+       RETURNING *`,
       params,
     );
     this.assertOwned(result, id, instanceId);
+    return result.rows[0];
   }
 
   // Rows with no failed_at (failed before 0.9.0) have an unknown age and are kept.
@@ -192,6 +194,18 @@ export class ClaimDao implements ClaimLease {
        WHERE id = ANY($1) AND claimed_by = $2 AND status = 'CLAIMED'
        RETURNING id`,
       [[...ids], instanceId, now, this.expiryFrom(now)],
+    );
+    return result.rows.map((r) => r.id);
+  }
+
+  async release(instanceId: string, ids: readonly string[]): Promise<readonly string[]> {
+    if (ids.length === 0) return [];
+    const result = await this.query<{ id: string }>(
+      `UPDATE ${this.table}
+       SET status = 'PENDING', ${RELEASE_CLAIM}
+       WHERE id = ANY($1) AND claimed_by = $2 AND status = 'CLAIMED'
+       RETURNING id`,
+      [[...ids], instanceId],
     );
     return result.rows.map((r) => r.id);
   }

@@ -2,8 +2,9 @@ import { NoopLogger } from '@quilla-be-kit/observability';
 import type pg from 'pg';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { LeaseLostInfo } from '../../src/event-bus/claim-lease.type.js';
+import type { EventBusEntry } from '../../src/event-bus/event-bus-entry.type.js';
 import type { EventBusPublisher } from '../../src/event-bus/event-bus-publisher.interface.js';
-import { EventConsumer } from '../../src/event-bus/event.consumer.js';
+import { EventConsumer, type EventConsumerOptions } from '../../src/event-bus/event.consumer.js';
 import type { HandlerEntry } from '../../src/event-bus/handler-entry.type.js';
 import { OutboxForwarder } from '../../src/local-outbox/outbox.forwarder.js';
 import { getPostgresSchema } from '../../src/postgres/get-postgres-schema.js';
@@ -95,7 +96,7 @@ describe.skipIf(!PG_URL)('Postgres ordering and retention (integration)', () => 
   function consumer(
     target: PgEventBus,
     handle: (entry: HandlerEntry<unknown>) => Promise<void>,
-    options: { renewIntervalMs?: number; onLeaseLost?: (info: LeaseLostInfo) => void } = {},
+    options: Partial<EventConsumerOptions> = {},
   ): EventConsumer {
     const c = new EventConsumer({
       bus: target,
@@ -300,6 +301,114 @@ describe.skipIf(!PG_URL)('Postgres ordering and retention (integration)', () => 
       );
       expect(await reader.resetStale(legacyCutoff())).toBe(1);
       expect((await reader.claim('B', 10)).map(kOf)).toEqual([0, 1, 2]);
+    });
+  });
+
+  describe('batch hand-back', () => {
+    it('hands a waiting row to another replica while a slow handler runs, without a lost claim', async () => {
+      const publisher = bus();
+      await publish(publisher, 'X', 0);
+      await publish(publisher, 'Y', 1);
+
+      const runs: { by: string; k: number; start: number; end: number }[] = [];
+      const lost: LeaseLostInfo[] = [];
+      const record = (by: string) => async (entry: HandlerEntry<unknown>) => {
+        const start = Date.now();
+        if (kOf(entry) === 0) await sleep(3_000);
+        runs.push({ by, k: kOf(entry), start, end: Date.now() });
+      };
+      const options = {
+        renewIntervalMs: 500,
+        onLeaseLost: (info: LeaseLostInfo) => lost.push(info),
+      };
+      consumer(bus({ leaseMs: 1_500 }), record('A'), options).start();
+      await waitFor(
+        async () =>
+          (
+            await pool.query(
+              `SELECT 1 FROM ${tables.eventsTable} WHERE status = 'CLAIMED' AND claimed_by IS NOT NULL`,
+            )
+          ).rowCount === 2,
+        2_000,
+      );
+      const claimedAt = Date.now();
+      consumer(bus({ leaseMs: 1_500 }), record('B'), options).start();
+
+      await waitFor(async () => runs.length === 2 && (await busRows()).length === 0, 10_000);
+
+      const x = runs.find((r) => r.k === 0);
+      const y = runs.find((r) => r.k === 1);
+      expect(x?.by).toBe('A');
+      expect(y?.by).toBe('B');
+      expect(y?.end).toBeLessThan(x?.end ?? 0);
+      // Handed back after one renewal interval, well before the 1.5 s lease would have expired.
+      expect((y?.start ?? Number.POSITIVE_INFINITY) - claimedAt).toBeLessThan(1_200);
+      expect(lost).toEqual([]);
+    }, 15_000);
+
+    it('brings a retried row back within a poll, ahead of the rest of its aggregate', async () => {
+      const publisher = bus();
+      for (let k = 0; k < 3; k++) await publish(publisher, 'X', k);
+
+      const seen: number[] = [];
+      let failedOnce = false;
+      const started = Date.now();
+      consumer(bus(), async (entry) => {
+        seen.push(kOf(entry));
+        if (kOf(entry) === 0 && !failedOnce) {
+          failedOnce = true;
+          throw new Error('transient');
+        }
+      }).start();
+
+      await waitFor(async () => (await busRows()).length === 0, 5_000);
+      expect(seen).toEqual([0, 0, 1, 2]);
+      expect(Date.now() - started).toBeLessThan(5_000);
+    }, 10_000);
+
+    it('leaves the rows it had not started PENDING when disposed mid-batch', async () => {
+      const publisher = bus();
+      await publish(publisher, 'X', 0);
+      await publish(publisher, 'Y', 1);
+      await publish(publisher, 'Z', 2);
+
+      let running = false;
+      const c = consumer(bus(), async () => {
+        running = true;
+        await sleep(300);
+      });
+      c.start();
+      await waitFor(() => running, 2_000);
+      await c.dispose();
+
+      const { rows } = await pool.query<{ k: number; status: string; claimed_by: string | null }>(
+        `SELECT (payload->>'k')::int AS k, status, claimed_by FROM ${tables.eventsTable} ORDER BY seq`,
+      );
+      expect(rows).toEqual([
+        { k: 1, status: 'PENDING', claimed_by: null },
+        { k: 2, status: 'PENDING', claimed_by: null },
+      ]);
+    });
+
+    it('reports a dead letter through onFailed with its final state', async () => {
+      const publisher = bus();
+      await publish(publisher, 'X', 0);
+
+      const failed: EventBusEntry[] = [];
+      consumer(
+        bus({ maxRetries: 1 }),
+        async () => {
+          throw new Error('boom');
+        },
+        { onFailed: (entry) => failed.push(entry) },
+      ).start();
+
+      await waitFor(() => failed.length === 1, 5_000);
+      await sleep(100);
+      expect(failed).toHaveLength(1);
+      expect(failed[0]).toMatchObject({ status: 'FAILED', retryCount: 1, lastError: 'boom' });
+      expect(failed[0]?.failedAt).toBeInstanceOf(Date);
+      expect(failed[0]?.claimedBy).toBeUndefined();
     });
   });
 

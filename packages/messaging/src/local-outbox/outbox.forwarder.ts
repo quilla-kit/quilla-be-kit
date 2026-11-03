@@ -9,6 +9,7 @@ import {
   DEFAULT_STALE_CLAIM_MS,
 } from '../event-bus/defaults.js';
 import type { EventBusPublisher } from '../event-bus/event-bus-publisher.interface.js';
+import type { LocalOutboxEntry } from './local-outbox-entry.type.js';
 import type { LocalOutboxReader } from './local-outbox-reader.interface.js';
 
 export type OutboxForwarderOptions = {
@@ -21,6 +22,9 @@ export type OutboxForwarderOptions = {
   readonly staleClaimAfterMs?: number;
   readonly renewIntervalMs?: number;
   readonly instanceId?: string;
+  // After each failed attempt is recorded; `entry.status === 'FAILED'` means dead-lettered.
+  // Not called when the claim was lost (onLeaseLost reports it).
+  readonly onFailed?: (entry: LocalOutboxEntry) => void;
   readonly onLeaseLost?: (info: LeaseLostInfo) => void;
 };
 
@@ -35,6 +39,7 @@ export class OutboxForwarder implements Disposable {
   private readonly staleClaimAfterMs: number;
   private readonly instanceId: string;
   private readonly leases: ClaimLeaseManager;
+  private readonly onFailed: ((entry: LocalOutboxEntry) => void) | undefined;
 
   private intervalHandle: ReturnType<typeof setInterval> | null = null;
   private inflightTick: Promise<void> | null = null;
@@ -49,6 +54,7 @@ export class OutboxForwarder implements Disposable {
     this.batchSize = options.batchSize ?? DEFAULT_BATCH_SIZE;
     this.staleClaimAfterMs = options.staleClaimAfterMs ?? DEFAULT_STALE_CLAIM_MS;
     this.instanceId = options.instanceId ?? randomUUID();
+    this.onFailed = options.onFailed;
     this.leases = new ClaimLeaseManager({
       lease: options.reader.lease,
       instanceId: this.instanceId,
@@ -132,15 +138,24 @@ export class OutboxForwarder implements Disposable {
           this.logger.error(`failed to forward event ${entry.id}`, err, {
             meta: { outboxId: entry.id, eventType: entry.eventType },
           });
-          await this.leases.settle(entry, 'failed', () =>
+          const failed = await this.leases.settle(entry, 'failed', () =>
             this.reader.markFailed(entry.id, reason, this.instanceId),
           );
+          if (failed) this.notifyFailed(failed);
         }
       }
     } catch (err) {
       this.logger.error('tick error', err);
     } finally {
-      this.leases.end();
+      await this.leases.finish();
+    }
+  }
+
+  private notifyFailed(entry: LocalOutboxEntry): void {
+    try {
+      this.onFailed?.(entry);
+    } catch (err) {
+      this.logger.error('onFailed hook threw', err, { meta: { outboxId: entry.id } });
     }
   }
 

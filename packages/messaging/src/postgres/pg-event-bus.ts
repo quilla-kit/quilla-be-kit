@@ -128,8 +128,13 @@ export class PgEventBus implements EventBusPublisher, EventBusConsumer {
     this.claims.assertOwned(result, id, instanceId);
   }
 
-  markFailed(id: string, reason: string, instanceId?: string): Promise<void> {
-    return this.claims.markFailed(id, reason, this.maxRetries, instanceId);
+  async markFailed(
+    id: string,
+    reason: string,
+    instanceId?: string,
+  ): Promise<EventBusEntry | undefined> {
+    const row = await this.claims.markFailed<EventsRow>(id, reason, this.maxRetries, instanceId);
+    return row && this.rowToEntry(row);
   }
 
   resetStale(olderThan: Date): Promise<number> {

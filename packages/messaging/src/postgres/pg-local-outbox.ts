@@ -142,8 +142,13 @@ export class PgLocalOutbox implements LocalOutboxWriter, LocalOutboxReader {
     this.claims.assertOwned(result, id, instanceId);
   }
 
-  markFailed(id: string, reason: string, instanceId?: string): Promise<void> {
-    return this.claims.markFailed(id, reason, this.maxRetries, instanceId);
+  async markFailed(
+    id: string,
+    reason: string,
+    instanceId?: string,
+  ): Promise<LocalOutboxEntry | undefined> {
+    const row = await this.claims.markFailed<OutboxRow>(id, reason, this.maxRetries, instanceId);
+    return row && this.rowToEntry(row);
   }
 
   resetStale(olderThan: Date): Promise<number> {

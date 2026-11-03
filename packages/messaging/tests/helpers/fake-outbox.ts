@@ -1,5 +1,5 @@
 import { ClaimLostError, type LocalOutboxEntry, type LocalOutboxReader } from '../../src/index.js';
-import type { FakeLease } from './fake-lease.js';
+import { type FakeLease, failedCopy } from './fake-lease.js';
 
 export class FakeLocalOutboxReader implements LocalOutboxReader {
   readonly claimed: { instanceId: string; batchSize: number }[] = [];
@@ -8,9 +8,12 @@ export class FakeLocalOutboxReader implements LocalOutboxReader {
   readonly markInstanceIds: (string | undefined)[] = [];
   readonly claimLost = new Set<string>();
   lease?: FakeLease;
+  failedStatus: 'PENDING' | 'FAILED' = 'PENDING';
   private batches: LocalOutboxEntry[][] = [];
+  private readonly entries = new Map<string, LocalOutboxEntry>();
 
   enqueueBatch(entries: readonly LocalOutboxEntry[]): void {
+    for (const entry of entries) this.entries.set(entry.id, entry);
     this.batches.push([...entries]);
   }
 
@@ -25,10 +28,17 @@ export class FakeLocalOutboxReader implements LocalOutboxReader {
     this.markedSent.push({ id, publishedAt });
   }
 
-  async markFailed(id: string, error: string, instanceId?: string): Promise<void> {
+  async markFailed(
+    id: string,
+    error: string,
+    instanceId?: string,
+  ): Promise<LocalOutboxEntry | undefined> {
     this.markInstanceIds.push(instanceId);
     if (this.claimLost.has(id)) throw new ClaimLostError(id);
     this.markedFailed.push({ id, error });
+    const entry = this.entries.get(id);
+    if (!entry) return undefined;
+    return failedCopy(entry, error, this.failedStatus);
   }
 
   async resetStale(_olderThan: Date): Promise<number> {

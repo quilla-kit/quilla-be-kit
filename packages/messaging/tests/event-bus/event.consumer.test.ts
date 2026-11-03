@@ -307,6 +307,105 @@ describe('EventConsumer', () => {
     expect(bus.marksFailed.map((m) => m.id)).toEqual(['fail-1']);
   });
 
+  describe('onFailed', () => {
+    function failing(overrides: Partial<EventConsumerOptions> = {}): EventConsumer {
+      const consumer = new EventConsumer({
+        bus,
+        consumerName: 'test',
+        sourceService: 'svc-a',
+        logger: new NoopLogger(),
+        retryDelaysMs: [],
+        instanceId: 'replica-1',
+        ...overrides,
+      });
+      consumer.on('test.happened', async () => {
+        throw new Error('boom');
+      });
+      return consumer;
+    }
+
+    it('gets the updated entry for a retry and for a dead letter', async () => {
+      const onFailed = vi.fn();
+      const consumer = failing({ onFailed });
+      bus.enqueueBatch([makeBusEntry({ id: 'evt-1' })]);
+      consumer.start();
+      await vi.advanceTimersByTimeAsync(1000);
+      bus.failedStatus = 'FAILED';
+      bus.enqueueBatch([makeBusEntry({ id: 'evt-2', retryCount: 2 })]);
+      await vi.advanceTimersByTimeAsync(1000);
+      await consumer.dispose();
+
+      expect(onFailed).toHaveBeenCalledTimes(2);
+      expect(onFailed.mock.calls[0]?.[0]).toMatchObject({
+        id: 'evt-1',
+        status: 'PENDING',
+        retryCount: 1,
+        lastError: 'boom',
+      });
+      expect(onFailed.mock.calls[1]?.[0]).toMatchObject({
+        id: 'evt-2',
+        status: 'FAILED',
+        retryCount: 3,
+        lastError: 'boom',
+        failedAt: expect.any(Date),
+      });
+    });
+
+    it('is not called when the claim was lost', async () => {
+      const onFailed = vi.fn();
+      const onLeaseLost = vi.fn();
+      bus.claimLost.add('evt-1');
+      const consumer = failing({ onFailed, onLeaseLost });
+      bus.enqueueBatch([makeBusEntry({ id: 'evt-1' })]);
+      consumer.start();
+      await vi.advanceTimersByTimeAsync(1000);
+      await consumer.dispose();
+
+      expect(onFailed).not.toHaveBeenCalled();
+      expect(onLeaseLost).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it('contains throwing hooks without abandoning the batch', async () => {
+    const logger = new NoopLogger();
+    const error = vi.spyOn(logger, 'error');
+    const consumer = new EventConsumer({
+      bus,
+      consumerName: 'test',
+      sourceService: 'svc-a',
+      logger,
+      retryDelaysMs: [],
+      onProcessed: () => {
+        throw new Error('processed hook bug');
+      },
+      onFailed: () => {
+        throw new Error('failed hook bug');
+      },
+    });
+    consumer.on('ok.type', async () => {});
+    consumer.on('fail.type', async () => {
+      throw new Error('boom');
+    });
+    bus.enqueueBatch([
+      makeBusEntry({ id: 'ok-1', eventType: 'ok.type' }),
+      makeBusEntry({ id: 'fail-1', eventType: 'fail.type' }),
+      makeBusEntry({ id: 'ok-2', eventType: 'ok.type' }),
+    ]);
+
+    consumer.start();
+    await vi.advanceTimersByTimeAsync(1000);
+    await consumer.dispose();
+
+    expect(bus.marksDone).toEqual(['ok-1', 'ok-2']);
+    expect(bus.marksFailed.map((m) => m.id)).toEqual(['fail-1']);
+    expect(error).toHaveBeenCalledWith('onProcessed hook threw', expect.any(Error), {
+      meta: { eventId: 'ok-1' },
+    });
+    expect(error).toHaveBeenCalledWith('onFailed hook threw', expect.any(Error), {
+      meta: { eventId: 'fail-1' },
+    });
+  });
+
   it('passes a stable instanceId across ticks', async () => {
     const consumer = new EventConsumer({
       bus,
@@ -589,7 +688,40 @@ describe('EventConsumer claim leases', () => {
     return { promise, open: resolve };
   }
 
-  it('renews only the in-flight row while its handler runs', async () => {
+  it('renews the in-flight row and hands back the waiting rows after one interval', async () => {
+    const slow = gate();
+    const handled: string[] = [];
+    const onLeaseLost = vi.fn();
+    const consumer = makeConsumer({ onLeaseLost });
+    consumer.on('test.happened', async (entry) => {
+      handled.push(entry.id);
+      if (entry.id === 'evt-1') await slow.promise;
+    });
+    bus.enqueueBatch([makeBusEntry({ id: 'evt-1' }), makeBusEntry({ id: 'evt-2' })]);
+
+    consumer.start();
+    await vi.advanceTimersByTimeAsync(1000);
+    await vi.advanceTimersByTimeAsync(40_000);
+
+    expect(lease.releaseCalls).toEqual([{ instanceId: 'replica-1', ids: ['evt-2'] }]);
+    expect(lease.renewCalls).toEqual([
+      { instanceId: 'replica-1', ids: ['evt-1'] },
+      { instanceId: 'replica-1', ids: ['evt-1'] },
+    ]);
+
+    slow.open();
+    await vi.advanceTimersByTimeAsync(0);
+    await consumer.dispose();
+
+    expect(handled).toEqual(['evt-1']);
+    expect(bus.marksDone).toEqual(['evt-1']);
+    expect(lease.releaseCalls).toHaveLength(1);
+    expect(onLeaseLost).not.toHaveBeenCalled();
+  });
+
+  it('renews the waiting rows with the in-flight one when the lease cannot release', async () => {
+    lease = new FakeLease(60_000, { release: false });
+    bus.lease = lease;
     const slow = gate();
     const consumer = makeConsumer();
     consumer.on('test.happened', async (entry) => {
@@ -602,17 +734,37 @@ describe('EventConsumer claim leases', () => {
     await vi.advanceTimersByTimeAsync(40_000);
 
     expect(lease.renewCalls).toEqual([
-      { instanceId: 'replica-1', ids: ['evt-1'] },
-      { instanceId: 'replica-1', ids: ['evt-1'] },
+      { instanceId: 'replica-1', ids: ['evt-1', 'evt-2'] },
+      { instanceId: 'replica-1', ids: ['evt-1', 'evt-2'] },
     ]);
 
     slow.open();
     await vi.advanceTimersByTimeAsync(0);
     await consumer.dispose();
 
-    // The tail row aged past one interval, so it is confirmed before dispatch.
-    expect(lease.renewCalls[2]).toEqual({ instanceId: 'replica-1', ids: ['evt-2'] });
     expect(bus.marksDone).toEqual(['evt-1', 'evt-2']);
+  });
+
+  it('hands back the rows it has not started when stopped mid-batch', async () => {
+    const slow = gate();
+    const consumer = makeConsumer();
+    consumer.on('test.happened', async (entry) => {
+      if (entry.id === 'evt-1') await slow.promise;
+    });
+    bus.enqueueBatch([
+      makeBusEntry({ id: 'evt-1' }),
+      makeBusEntry({ id: 'evt-2' }),
+      makeBusEntry({ id: 'evt-3' }),
+    ]);
+
+    consumer.start();
+    await vi.advanceTimersByTimeAsync(1000);
+    const disposed = consumer.dispose();
+    slow.open();
+    await disposed;
+
+    expect(bus.marksDone).toEqual(['evt-1']);
+    expect(lease.releaseCalls).toEqual([{ instanceId: 'replica-1', ids: ['evt-2', 'evt-3'] }]);
   });
 
   it('does not query before dispatch while the claim is fresh', async () => {
@@ -628,7 +780,9 @@ describe('EventConsumer claim leases', () => {
     expect(bus.marksDone).toEqual(['evt-1', 'evt-2']);
   });
 
-  it('skips a tail row whose claim was lost before dispatch', async () => {
+  it('skips a tail row whose claim was lost before dispatch, without reporting it', async () => {
+    lease = new FakeLease(60_000, { release: false });
+    bus.lease = lease;
     const slow = gate();
     const handled: string[] = [];
     const onLeaseLost = vi.fn();
@@ -649,12 +803,7 @@ describe('EventConsumer claim leases', () => {
 
     expect(handled).toEqual(['evt-1']);
     expect(bus.marksDone).toEqual(['evt-1']);
-    expect(onLeaseLost).toHaveBeenCalledTimes(1);
-    expect(onLeaseLost).toHaveBeenCalledWith({
-      id: 'evt-2',
-      eventType: 'test.happened',
-      stage: 'renew',
-    });
+    expect(onLeaseLost).not.toHaveBeenCalled();
   });
 
   it('reports a lease lost mid-handler once and still completes the row', async () => {

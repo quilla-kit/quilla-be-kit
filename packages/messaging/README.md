@@ -294,12 +294,14 @@ together:
    batch, a CLAIMED row or an earlier PENDING row. For consumers, "earlier
    PENDING" only counts event types the consumer subscribes to.
 4. **Stop the aggregate after a failure** — when an event of A fails (or
-   its claim is lost), the rest of A in the same batch is skipped. Those
-   rows keep their claim-time lease and come back together, behind the
-   retried event, once it expires. A retry within one aggregate therefore
-   waits up to one lease (`leaseMs`) plus one poll interval, as long as
-   some replica is polling. An event that reaches FAILED stops blocking
-   its aggregate.
+   its claim is lost), the rest of A in the same batch is skipped and
+   handed back to PENDING when the batch ends (see
+   [Claim leases](#claim-leases)). The next claim takes the retried event
+   and the rest of A together, in `seq` order, so a retry comes back
+   within one poll interval. Any delay between attempts comes from
+   `retryDelaysMs`. With a lease that can't release, the skipped rows
+   come back once their lease expires instead. An event that reaches
+   FAILED stops blocking its aggregate.
 
 Preconditions and limits:
 
@@ -327,11 +329,24 @@ A claim is a lease: the claiming replica writes `lease_expires_at`
   run for as long as it needs; only a replica that stops renewing (crash,
   kill, partition) loses its rows.
 - **In-flight only.** Only the row currently being handled is renewed.
-  The rest of a claimed batch keeps its original lease, so if the batch
-  runs long, the unprocessed tail expires and idle replicas take it.
-  Before dispatching each row, the replica confirms it still holds the
-  claim (one query, only when the claim is older than one renewal
-  interval) and skips rows it lost.
+- **Hand-back.** Rows of a batch that haven't started are returned to
+  PENDING, owner-checked, so idle replicas can take them:
+  - once the batch has been running for one renewal interval (a slow
+    handler, or `batchSize` × handler time beyond the interval);
+  - when the batch ends, for rows it skipped (the rest of an aggregate
+    after a failure or a lost claim) and rows left by shutdown.
+
+  A row that was handed back never ran here, so it isn't reported as a
+  lost claim. With a single replica, the same consumer claims those rows
+  again on its next poll. Before dispatching each row, the replica
+  confirms it still holds the claim (one query, only when the claim is
+  older than one renewal interval). It skips a row it no longer holds and
+  logs that at `debug`: the row never started here, so it can't run twice.
+- **With renewal disabled** (`renewIntervalMs: 0`), nothing is handed back
+  mid-batch and rows aren't confirmed before dispatch, so rows still
+  waiting when their lease expires can be taken by another replica and
+  run twice. Keep `batchSize` × handler time under the lease in that
+  mode. Rows skipped at the end of a batch are still handed back.
 - **Recovery.** Every tick runs `resetStale`, which flips CLAIMED rows
   whose lease has expired back to PENDING. Each row carries its own
   deadline, so a consumer's `leaseMs` is honoured no matter which consumer
@@ -359,8 +374,9 @@ When a replica finds a claim is no longer its own — a renewal or
 pre-dispatch check comes back empty, or an owner-checked completion
 matches nothing — it logs `claim lease lost; event may run more than
 once` at `warn` and calls `onLeaseLost({ id, eventType, stage })` with
-`stage` set to `'renew'`, `'done'` or `'failed'`. Wire the hook to a
-counter: it's the signal that a duplicate run may have happened.
+`stage` set to `'renew'` (lost while its handler ran), `'done'` or
+`'failed'`. Wire the hook to a counter: it's the signal that a duplicate
+run may have happened.
 
 ### No DLQ table
 
@@ -368,6 +384,36 @@ FAILED rows stay in the main table with full context — `status='FAILED'`,
 `retry_count`, `last_error`, `failed_at`. Query them to inspect, replay
 by setting `status='PENDING'`, `retry_count=0` and `failed_at=NULL`. One
 less table to reason about.
+
+To be told when a row is dead-lettered, use `onFailed` on `EventConsumer`
+or `OutboxForwarder`. It runs after every failed attempt is recorded, with
+the updated entry. `status` is `'FAILED'` once retries are exhausted, and
+`'PENDING'` while the row will be retried:
+
+```ts
+new EventConsumer({
+  // ...
+  onFailed: (entry) => {
+    if (entry.status === 'FAILED') {
+      const { id, eventType, retryCount, lastError } = entry;
+      logger.error('event dead-lettered', undefined, {
+        meta: { eventId: id, eventType, retryCount, lastError },
+      });
+    }
+  },
+});
+```
+
+`onProcessed` runs only on success, so it never sees a FAILED entry. It
+runs after the handlers and before `markDone`, so it can still fire for a
+row whose claim then turns out to be lost. `onFailed` isn't called when
+the claim was lost. In both cases `onLeaseLost` reports the loss. A hook
+that throws is logged and doesn't affect the batch.
+
+Each attempt the bus records counts toward `maxRetries`, and each attempt
+runs the handler up to `retryDelaysMs.length + 1` times in process. A
+schema-validation failure skips the in-process retries but still counts
+one bus attempt per claim.
 
 ### At-least-once delivery — handlers must be idempotent
 
@@ -649,6 +695,7 @@ new OutboxForwarder({
   staleClaimAfterMs: 5 * 60_000, // recovery cutoff for claims without a lease
   renewIntervalMs: 20_000,       // defaults to a third of the reader's lease; 0 disables
   instanceId: 'replica-<id>',    // defaults to randomUUID(); must be unique per process
+  onFailed: (entry) => bumpMetric(entry), // entry.status === 'FAILED' when dead-lettered
   onLeaseLost: (info) => bumpMetric(info),
 });
 ```
@@ -676,6 +723,7 @@ new EventConsumer({
   instanceId: 'replica-<id>',        // must be unique per process
   executionContext: { provider }, // optional: reconstruct + scope per handler (factory is reached via provider.factory)
   onProcessed: (entry) => bumpMetric(entry),
+  onFailed: (entry) => bumpMetric(entry), // entry.status === 'FAILED' when dead-lettered
   onLeaseLost: ({ id, eventType, stage }) => bumpMetric({ id, eventType, stage }),
 });
 ```
@@ -683,6 +731,11 @@ new EventConsumer({
 `renewIntervalMs` must be below the lease. With renewal disabled
 (`renewIntervalMs: 0`) the component logs a warning at start: any row
 handled for longer than the lease is re-dispatched.
+
+`batchSize` caps how many rows one poll claims. A batch still running
+after one renewal interval hands its unstarted rows back (see
+[Claim leases](#claim-leases)), so a large batch behind a slow handler
+doesn't hold rows other replicas could run.
 
 ---
 
@@ -938,9 +991,9 @@ processing chatter:
 | Level | When it fires |
 | --- | --- |
 | `info` | Lifecycle transitions: `starting`, `stopped`. One-shot per component per replica. |
-| `debug` | Per-tick / per-batch processing: `forwarding N event(s)`, `registered event types`. High frequency. |
+| `debug` | Per-tick / per-batch processing: `forwarding N event(s)`, `registered event types`, `handed back N unstarted claim(s)`, `claim expired before dispatch; skipping`. High frequency. |
 | `warn` | Recoverable anomalies: handler retry, stale-claim sweep hits, lost claim leases, renewal disabled at start, transient handler failures. |
-| `error` | Terminal failures: handler exhausted retries, schema validation failed, tick crashed. |
+| `error` | Terminal failures: handler exhausted retries, schema validation failed, tick crashed, a hook threw, a hand-back failed. |
 
 `EventConsumer` splits its startup log to avoid unbounded `meta`
 payloads in the info stream: the info entry carries
@@ -979,7 +1032,7 @@ class KafkaBus implements EventBusPublisher, EventBusConsumer {
   async publish(event) { /* produce to topic; return generated id */ }
   async claim(instanceId, batchSize, allowedTopics) { /* pull + transition; filter by allowedTopics */ }
   async markDone(id, instanceId) { /* commit offset */ }
-  async markFailed(id, reason, instanceId) { /* retry or DLQ per broker semantics */ }
+  async markFailed(id, reason, instanceId) { /* retry or DLQ; return the updated entry */ }
   async resetStale(olderThan) { /* broker-specific recovery */ }
 }
 
@@ -998,18 +1051,25 @@ const forwarder = new OutboxForwarder({
   broker can extend a single message's claim; `renew` resolves to the ids
   still held. Consumers then renew automatically. Leave it out when the
   broker manages liveness itself.
+- `lease.release(instanceId, ids)` (optional) — return unstarted messages
+  to the queue at once, resolving to the ids released. Without it, a
+  consumer renews unstarted rows instead of handing them to other
+  replicas.
+- `markFailed` resolves to the updated entry, so `onFailed` can tell a
+  dead letter (`status: 'FAILED'`) from a retry. Resolve to `undefined`
+  when the broker can't report it; `onFailed` is then skipped.
 - `instanceId` on `markDone` / `markFailed` — when the broker reports that
   an ack didn't count (the claim moved elsewhere), throw `ClaimLostError`
   so the consumer reports it via `onLeaseLost` and carries on. Detect it
   with `ClaimLostError.is(err)`.
 
-| Broker | `lease.renew` | Lost-claim signal → `ClaimLostError` |
-| --- | --- | --- |
-| SQS | `ChangeMessageVisibility` | stale receipt handle |
-| Google Pub/Sub | `modifyAckDeadline` | ack after the deadline |
-| NATS JetStream | `msg.working()` | redelivered to another consumer |
-| RabbitMQ | omit (`consumer_timeout`, channel liveness) | ack on a closed channel |
-| Kafka | omit (consumer-group heartbeat) | `CommitFailedException` after a rebalance |
+| Broker | `lease.renew` | `lease.release` | Lost-claim signal → `ClaimLostError` |
+| --- | --- | --- | --- |
+| SQS | `ChangeMessageVisibility` | `ChangeMessageVisibility` to 0 | stale receipt handle |
+| Google Pub/Sub | `modifyAckDeadline` | `nack` (deadline 0) | ack after the deadline |
+| NATS JetStream | `msg.working()` | `msg.nak()` | redelivered to another consumer |
+| RabbitMQ | omit (`consumer_timeout`, channel liveness) | omit | ack on a closed channel |
+| Kafka | omit (consumer-group heartbeat) | omit | `CommitFailedException` after a rebalance |
 
 `LocalOutboxReader` takes the same optional `lease` and `instanceId` on
 `markSent` / `markFailed`.

@@ -253,6 +253,57 @@ describe('OutboxForwarder', () => {
       expect(reader.markedFailed).toHaveLength(0);
     });
 
+    it('calls onFailed with the updated entry, and contains a throwing hook', async () => {
+      const logger = new NoopLogger();
+      const error = vi.spyOn(logger, 'error');
+      const failed: unknown[] = [];
+      publisher.publishError = new Error('bus down');
+      reader.failedStatus = 'FAILED';
+      reader.enqueueBatch([makeOutboxEntry({ id: 'e1' }), makeOutboxEntry({ id: 'e2' })]);
+      const fwd = new OutboxForwarder({
+        reader,
+        publisher,
+        sourceService: 'svc-a',
+        logger,
+        onFailed: (entry) => {
+          failed.push(entry);
+          throw new Error('hook bug');
+        },
+      });
+
+      fwd.start();
+      await vi.advanceTimersByTimeAsync(1000);
+      await fwd.dispose();
+
+      expect(failed).toEqual([
+        expect.objectContaining({ id: 'e1', status: 'FAILED', lastError: 'bus down' }),
+        expect.objectContaining({ id: 'e2', status: 'FAILED', lastError: 'bus down' }),
+      ]);
+      expect(error).toHaveBeenCalledWith('onFailed hook threw', expect.any(Error), {
+        meta: { outboxId: 'e1' },
+      });
+    });
+
+    it('does not call onFailed when the claim was lost', async () => {
+      const onFailed = vi.fn();
+      publisher.publishError = new Error('bus down');
+      reader.claimLost.add('e1');
+      reader.enqueueBatch([makeOutboxEntry({ id: 'e1' })]);
+      const fwd = new OutboxForwarder({
+        reader,
+        publisher,
+        sourceService: 'svc-a',
+        logger: new NoopLogger(),
+        onFailed,
+      });
+
+      fwd.start();
+      await vi.advanceTimersByTimeAsync(1000);
+      await fwd.dispose();
+
+      expect(onFailed).not.toHaveBeenCalled();
+    });
+
     it('renewIntervalMs: 0 disables renewal and warns at start', async () => {
       const logger = new NoopLogger();
       const warn = vi.spyOn(logger, 'warn');

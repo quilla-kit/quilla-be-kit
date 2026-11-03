@@ -7,6 +7,30 @@ import { FakePgPool } from '../helpers/fake-pg-pool.js';
 
 const OCCURRED_AT = new Date('2025-12-31T23:59:00Z');
 
+function outboxRow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'e1',
+    event_type: 'order.placed',
+    event_version: 1,
+    event_kind: 'domain',
+    payload: { foo: 'bar' },
+    aggregate_id: 'agg-1',
+    correlation_id: null,
+    status: 'CLAIMED',
+    claimed_by: 'replica-1',
+    claimed_at: new Date('2026-01-01T00:00:05Z'),
+    lease_expires_at: null,
+    retry_count: 0,
+    last_error: null,
+    failed_at: null,
+    seq: null,
+    published_at: null,
+    created_at: new Date('2026-01-01T00:00:00Z'),
+    occurred_at: OCCURRED_AT,
+    ...overrides,
+  };
+}
+
 describe('PgLocalOutbox', () => {
   let pool: FakePgPool;
   let outbox: PgLocalOutbox;
@@ -143,25 +167,7 @@ describe('PgLocalOutbox', () => {
 
   describe('claim', () => {
     it('atomically transitions PENDING to CLAIMED and returns mapped entries', async () => {
-      pool.enqueue([
-        {
-          id: 'e1',
-          event_type: 'order.placed',
-          event_version: 1,
-          event_kind: 'domain',
-          payload: { foo: 'bar' },
-          aggregate_id: 'agg-1',
-          correlation_id: null,
-          status: 'CLAIMED',
-          claimed_by: 'replica-1',
-          claimed_at: new Date('2026-01-01T00:00:05Z'),
-          retry_count: 0,
-          last_error: null,
-          published_at: null,
-          created_at: new Date('2026-01-01T00:00:00Z'),
-          occurred_at: OCCURRED_AT,
-        },
-      ]);
+      pool.enqueue([outboxRow()]);
 
       const entries = await outbox.claim('replica-1', 10);
 
@@ -329,6 +335,30 @@ describe('PgLocalOutbox', () => {
         "pg_try_advisory_xact_lock(hashtext('outbox_events'), hashtext(e.aggregate_id))",
       );
       expect(sql).toContain('ORDER BY e.seq NULLS FIRST, e.created_at');
+    });
+
+    it('markFailed returns the updated row as an entry', async () => {
+      pool.enqueue([
+        outboxRow({
+          status: 'FAILED',
+          claimed_by: null,
+          claimed_at: null,
+          retry_count: 3,
+          last_error: 'boom',
+          failed_at: new Date('2026-02-01T00:00:00Z'),
+        }),
+      ]);
+      const entry = await outbox.markFailed('e1', 'boom', 'replica-1');
+
+      expect(pool.calls[0]?.sql).toContain('RETURNING *');
+      expect(entry).toMatchObject({ id: 'e1', status: 'FAILED', retryCount: 3, lastError: 'boom' });
+    });
+
+    it('releases owned CLAIMED rows through the lease', async () => {
+      pool.enqueue([{ id: 'e2' }]);
+      expect(await outbox.lease.release?.('replica-1', ['e1', 'e2'])).toEqual(['e2']);
+      expect(pool.calls[0]?.sql).toContain('UPDATE outbox_events');
+      expect(pool.calls[0]?.params).toEqual([['e1', 'e2'], 'replica-1']);
     });
 
     it('never writes seq on insert', async () => {
