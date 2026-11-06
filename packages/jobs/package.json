@@ -1,6 +1,6 @@
 {
   "name": "@quilla-be-kit/jobs",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Background-job interfaces + in-process job runner. Register scheduled jobs, run each tick inside a system execution context, run a job on any one instance through a lease store, shut down cleanly via Disposable.",
   "license": "MIT",
   "author": "Max Martinez",
