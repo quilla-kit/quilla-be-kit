@@ -26,9 +26,7 @@
   "engines": {
     "node": ">=22"
   },
-  "sideEffects": [
-    "./dist/decorator/route.metadata.js"
-  ],
+  "sideEffects": ["./dist/decorator/route.metadata.js"],
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -45,11 +43,7 @@
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "files": [
-    "dist",
-    "README.md",
-    "LICENSE"
-  ],
+  "files": ["dist", "README.md", "LICENSE"],
   "publishConfig": {
     "access": "public",
     "provenance": true
