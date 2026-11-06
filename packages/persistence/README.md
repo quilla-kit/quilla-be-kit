@@ -841,9 +841,9 @@ await uow.transaction(async (ctx) => {
 `onLocked` decides what happens on a row another transaction holds:
 
 - `'wait'` (default, `FOR UPDATE`) — block until it's released. Concurrent
-  sweepers — other replicas, or overlapping ticks, since `InProcessJobRunner`
-  starts a tick even while the previous one is still running — then block on
-  each other and get short or empty batches.
+  sweepers — other replicas running the same job (unless it is a
+  `@quilla-be-kit/jobs` `'any'` job, which runs on one instance per
+  interval) — then block on each other and get short or empty batches.
 - `'skip'` (`FOR UPDATE SKIP LOCKED`) — leave it out. Each sweeper gets the
   next unclaimed rows, so `orderBy` holds within a chunk, not across sweepers;
   a short batch doesn't mean the work is done; and a row held indefinitely
