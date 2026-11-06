@@ -68,7 +68,7 @@ Think of quilla-be-kit as five concentric layers. You reach for the inner layers
 
 **Runtime — process lifecycle**
 - [`@quilla-be-kit/runtime`](packages/runtime) — `Runtime` (signal trap), `ShutdownManager` (phased teardown), `ComponentRegistry`
-- [`@quilla-be-kit/jobs`](packages/jobs) — `BackgroundJob`, `InProcessJobRunner` with per-tick system `ExecutionContext`
+- [`@quilla-be-kit/jobs`](packages/jobs) — `BackgroundJob`, `InProcessJobRunner` with per-tick system `ExecutionContext`, abort signal and interval jitter; `runOn: { instances: 'any' }` runs a job on one instance per interval through a lease store (Postgres under `/postgres`)
 
 **HTTP tier — adapter-agnostic**
 - [`@quilla-be-kit/http`](packages/http) — decorated controllers, specificity-sorted router, Hono adapter under `/adapter/hono`
