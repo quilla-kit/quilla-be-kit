@@ -1,7 +1,7 @@
 {
   "name": "@quilla-be-kit/jobs",
   "version": "0.3.0",
-  "description": "Background-job interfaces + in-process job runner. Register scheduled jobs, run each tick inside a system execution context, shut down cleanly via Disposable.",
+  "description": "Background-job interfaces + in-process job runner. Register scheduled jobs, run each tick inside a system execution context, run a job on any one instance through a lease store, shut down cleanly via Disposable.",
   "license": "MIT",
   "author": "Max Martinez",
   "homepage": "https://github.com/quilla-kit/quilla-be-kit/tree/main/packages/jobs",
@@ -13,13 +13,7 @@
   "bugs": {
     "url": "https://github.com/quilla-kit/quilla-be-kit/issues"
   },
-  "keywords": [
-    "jobs",
-    "background-jobs",
-    "scheduler",
-    "job-runner",
-    "typescript"
-  ],
+  "keywords": ["jobs", "background-jobs", "scheduler", "job-runner", "typescript"],
   "type": "module",
   "engines": {
     "node": ">=22"
@@ -29,15 +23,15 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./postgres": {
+      "types": "./dist/postgres/index.d.ts",
+      "import": "./dist/postgres/index.js"
     }
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "files": [
-    "dist",
-    "README.md",
-    "LICENSE"
-  ],
+  "files": ["dist", "README.md", "LICENSE"],
   "publishConfig": {
     "access": "public",
     "provenance": true
@@ -46,11 +40,25 @@
     "build": "tsc -b",
     "typecheck": "tsc -p tsconfig.test.json",
     "test": "vitest run --passWithNoTests",
+    "test:pg": "vitest run tests/integration",
     "clean": "rm -rf dist *.tsbuildinfo"
   },
   "dependencies": {
+    "@quilla-be-kit/errors": "workspace:^",
     "@quilla-be-kit/execution-context": "workspace:^",
     "@quilla-be-kit/observability": "workspace:^",
     "@quilla-be-kit/runtime": "workspace:^"
+  },
+  "peerDependencies": {
+    "pg": ">=8.0"
+  },
+  "peerDependenciesMeta": {
+    "pg": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/pg": "^8.15.5",
+    "pg": "^8.13.0"
   }
 }
