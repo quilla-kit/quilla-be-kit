@@ -1,5 +1,11 @@
 # @quilla-be-kit/persistence
 
+## 0.10.1
+
+### Patch Changes
+
+- b9ada2a: README: correct the `onLocked: 'wait'` note. `InProcessJobRunner` skips a tick while the previous run is still executing, so concurrent sweepers come from other replicas, and a jobs `'any'` job runs on one instance per interval.
+
 ## 0.10.0
 
 ### Minor Changes
