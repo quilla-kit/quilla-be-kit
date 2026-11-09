@@ -1,6 +1,11 @@
 import type { ExecutionContextFactory } from './execution-context.factory.js';
 import type { ExecutionContext } from './execution-context.type.js';
 
+/**
+ * Implementations must keep `executionAttemptId` in `withScope` and
+ * `crossScope`: handler entries and job executions use it to tell their own
+ * run from a context they escaped into.
+ */
 export interface ExecutionContextProvider {
   /**
    * The factory paired with this provider. Callers that need to mint
@@ -25,4 +30,11 @@ export interface ExecutionContextProvider {
    * one (from its session or an earlier call), and outside a context.
    */
   withScope<T>(scopeId: string, fn: () => Promise<T>): Promise<T>;
+
+  /**
+   * Runs `fn` in the current context moved to `scopeId`: adds a scope like
+   * `withScope`, joins the same scope, and crosses from a different one only
+   * as the provider's `ScopeCrossingPolicy` allows, recording `crossedFrom`.
+   */
+  crossScope<T>(scopeId: string, fn: () => Promise<T>): Promise<T>;
 }

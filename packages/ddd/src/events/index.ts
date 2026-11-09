@@ -9,7 +9,7 @@ export type {
   EventMetadataProps,
   ActorAttributes,
 } from './event.metadata.js';
-export { EventKind, EventMetadata } from './event.metadata.js';
+export { EventKind, EventMetadata, RESERVED_ACTOR_ATTRIBUTE_KEYS } from './event.metadata.js';
 
 export type { IntegrationEventJSON } from './integration.event.js';
 export { IntegrationEvent } from './integration.event.js';

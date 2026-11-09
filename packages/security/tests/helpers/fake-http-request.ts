@@ -1,4 +1,4 @@
-import type { ExecutionContext } from '@quilla-be-kit/execution-context';
+import { type ExecutionContext, toExecutionContextView } from '@quilla-be-kit/execution-context';
 import type { HttpRequest } from '@quilla-be-kit/http';
 
 export type FakeRequestInit = {
@@ -12,6 +12,12 @@ export function fakeHttpRequest(init: FakeRequestInit = {}): HttpRequest {
     Object.entries(init.headers ?? {}).map(([k, v]) => [k.toLowerCase(), v]),
   );
 
+  const getExecutionContext = () => {
+    if (!init.executionContext) {
+      throw new Error('No ExecutionContext provided to fake request');
+    }
+    return init.executionContext;
+  };
   return {
     getPath: () => '/',
     getMethod: () => 'GET',
@@ -23,12 +29,8 @@ export function fakeHttpRequest(init: FakeRequestInit = {}): HttpRequest {
     getBinary: () => null,
     getFile: () => null,
     getFormFields: () => ({}),
-    getExecutionContext: () => {
-      if (!init.executionContext) {
-        throw new Error('No ExecutionContext provided to fake request');
-      }
-      return init.executionContext;
-    },
+    getContext: () => toExecutionContextView(getExecutionContext()),
+    getExecutionContext,
     setAttribute: <T>(key: string, value: T) => {
       attributes.set(key, value);
     },

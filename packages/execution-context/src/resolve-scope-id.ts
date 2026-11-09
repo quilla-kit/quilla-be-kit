@@ -13,3 +13,16 @@ export function resolveScopeId(ctx: ExecutionContext): string | undefined {
   }
   return ctx.session?.scopeId ?? ctx.scopeId;
 }
+
+/**
+ * `crossedFrom` when it is meaningful: a scope is set and differs from it.
+ * A context rescoped by spreading can carry a stale one.
+ */
+export function effectiveCrossedFrom(
+  scopeId: string | null | undefined,
+  crossedFrom: string | null | undefined,
+): string | undefined {
+  return typeof scopeId === 'string' && typeof crossedFrom === 'string' && crossedFrom !== scopeId
+    ? crossedFrom
+    : undefined;
+}

@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import type { ActorAttributes, ActorType } from '@quilla-be-kit/ddd';
 import type { ExecutionContext } from './execution-context.type.js';
+import { isActorAttributeValue } from './pick-session-keys.js';
+import { effectiveCrossedFrom } from './resolve-scope-id.js';
 
 /**
  * An `EventMetadata` instance or its parsed `toJSON()` form, which carries
@@ -12,6 +14,7 @@ export type EventMetadataSource = {
   readonly scopeId?: string | null | undefined;
   readonly userId?: string | null | undefined;
   readonly actorAttributes?: ActorAttributes | undefined;
+  readonly crossedFrom?: string | null | undefined;
 };
 
 export interface ExecutionContextFactory {
@@ -28,7 +31,9 @@ export interface ExecutionContextFactory {
   /**
    * Reconstructs the context that emitted an event, from its metadata.
    * Used by outbox forwarders and event consumers to preserve correlation
-   * and actor identity across service boundaries.
+   * and actor identity across service boundaries. A custom implementation
+   * should extend `executionContextFactory.createFromEventMetadata(...)`'s
+   * result, so the kit's fields (such as `crossedFrom`) keep round-tripping.
    */
   createFromEventMetadata(metadata: EventMetadataSource): ExecutionContext;
 }
@@ -61,11 +66,14 @@ export const executionContextFactory: ExecutionContextFactory = {
         ? { ...actorAttributesOf(metadata), scopeId, userId }
         : undefined;
 
+    const crossedFrom = effectiveCrossedFrom(scopeId, metadata.crossedFrom);
+
     return {
       actorType: metadata.actorType,
       correlationId: metadata.correlationId,
       executionAttemptId: randomUUID(),
       ...(session ? { session } : typeof scopeId === 'string' ? { scopeId } : {}),
+      ...(crossedFrom !== undefined ? { crossedFrom } : {}),
     };
   },
 };
@@ -78,7 +86,7 @@ function actorAttributesOf(metadata: EventMetadataSource): Record<string, unknow
   if (attributes === null || typeof attributes !== 'object') return {};
   const copied: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(attributes)) {
-    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    if (isActorAttributeValue(value)) {
       copied[key] = value;
     }
   }

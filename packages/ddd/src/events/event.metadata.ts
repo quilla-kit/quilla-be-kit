@@ -7,7 +7,7 @@ export enum EventKind {
 
 export type ActorAttributes = Readonly<Record<string, string | number | boolean>>;
 
-const RESERVED_ATTRIBUTE_KEYS: readonly string[] = [
+export const RESERVED_ACTOR_ATTRIBUTE_KEYS: readonly string[] = [
   'scopeId',
   'userId',
   '__proto__',
@@ -23,6 +23,8 @@ export type EventMetadataProps = {
   readonly userId?: string;
   /** App-defined facts about the actor beyond `scopeId`/`userId`. Requires both. */
   readonly actorAttributes?: ActorAttributes;
+  /** The scope this operation crossed in from. Attribution only, never an authorization input. */
+  readonly crossedFrom?: string;
   readonly createdAt?: Date;
 };
 
@@ -33,6 +35,7 @@ export type EventMetadataJSON = {
   readonly scopeId: string | null;
   readonly userId: string | null;
   readonly actorAttributes?: ActorAttributes;
+  readonly crossedFrom?: string;
   readonly createdAt: string;
 };
 
@@ -43,6 +46,7 @@ export class EventMetadata {
   readonly scopeId: string | undefined;
   readonly userId: string | undefined;
   readonly actorAttributes: ActorAttributes | undefined;
+  readonly crossedFrom: string | undefined;
   readonly createdAt: Date;
 
   private constructor(props: EventMetadataProps) {
@@ -54,6 +58,7 @@ export class EventMetadata {
     this.actorAttributes = props.actorAttributes
       ? Object.freeze({ ...props.actorAttributes })
       : undefined;
+    this.crossedFrom = props.crossedFrom;
     this.createdAt = props.createdAt ?? new Date();
   }
 
@@ -63,9 +68,19 @@ export class EventMetadata {
       if (props.scopeId === undefined || props.userId === undefined) {
         throw new Error('EventMetadata: actorAttributes require both scopeId and userId');
       }
-      const reserved = Object.keys(attributes).filter((k) => RESERVED_ATTRIBUTE_KEYS.includes(k));
+      const reserved = Object.keys(attributes).filter((k) =>
+        RESERVED_ACTOR_ATTRIBUTE_KEYS.includes(k),
+      );
       if (reserved.length > 0) {
         throw new Error(`EventMetadata: reserved actorAttributes key(s): ${reserved.join(', ')}`);
+      }
+    }
+    if (props.crossedFrom !== undefined) {
+      if (props.scopeId === undefined) {
+        throw new Error('EventMetadata: crossedFrom requires scopeId');
+      }
+      if (props.crossedFrom === props.scopeId) {
+        throw new Error('EventMetadata: crossedFrom must differ from scopeId');
       }
     }
     return new EventMetadata(props);
@@ -79,6 +94,7 @@ export class EventMetadata {
       scopeId: this.scopeId ?? null,
       userId: this.userId ?? null,
       ...(this.actorAttributes ? { actorAttributes: this.actorAttributes } : {}),
+      ...(this.crossedFrom !== undefined ? { crossedFrom: this.crossedFrom } : {}),
       createdAt: this.createdAt.toISOString(),
     };
   }

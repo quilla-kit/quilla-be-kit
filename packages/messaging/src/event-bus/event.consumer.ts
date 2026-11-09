@@ -1,9 +1,16 @@
 import { randomUUID } from 'node:crypto';
 import { ValidationError } from '@quilla-be-kit/errors';
-import type {
-  ExecutionContext,
-  ExecutionContextFactory,
-  ExecutionContextProvider,
+import {
+  type ContextRequirement,
+  type ExecutionContext,
+  type ExecutionContextFactory,
+  type ExecutionContextProvider,
+  type ExecutionContextView,
+  MissingScopeError,
+  MissingSessionError,
+  readAttemptContext,
+  requireContext,
+  toExecutionContextView,
 } from '@quilla-be-kit/execution-context';
 import type { Logger } from '@quilla-be-kit/observability';
 import type { Disposable } from '@quilla-be-kit/runtime';
@@ -19,10 +26,26 @@ import type { EventBusConsumer } from './event-bus-consumer.interface.js';
 import type { EventBusEntry } from './event-bus-entry.type.js';
 import type { EventSubscription } from './event-subscription.interface.js';
 import type { EventDescriptor } from './event.descriptor.js';
-import type { HandlerEntry } from './handler-entry.type.js';
+import { type HandlerEntryFields, createHandlerEntry } from './handler-entry.factory.js';
+import type {
+  HandlerEntry,
+  ScopedHandlerEntry,
+  SessionHandlerEntry,
+} from './handler-entry.type.js';
 import type { StandardSchemaV1 } from './standard-schema.type.js';
 
 export type EventHandler<TPayload = unknown> = (entry: HandlerEntry<TPayload>) => Promise<void>;
+export type ScopedEventHandler<TPayload = unknown> = (
+  entry: ScopedHandlerEntry<TPayload>,
+) => Promise<void>;
+export type SessionEventHandler<TPayload = unknown> = (
+  entry: SessionHandlerEntry<TPayload>,
+) => Promise<void>;
+
+type Registration = {
+  readonly handler: EventHandler;
+  readonly requires: ContextRequirement | undefined;
+};
 
 export type EventConsumerOptions = {
   readonly bus: EventBusConsumer;
@@ -101,7 +124,9 @@ export class EventConsumer implements Disposable {
   private readonly onProcessed: ((entry: EventBusEntry) => void) | undefined;
   private readonly onFailed: ((entry: EventBusEntry) => void) | undefined;
   private readonly leases: ClaimLeaseManager;
-  private readonly handlers = new Map<string, EventHandler[]>();
+  private readonly handlers = new Map<string, Registration[]>();
+  // The strongest requirement among each event type's handlers.
+  private readonly requirements = new Map<string, ContextRequirement>();
   private topicKeys: readonly string[] = [];
 
   private intervalHandle: ReturnType<typeof setInterval> | null = null;
@@ -143,29 +168,66 @@ export class EventConsumer implements Disposable {
   }
 
   on<TPayload>(descriptor: EventDescriptor<TPayload>, handler: EventHandler<TPayload>): this;
+  on<TPayload>(
+    descriptor: EventDescriptor<TPayload>,
+    handler: ScopedEventHandler<TPayload>,
+    options: { readonly requires: 'scope' },
+  ): this;
+  on<TPayload>(
+    descriptor: EventDescriptor<TPayload>,
+    handler: SessionEventHandler<TPayload>,
+    options: { readonly requires: 'session' },
+  ): this;
   on(eventType: string, handler: EventHandler): this;
-  on(eventTypeOrDescriptor: string | EventDescriptor<unknown>, handler: EventHandler): this {
-    const eventType =
-      typeof eventTypeOrDescriptor === 'string'
-        ? eventTypeOrDescriptor
-        : eventTypeOrDescriptor.name;
-    const schema =
-      typeof eventTypeOrDescriptor === 'string' ? undefined : eventTypeOrDescriptor.schema;
-    const registered: EventHandler =
-      schema !== undefined ? wrapWithSchema(eventType, schema, handler) : handler;
-    const isNewType = !this.handlers.has(eventType);
-    const existing = this.handlers.get(eventType) ?? [];
-    existing.push(registered);
-    this.handlers.set(eventType, existing);
-    if (isNewType) this.topicKeys = [...this.handlers.keys()];
-    return this;
+  on(eventType: string, handler: ScopedEventHandler, options: { readonly requires: 'scope' }): this;
+  on(
+    eventType: string,
+    handler: SessionEventHandler,
+    options: { readonly requires: 'session' },
+  ): this;
+  on(
+    eventTypeOrDescriptor: string | EventDescriptor<unknown>,
+    handler: EventHandler | ScopedEventHandler | SessionEventHandler,
+    options?: { readonly requires?: ContextRequirement | undefined },
+  ): this {
+    // The overloads pair each narrowed handler with the requirement checked before it runs.
+    return this.register(eventTypeOrDescriptor, handler as EventHandler, options?.requires);
   }
 
   subscribe(subscriptions: ReadonlyArray<EventSubscription<unknown>>): this {
     for (const sub of subscriptions) {
       // Arrow preserves `this` for class-based subscriptions — a bare method ref detaches.
-      this.on(sub.descriptor, (entry) => sub.handle(entry));
+      this.register(sub.descriptor, (entry) => sub.handle(entry), sub.requires);
     }
+    return this;
+  }
+
+  private register(
+    eventTypeOrDescriptor: string | EventDescriptor<unknown>,
+    handler: EventHandler,
+    requires: ContextRequirement | undefined,
+  ): this {
+    const eventType =
+      typeof eventTypeOrDescriptor === 'string'
+        ? eventTypeOrDescriptor
+        : eventTypeOrDescriptor.name;
+    if (requires !== undefined && !this.executionContext) {
+      throw new Error(
+        `EventConsumer: a handler for "${eventType}" requires a ${requires}, but no \`executionContext\` is wired; pass \`executionContext: { provider }\``,
+      );
+    }
+    const schema =
+      typeof eventTypeOrDescriptor === 'string' ? undefined : eventTypeOrDescriptor.schema;
+    const wrapped: EventHandler =
+      schema !== undefined ? wrapWithSchema(eventType, schema, handler) : handler;
+    const isNewType = !this.handlers.has(eventType);
+    const existing = this.handlers.get(eventType) ?? [];
+    existing.push({ handler: wrapped, requires });
+    if (requires === 'session' || (requires === 'scope' && !this.requirements.has(eventType))) {
+      this.requirements.set(eventType, requires);
+    }
+    this.handlers.set(eventType, existing);
+    if (isNewType) this.topicKeys = [...this.handlers.keys()];
     return this;
   }
 
@@ -237,10 +299,20 @@ export class EventConsumer implements Disposable {
         }
 
         this.leases.hold(event);
+        const unmet = this.checkRequirement(event);
+        if (unmet !== undefined) {
+          const failed = await this.leases.settle(event, 'failed', () =>
+            this.bus.markFailed(event.id, unmet, this.instanceId),
+          );
+          if (failed) this.callHook('onFailed', this.onFailed, failed);
+          continue;
+        }
+
+        const fields = this.entryFields(event);
         let allSucceeded = true;
         let lastError: string | undefined;
-        for (const handler of handlers) {
-          const failure = await this.executeWithRetry(event, handler);
+        for (const registration of handlers) {
+          const failure = await this.executeWithRetry(event, fields, registration);
           if (failure !== undefined) {
             allSucceeded = false;
             lastError = failure;
@@ -292,26 +364,52 @@ export class EventConsumer implements Disposable {
     }
   }
 
+  // Every handler's requirement is checked before any runs, so a deterministic
+  // failure never re-runs the handlers that would have succeeded.
+  private checkRequirement(event: EventBusEntry): string | undefined {
+    const requires = this.requirements.get(event.eventType);
+    const ctx = requires ? this.buildExecutionContext(event) : undefined;
+    if (!requires || !ctx) return undefined;
+    try {
+      requireContext(ctx, requires);
+      return undefined;
+    } catch (err) {
+      this.logger.error(
+        'event does not meet a handler context requirement; skipping all handlers',
+        err,
+        {
+          meta: { eventId: event.id, eventType: event.eventType },
+        },
+      );
+      return err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  private entryFields(event: EventBusEntry): HandlerEntryFields {
+    return {
+      id: event.id,
+      payload: this.unwrapPayload(event.payload),
+      eventType: event.eventType,
+      eventVersion: event.eventVersion,
+      occurredAt: event.occurredAt,
+      ...(event.aggregateId !== undefined ? { aggregateId: event.aggregateId } : {}),
+      ...(event.correlationId !== undefined ? { correlationId: event.correlationId } : {}),
+    };
+  }
+
   private async executeWithRetry(
     event: EventBusEntry,
-    handler: EventHandler,
+    fields: HandlerEntryFields,
+    { handler, requires }: Registration,
   ): Promise<string | undefined> {
     const maxAttempts = this.retryDelaysMs.length + 1;
     let lastError: string | undefined;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       if (this.stopping) return lastError ?? 'shutdown in progress';
       try {
-        const run = async () =>
-          handler({
-            id: event.id,
-            payload: this.unwrapPayload(event.payload),
-            eventType: event.eventType,
-            eventVersion: event.eventVersion,
-            occurredAt: event.occurredAt,
-            ...(event.aggregateId !== undefined ? { aggregateId: event.aggregateId } : {}),
-            ...(event.correlationId !== undefined ? { correlationId: event.correlationId } : {}),
-          });
         const ctx = this.buildExecutionContext(event);
+        const entry = createHandlerEntry(fields, () => this.readContext(ctx, requires));
+        const run = async () => handler(entry);
         if (ctx && this.executionContext) {
           await this.executionContext.provider.runWithContext(ctx, run);
         } else {
@@ -320,9 +418,16 @@ export class EventConsumer implements Disposable {
         return undefined;
       } catch (err) {
         lastError = err instanceof Error ? err.message : String(err);
+        // Deterministic failures: retrying in process cannot help.
         if (err instanceof SchemaValidationError) {
           this.logger.error('schema validation failed; skipping in-process retries', err, {
             meta: { eventId: event.id, eventType: event.eventType, issues: err.issues },
+          });
+          return lastError;
+        }
+        if (MissingScopeError.is(err) || MissingSessionError.is(err)) {
+          this.logger.error('context requirement not met; skipping in-process retries', err, {
+            meta: { eventId: event.id, eventType: event.eventType },
           });
           return lastError;
         }
@@ -346,6 +451,28 @@ export class EventConsumer implements Disposable {
       }
     }
     return lastError;
+  }
+
+  private readContext(
+    dispatched: ExecutionContext | undefined,
+    requires: ContextRequirement | undefined,
+  ): ExecutionContextView {
+    if (!this.executionContext || !dispatched) {
+      throw new Error(
+        'HandlerEntry.getContext(): this EventConsumer has no `executionContext` wired; pass `executionContext: { provider }` to read the context in handlers',
+      );
+    }
+    const current = readAttemptContext(
+      this.executionContext.provider,
+      dispatched.executionAttemptId,
+    );
+    if (!current) {
+      throw new Error(
+        'HandlerEntry.getContext() was called outside the dispatch of its handler; read the context while the handler runs',
+      );
+    }
+    if (requires !== undefined) requireContext(current, requires);
+    return toExecutionContextView(current);
   }
 
   private unwrapPayload(payload: unknown): unknown {

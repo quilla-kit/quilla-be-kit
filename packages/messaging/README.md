@@ -585,6 +585,24 @@ consumer.on('order.placed', async (entry) => {
 Prefer the descriptor form for any handler that reads `payload` fields.
 The string form is intentionally untyped.
 
+Both forms take an optional third argument, `{ requires: 'scope' }` or
+`{ requires: 'session' }`, which types the handler as a `ScopedEventHandler`
+/ `SessionEventHandler` (see [Handler context](#handler-context)):
+
+```ts
+consumer.on('order.placed', async (entry) => {
+  const { scopeId } = entry.getContext(); // string
+}, { requires: 'scope' });
+```
+
+A subscription declares the same with a `requires` property:
+
+```ts
+export const orderSubscriptions = (): EventSubscription[] => [
+  { descriptor: OrderPlaced, requires: 'scope', handle: onOrderPlaced },
+];
+```
+
 ### Automatic payload validation (Standard Schema v1)
 
 When an `EventDescriptor` carries a schema, `EventConsumer.on` wraps the
@@ -610,28 +628,27 @@ consumer.on(UserCreated, async ({ payload }) => {
 });
 ```
 
-Validation failures are **not** retried — the schema result is
-deterministic. The event is marked `FAILED` directly, with the issue
-summary in the row's `last_error` column. Log/metrics pipelines can
+Validation failures are **not** retried in process — the schema result is
+deterministic — and the row is marked failed with the issue summary in its
+`last_error` column. Like any failure, the bus redelivers it until its
+`maxRetries` is spent, then it stays `FAILED`. Log/metrics pipelines can
 `instanceof`-check the exported `SchemaValidationError` to alert on
 contract drift between producer and consumer.
 
-### Automatic ExecutionContext reconstruction
+### Handler context
 
 When `EventConsumer` is wired with an `executionContext.provider`, each
 handler dispatch is wrapped in `provider.runWithContext(...)` using a
 context **reconstructed from the event's `EventMetadata`** — same
-`correlationId`, `actorType`, `scopeId`, `userId` as the operation that
-produced the event, plus any extended session fields carried in
+`correlationId`, `actorType`, `scopeId`, `userId` and `crossedFrom` as the
+operation that produced the event, plus any extended session fields carried in
 `actorAttributes` (see
 [Carrying extended session fields end to end](../execution-context/README.md#carrying-extended-session-fields-end-to-end)).
 A session is rebuilt only when the metadata carries both `scopeId` and
 `userId`. Metadata with only a `scopeId` (from scoped work with no session,
 such as a job) comes back as a context with a session-less `scopeId`; a
-system event with neither comes back unscoped. The same `correlationId` that flowed through the
-originating HTTP request surfaces on log lines emitted by the handler,
-and `ExecutionContextProvider.getContext()` returns a valid context
-inside handler code without the consumer wiring any middleware.
+system event with neither comes back unscoped. Log lines the handler emits
+carry the same `correlationId` as the request that produced the event.
 
 ```ts
 new EventConsumer({
@@ -647,8 +664,75 @@ Reconstruction uses `provider.factory.createFromEventMetadata(...)`;
 override the provider's factory to reconstruct into an extended context
 shape (see
 [`@quilla-be-kit/execution-context` extension pattern](../execution-context/README.md#extension-pattern)).
-Without an `executionContext` option, handlers still run — they just
-don't have a context scope, and `getContext()` will throw if called.
+
+**Reading it.** Handlers read the context from the entry, without injecting
+the provider. `entry.getContext()` returns an `ExecutionContextView`: the
+resolved `scopeId`, `userId` and `session` (authenticated origins only),
+`actorType`, `correlationId`, `executionAttemptId` and `crossedFrom`.
+
+```ts
+consumer.on(InvoicePaid, async (entry) => {
+  const { scopeId, userId } = entry.getContext();
+});
+```
+
+It is read live, on every call, so it agrees with `withScope` and
+`crossScope` inside the handler, and with what the DAOs, the outbox and the
+logger see. It throws instead of answering wrongly:
+
+- when the consumer has no `executionContext` wired;
+- when called outside the handler's dispatch — after the handler returned, or
+  from another event's handler the entry was handed to. Read it while the
+  handler runs;
+- when the context no longer meets the handler's `requires` (below).
+
+It is a method, so logging or serializing an entry never calls it.
+
+**Declaring what a handler needs.** `requires: 'scope'` or
+`requires: 'session'` (a session always carries a scope) types
+`getContext()` with that field present and checks it before the event's
+handlers run:
+
+```ts
+consumer.on(InvoicePaid, async (entry) => {
+  const { scopeId } = entry.getContext(); // string
+}, { requires: 'scope' });
+
+class OnInvoicePaid implements ScopedEventSubscription<InvoicePaidPayload> {
+  readonly descriptor = InvoicePaid;
+  readonly requires = 'scope';
+  async handle(entry: ScopedHandlerEntry<InvoicePaidPayload>) {
+    const { scopeId } = entry.getContext(); // string
+  }
+}
+```
+
+`SessionEventSubscription` / `SessionHandlerEntry` do the same for
+`'session'`. Declare `requires` as `readonly` (or `as const`) so it keeps its
+literal type. Implement the scoped or session interface rather than the base
+`EventSubscription` with a narrowed `handle` parameter: method parameters
+are bivariant, so the base interface accepts the narrowed handler without
+`requires`, and nothing then checks the context.
+
+Declaring `requires` on a consumer with no `executionContext` throws when the
+handler is registered. At dispatch, every handler's requirement is checked
+before any of them runs. If one is unmet, none runs and the row is marked
+failed with a `MISSING_SCOPE` / `MISSING_SESSION` reason, so handlers that
+would have succeeded never run twice. Like schema failures, these skip
+in-process retries, and the bus redelivers the row until `maxRetries` is
+spent. A `MissingScopeError` / `MissingSessionError` thrown from handler code
+(for example by `requireScopeId`) also skips in-process retries.
+
+**Tests.** Build entries with `createHandlerEntry(fields, view)`; the view is
+what `getContext()` returns:
+
+```ts
+const entry = createHandlerEntry(
+  { id: 'e-1', payload, eventType: 'invoice.paid', eventVersion: 1, occurredAt: new Date() },
+  { actorType: 'user', correlationId: 'c-1', executionAttemptId: 'a-1', scopeId: 'tenant-1' },
+);
+await new OnInvoicePaid().handle(entry);
+```
 
 ---
 
@@ -721,7 +805,7 @@ new EventConsumer({
   staleClaimAfterMs: 5 * 60_000,     // recovery cutoff for claims without a lease
   renewIntervalMs: 20_000,           // defaults to a third of the bus's lease; 0 disables
   instanceId: 'replica-<id>',        // must be unique per process
-  executionContext: { provider }, // optional: reconstruct + scope per handler (factory is reached via provider.factory)
+  executionContext: { provider }, // optional: reconstruct + scope per handler; required by `requires` and entry.getContext()
   onProcessed: (entry) => bumpMetric(entry),
   onFailed: (entry) => bumpMetric(entry), // entry.status === 'FAILED' when dead-lettered
   onLeaseLost: ({ id, eventType, stage }) => bumpMetric({ id, eventType, stage }),

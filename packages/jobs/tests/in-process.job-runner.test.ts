@@ -588,3 +588,40 @@ describe('InProcessJobRunner across instances', () => {
     });
   });
 });
+
+describe('InProcessJobRunner job execution', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('passes a JobExecution whose context is the job context', async () => {
+    vi.useFakeTimers();
+    const provider = new AsyncExecutionContextProvider();
+    const runner = new InProcessJobRunner(provider, new NoopLogger());
+    let actorType: string | undefined;
+    let scopes: string[] = [];
+    runner.register(
+      makeJob({
+        execute: async (_signal, execution) => {
+          actorType = execution.getContext().actorType;
+          const result = await execution.forEachScope([['s-1', 1]], async (_v, scopeId) => scopeId);
+          scopes = result.succeeded.map((s) => s.value);
+        },
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(1000);
+    await runner.dispose();
+    expect(actorType).toBe('job');
+    expect(scopes).toEqual(['s-1']);
+  });
+
+  it('still runs jobs that only take the signal', async () => {
+    vi.useFakeTimers();
+    const runner = new InProcessJobRunner(new AsyncExecutionContextProvider(), new NoopLogger());
+    const execute = vi.fn(async (_signal: AbortSignal) => {});
+    runner.register(makeJob({ execute }));
+    await vi.advanceTimersByTimeAsync(1000);
+    await runner.dispose();
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+});

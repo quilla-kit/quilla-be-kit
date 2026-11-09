@@ -76,7 +76,7 @@ export function ValidateRequest<S>(
 
         // Session injection runs last so the session always wins over client
         // input, headers included.
-        const session = request.getExecutionContext().session as
+        const session = request.getContext().session as
           | Readonly<Record<string, unknown>>
           | undefined;
         const declared = (key: string) => description.keys.includes(key);

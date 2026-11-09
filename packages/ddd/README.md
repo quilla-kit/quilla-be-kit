@@ -45,12 +45,18 @@ graph; imported by `execution-context`, `persistence`, `messaging`, and
 ### Metadata and actor
 
 - **`EventMetadata`** — `kind`, `correlationId`, `actorType`, optional
-  `scopeId` / `userId`, optional `actorAttributes`, `createdAt`. Construct
-  via `EventMetadata.create(...)`.
+  `scopeId` / `userId`, optional `actorAttributes`, optional `crossedFrom`,
+  `createdAt`. Construct via `EventMetadata.create(...)`, or spread
+  `toEventMetadataSource(ctx)` from `@quilla-be-kit/execution-context` into it.
+- **`crossedFrom`** — the scope the emitting operation crossed in from (see
+  [Crossing scopes](../execution-context/README.md#crossing-scopes)).
+  Attribution only. Requires `scopeId` and must differ from it; `toJSON`
+  leaves the key out when absent.
 - **`actorAttributes`** — app-defined facts about the actor beyond
   `scopeId` / `userId` (`ActorAttributes`: string, number or boolean values),
   such as the `projectId` an API key is bound to. Requires both `scopeId` and
-  `userId`, and can't reuse those names. `toJSON` leaves the key out when
+  `userId`, and can't use the names in `RESERVED_ACTOR_ATTRIBUTE_KEYS`
+  (`scopeId`, `userId`, `__proto__`, `constructor`, `prototype`). `toJSON` leaves the key out when
   there are none. See
   [Carrying extended session fields end to end](../execution-context/README.md#carrying-extended-session-fields-end-to-end).
 - **`EventKind`** — enum (`DOMAIN`, `INTEGRATION`).

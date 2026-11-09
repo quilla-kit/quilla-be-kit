@@ -7,5 +7,5 @@
   },
   "include": ["src/**/*"],
   "exclude": ["dist", "tests"],
-  "references": [{ "path": "../ddd" }, { "path": "../observability" }]
+  "references": [{ "path": "../ddd" }, { "path": "../errors" }, { "path": "../observability" }]
 }

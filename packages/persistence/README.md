@@ -1507,8 +1507,8 @@ export class RolesController {
   @ValidateRequest(ListRolesRequestDto, ['query'])
   async list(req: ValidatedRequest<typeof ListRolesRequestDto>): Promise<HttpResponse> {
     const query = req.getValidatedInput();
-    const ctx = req.getExecutionContext();
-    const result = await this.roleRead.listPage(query, ctx.scopeId!);
+    const { scopeId } = req.getContext();
+    const result = await this.roleRead.listPage(query, scopeId!);
     return HttpResponse.ok(result);
   }
 }

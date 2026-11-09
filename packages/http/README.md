@@ -399,7 +399,7 @@ async show(req: HttpRequest): Promise<HttpResponse> {
 }
 ```
 
-`ValidatedRequest<S>` is `HttpRequest` plus the typed accessor, so a validated handler keeps every other request method (`getBody`, `getHeader`, `getExecutionContext`, ...).
+`ValidatedRequest<S>` is `HttpRequest` plus the typed accessor, so a validated handler keeps every other request method (`getBody`, `getHeader`, `getContext`, ...).
 
 #### Migrating from `getValidatedInput<T>()`
 
@@ -592,7 +592,7 @@ const router = new Router({
   // generated UUID if absent.
   // **Required iff `authStacks` is set** — Router throws at construction
   // otherwise. Skip it for pure-public services that never call
-  // `request.getExecutionContext()`. The provider carries its own factory
+  // `request.getContext()`. The provider carries its own factory
   // (default `executionContextFactory`); pass a custom factory via
   // `new AsyncExecutionContextProvider({ factory })` if you've extended the
   // ExecutionContext shape.
@@ -636,6 +636,39 @@ system executionContext bootstrap  →  globalMiddlewares[]  →  route middlewa
 The system bootstrap is Router-owned and not configurable from outside — this eliminates "I forgot to add `executionContextMiddleware`" as a failure mode for services that use auth or read `ExecutionContext`. When `executionContext` is omitted, the bootstrap step is skipped entirely; services that never read context pay no boilerplate. Router throws at construction if `authStacks` is set without `executionContext` — the known-static dependency is caught at startup, not at the first authenticated request. The typed `AuthMiddlewareStack` prevents phase misordering within a stack at the type level; the array in `globalMiddlewares` stays open-ended because custom middleware ordering is consumer-owned.
 
 Router composes the complete chain per route, including which auth stack applies. Adapters iterate `NormalizedRoute.middlewareChain` and wrap each entry — they never re-compose it, so phases cannot drift between adapters.
+
+### Request context
+
+`request.getContext()` returns the request's `ExecutionContextView` (see
+`@quilla-be-kit/execution-context`), read live from the provider: the
+resolved `scopeId`, `userId` and `session` once `sessionLoad` ran,
+`actorType`, `correlationId`, `executionAttemptId` and `crossedFrom`. Event
+handlers (`entry.getContext()`) and jobs (`execution.getContext()`) return
+the same shape.
+
+```ts
+@Get('/')
+async list(req: HttpRequest): Promise<HttpResponse> {
+  const { scopeId, userId } = req.getContext();
+}
+```
+
+It throws when the Router has no `executionContext` wired.
+
+`getExecutionContext()` is **deprecated** and will be removed in a later
+release. It returns the raw `ExecutionContext`, where the scope sits in
+`session.scopeId` or `scopeId` depending on authentication;
+`getContext().scopeId` is already resolved. Code that needs the raw context,
+for example fields added to it by an app, reads `provider.getContext()`.
+
+| Before | After |
+| --- | --- |
+| `resolveScopeId(req.getExecutionContext())` | `req.getContext().scopeId` |
+| `req.getExecutionContext().session?.userId` | `req.getContext().userId` |
+| `req.getExecutionContext().correlationId` | `req.getContext().correlationId` |
+
+A custom `HttpRequest` implementation adds `getContext()`;
+`toExecutionContextView(ctx)` builds its result.
 
 ## Bridge to `ComponentRegistry<HttpModuleMeta>`
 
@@ -982,5 +1015,7 @@ const controller = new UsersController();
 const response = await controller.show(fakeRequest({ params: { id: '42' } }));
 expect(response.httpCode).toBe(200);
 ```
+
+A fake `HttpRequest` implements `getContext()` too; build its result from a fixed context with `toExecutionContextView(ctx)` from `@quilla-be-kit/execution-context`.
 
 For integration tests, use `HonoServer` with a `serve` callback that captures `app.fetch` — see this package's adapter tests for the pattern.

@@ -2,8 +2,10 @@
 
 Per-operation execution context: `ExecutionContext` type,
 `ExecutionContextProvider` interface, `AsyncExecutionContextProvider`
-(AsyncLocalStorage-backed), `executionContextFactory`, `resolveScopeId`, and
-`ExecutionContextEnricher` for bridging into `@quilla-be-kit/observability`.
+(AsyncLocalStorage-backed), `executionContextFactory`, `resolveScopeId`,
+policy-governed `crossScope`, the `ExecutionContextView` that handlers, jobs
+and routes read, `toEventMetadataSource`, and `ExecutionContextEnricher` for
+bridging into `@quilla-be-kit/observability`.
 
 ## Why this exists
 
@@ -16,6 +18,10 @@ operation. Two quilla-be-kit invariants rely on it:
   `updated_by`) without requiring callers to pass them.
 - **Observability** uses it to enrich every log line emitted during the
   operation.
+
+Event handlers (`@quilla-be-kit/messaging`), jobs (`@quilla-be-kit/jobs`) and
+routes (`@quilla-be-kit/http`) read it through `getContext()`, which returns
+an `ExecutionContextView`, without injecting the provider.
 
 ## Install
 
@@ -71,15 +77,27 @@ await provider.runWithContext(ctx, async () => {
 - `AuthSession` — the authenticated-caller identity (`{ scopeId, userId }`).
   Extensible by intersection for richer session data (roles, session id,
   authenticatedAt, etc.).
+- `crossedFrom` — on a context moved by `crossScope`, the scope it came from
+  (the outermost one across nested crossings). For attribution in logs and
+  event metadata only; never authorize on it, since a consumer rebuilds it
+  from event metadata.
+- `ExecutionContextView` — the read-only props handlers, jobs and routes
+  receive from `getContext()` in `@quilla-be-kit/messaging`, `jobs` and
+  `http`: `actorType`, `correlationId`, `executionAttemptId`, the resolved
+  `scopeId`, `userId` and `session` (authenticated only), and `crossedFrom`.
+  `ScopedExecutionContextView` guarantees `scopeId`;
+  `SessionExecutionContextView` also guarantees `userId` and `session`.
 
 ### Interfaces
 - `ExecutionContextProvider` — `getContext()` + `runWithContext(ctx, fn)` +
-  `withScope(scopeId, fn)` + readonly `factory` (the paired
-  `ExecutionContextFactory`).
+  `withScope(scopeId, fn)` + `crossScope(scopeId, fn)` + readonly `factory`
+  (the paired `ExecutionContextFactory`).
   `getContext()` **throws** if called outside a `runWithContext` scope.
   `withScope` runs `fn` in the current context scoped to `scopeId` (see
-  [Scope without a session](#scope-without-a-session)). A custom provider
-  implements all three methods.
+  [Scope without a session](#scope-without-a-session)); `crossScope` also
+  moves between scopes (see [Crossing scopes](#crossing-scopes)). A custom
+  provider implements all four methods; `crossExecutionContext` builds the
+  context for `crossScope`.
   **`runWithContext(fn)` is async-only** — synchronous code cannot establish a
   scope; wrap it in `async () => {...}` at the boundary.
 - `ExecutionContextFactory` — `createSystemContext(actorType)`, `createBaselineContext`,
@@ -105,13 +123,22 @@ await provider.runWithContext(ctx, async () => {
   - `'job'` — a background-job tick. `@quilla-be-kit/jobs` calls this
     automatically for each `InProcessJobRunner` tick; pass it explicitly
     when you implement a custom `JobRunner` or drive job ticks by hand.
+- `ScopeCrossingPolicy` — `authorize(context, targetScopeId)` and an optional
+  `projectContext(context, targetScopeId)`. See
+  [Crossing scopes](#crossing-scopes).
 
 ### Classes
 - `AsyncExecutionContextProvider` — Node-native `AsyncLocalStorage`-backed
   provider. Owns its own storage instance; intended one-per-process. Takes
-  an optional `{ factory }` in its constructor — defaults to
-  `executionContextFactory` if omitted. Pass a custom factory when you've
-  extended `ExecutionContext` with new fields.
+  an optional `{ factory, scopeCrossing }` in its constructor. `factory`
+  defaults to `executionContextFactory`; pass a custom one when you've
+  extended `ExecutionContext` with new fields. `scopeCrossing` is the
+  `ScopeCrossingPolicy` (or a function returning it, resolved on first use)
+  that `crossScope` needs to move between scopes.
+- `MissingScopeError` / `MissingSessionError` — thrown by `requireScopeId` /
+  `requireSession` / `requireContext`. Match them with
+  `MissingScopeError.is(err)`, which compares the error code and so still
+  works when two copies of the package are installed.
 - `ExecutionContextEnricher` — `LogEntryEnricher` that reads from a provider
   and returns the current context's fields as a log contribution. Contributes
   `scopeId` (from `ctx.session`, or the session-less `ctx.scopeId`), `userId`
@@ -119,7 +146,8 @@ await provider.runWithContext(ctx, async () => {
   `executionAttemptId`. All land in the
   log entry's `context` field, flat. Takes an optional
   `{ sessionKeys }`: listed extended session fields are added under
-  `extra.session`. Returns an empty contribution when the
+  `extra.session`. A crossed context also logs `extra.crossedFrom`.
+  Returns an empty contribution when the
   provider is outside a scope (bootstrap logs, pre-request logs) — never
   throws.
 
@@ -127,6 +155,24 @@ await provider.runWithContext(ctx, async () => {
 - `resolveScopeId(ctx)` — the operation's scope: `ctx.session.scopeId` when
   authenticated, otherwise `ctx.scopeId`, otherwise `undefined`. Throws when
   both are set. Read scope through it rather than from either field.
+- `requireScopeId(ctx)` / `requireSession(ctx)` — the scope or the session
+  for work that needs one by contract. Throw `MissingScopeError` (code
+  `MISSING_SCOPE`) / `MissingSessionError` (code `MISSING_SESSION`), both
+  `InternalError`s from `@quilla-be-kit/errors`: a missing scope is a wiring
+  defect, not a caller error.
+- `requireContext(ctx, requirement)` — the same checks for a
+  `ContextRequirement` (`'scope' | 'session'`; a session always carries a
+  scope).
+- `toExecutionContextView(ctx)` — the `ExecutionContextView` of a context.
+- `readAttemptContext(provider, attemptId)` — the current context while it
+  still belongs to that execution attempt (`withScope` and `crossScope` keep
+  the attempt id), otherwise `undefined`. Lets a handle given to a handler or
+  job detect it outlived its run.
+- `crossExecutionContext(current, targetScopeId, policy)` — the context
+  `crossScope` runs in; for custom providers.
+- `toEventMetadataSource(ctx, { actorAttributeKeys })` — the event metadata a
+  context should stamp; the inverse of `createFromEventMetadata`. See
+  [Emitting event metadata](#emitting-event-metadata).
 
 ### Values
 - `executionContextFactory` — default `ExecutionContextFactory` implementation.
@@ -184,6 +230,10 @@ class ExpireInvitationsJob implements BackgroundJob {
 }
 ```
 
+A job gets this loop from `@quilla-be-kit/jobs`:
+`execution.forEachScope(byScope, fn)` runs each scope in its own `withScope`
+and keeps going when one fails.
+
 | Current context | `withScope(X, fn)` |
 | --- | --- |
 | no scope | runs `fn` in the current context plus `scopeId: X` |
@@ -198,10 +248,151 @@ Read the scope with `resolveScopeId(ctx)`, which covers both the session and
 the session-less case. A context must never carry both: `resolveScopeId`
 throws when it does.
 
-Crossing into a *different* scope — for example, a platform operator acting
-on another tenant — is an authorization decision, so the toolkit has no
-call for it. Build that context with `runWithContext` where the decision is
-visible in your code.
+Moving into a *different* scope is `crossScope`, below.
+
+## Crossing scopes
+
+`provider.crossScope(scopeId, fn)` runs `fn` in the current context moved to
+`scopeId` — for example a platform operator acting on a tenant. Like
+`withScope`, it adds a scope to an unscoped context and joins the scope the
+context already has. Moving from one scope to another is an authorization
+decision, so it needs a `ScopeCrossingPolicy` on the provider; without one it
+rejects.
+
+```ts
+const provider = new AsyncExecutionContextProvider({
+  scopeCrossing: {
+    authorize: (ctx, targetScopeId) => {
+      if (ctx.session?.scopeId !== PLATFORM_SCOPE_ID) {
+        throw new ForbiddenError({ message: 'Only platform operators act on other scopes.' });
+      }
+    },
+  },
+});
+
+await provider.crossScope(tenantId, () =>
+  uow.transaction(async (ctx) => {
+    // DAOs, the outbox serializer and the logger see tenantId here,
+    // and the context records crossedFrom: PLATFORM_SCOPE_ID.
+  }),
+);
+```
+
+**What the kit enforces** — the policy cannot change these:
+
+- `actorType`, `correlationId`, `executionAttemptId` and the session's
+  `userId` are kept; changing the user would be impersonation.
+- The new context is scoped to the target, and never carries both a session
+  and a session-less `scopeId`. A session-less context stays session-less.
+- `crossedFrom` is set by the kit to the outermost origin, and cleared when
+  you cross back to it.
+- By default only `actorType`, `correlationId`, `executionAttemptId` and the
+  scope (with the session's `userId`) survive. Every other field — extended
+  session fields such as a `projectId` bound to the source scope, or fields
+  you added to the context — is dropped.
+
+**What your policy decides:**
+
+- `authorize(context, targetScopeId)` — throw to deny, with your own error
+  (a `ForbiddenError` answers 403 over HTTP). It runs in the **source**
+  context: a scoped repository it calls filters by the source scope. It is
+  only called for scope-to-scope moves; adding a scope to unscoped work is
+  `withScope`'s rule and needs no policy.
+- `projectContext(context, targetScopeId)` — optional; builds the context in
+  the target, for example to rebuild roles for it. The kit validates the
+  result against the rules above.
+
+A policy that needs repositories can't exist before the provider those
+repositories use. Pass a function instead; it is resolved on the first
+crossing:
+
+```ts
+const provider = new AsyncExecutionContextProvider({
+  scopeCrossing: () => new MembershipPolicy(memberships, roles),
+});
+
+class MembershipPolicy implements ScopeCrossingPolicy {
+  constructor(private memberships: Memberships, private roles: Roles) {}
+
+  async authorize(ctx: ExecutionContext, targetScopeId: string) {
+    await this.memberships.assertMember(requireSession(ctx).userId, targetScopeId);
+  }
+
+  async projectContext(ctx: ExecutionContext, targetScopeId: string) {
+    const session = requireSession(ctx);
+    return {
+      ...ctx,
+      session: { ...session, scopeId: targetScopeId, roles: await this.roles.of(session.userId, targetScopeId) },
+    } as ExecutionContext;
+  }
+}
+```
+
+A third shape lets internal workers cross freely and users never:
+
+```ts
+const systemOnly: ScopeCrossingPolicy = {
+  authorize: (ctx) => {
+    if (ctx.session) throw new ForbiddenError({ message: 'Users cannot cross scopes.' });
+  },
+};
+```
+
+None of these read `crossedFrom`: it is attribution, rebuilt from event
+metadata on the consumer side, so it must never grant anything. To go back to
+where you were, return from `fn` rather than crossing back.
+
+## Custom providers and factories
+
+A custom `ExecutionContextProvider` implements `getContext`,
+`runWithContext`, `withScope` and `crossScope`, and exposes its `factory`.
+Two rules keep it compatible with the rest of the kit:
+
+- **`withScope` and `crossScope` keep `executionAttemptId`.** Handler entries
+  and job executions compare it to tell their own run from a context they
+  escaped into; a provider that mints a new one there makes their
+  `getContext()` throw inside valid scopes.
+- **`crossScope` uses `crossExecutionContext`**, so it enforces the same rules
+  and calls the same `ScopeCrossingPolicy`:
+
+```ts
+class MyProvider implements ExecutionContextProvider {
+  // ...
+  async crossScope<T>(scopeId: string, fn: () => Promise<T>): Promise<T> {
+    const current = this.getContext();
+    const next = await crossExecutionContext(current, scopeId, this.policy);
+    return next === current ? fn() : this.runWithContext(next, fn);
+  }
+}
+```
+
+A custom `ExecutionContextFactory` extends the default
+`createFromEventMetadata` instead of rewriting it, so fields the kit adds to
+event metadata (such as `crossedFrom`) keep round-tripping:
+
+```ts
+const appFactory: ExecutionContextFactory = {
+  ...executionContextFactory,
+  createFromEventMetadata(metadata) {
+    const ctx = executionContextFactory.createFromEventMetadata(metadata);
+    return { ...ctx, region: lookupRegion(ctx.correlationId) } as ExecutionContext;
+  },
+};
+```
+
+A new surface that hands work a context handle (a command bus, a WebSocket
+handler) can give it the same guard handlers and jobs have: keep the
+`executionAttemptId` it ran with and read through `readAttemptContext`, which
+returns `undefined` once the handle is used outside that run.
+
+```ts
+const attemptId = provider.getContext().executionAttemptId;
+const getContext = () => {
+  const ctx = readAttemptContext(provider, attemptId);
+  if (!ctx) throw new Error('used outside its run');
+  return toExecutionContextView(ctx);
+};
+```
 
 ## Extension pattern
 
@@ -324,35 +515,10 @@ async list(req: ValidatedRequest<typeof ListDocuments>) {
 new ExecutionContextEnricher(provider, { sessionKeys: ['projectId'] });
 ```
 
-**5. Carry it through events.** Your `UnitOfWork` `serialize` builds the
-event metadata, so you decide what an event carries. Put the extra fields in
-`actorAttributes`. Consumers wired with `executionContext: { provider }`
-receive them back on `ctx.session`. Take `scopeId` from `resolveScopeId` so
-session-less scoped work carries its scope too:
-
-```ts
-serialize: (event) => {
-  const ctx = provider.getContext() as AppExecutionContext;
-  const scopeId = resolveScopeId(ctx);
-  const metadata = EventMetadata.create({
-    kind: EventKind.DOMAIN,
-    correlationId: ctx.correlationId,
-    actorType: ctx.actorType,
-    ...(scopeId !== undefined && { scopeId }),
-    ...(ctx.session && {
-      userId: ctx.session.userId,
-      // Bearer sessions carry no projectId, so only add it when present.
-      ...(ctx.session.projectId !== undefined && {
-        actorAttributes: { projectId: ctx.session.projectId },
-      }),
-    }),
-  });
-  return {
-    // ...
-    payload: { payload: event.toJSON(), metadata: metadata.toJSON() },
-  };
-},
-```
+**5. Carry it through events.** List it in `actorAttributeKeys` when you
+build the event metadata (see [Emitting event metadata](#emitting-event-metadata)).
+Consumers wired with `executionContext: { provider }` receive it back on
+`ctx.session`.
 
 **What changes for an existing app.** Nothing, until you list a key, except:
 
@@ -387,6 +553,36 @@ the server log.
   `scopeId`/`userId`. A stack with extra fields needs its own `sessionLoad`.
 - `extra` on log entries is not obfuscated. Don't log sensitive session fields.
 - Only string, number and boolean fields can cross the event boundary.
+
+## Emitting event metadata
+
+Your `UnitOfWork` `serialize` decides what each event carries. Build its
+metadata with `toEventMetadataSource`, the inverse of
+`createFromEventMetadata`, so a consumer rebuilds the same context:
+
+```ts
+serialize: (event) => {
+  const source = toEventMetadataSource(provider.getContext(), {
+    actorAttributeKeys: ['projectId'],
+  });
+  const metadata = EventMetadata.create({ kind: EventKind.DOMAIN, ...source });
+  return {
+    // ...
+    payload: { payload: event.toJSON(), metadata: metadata.toJSON() },
+  };
+},
+```
+
+It writes:
+
+- `actorType` and `correlationId`;
+- `scopeId` from `resolveScopeId`, so session-less scoped work carries its
+  scope too;
+- `userId` from the session only;
+- `actorAttributes`: the listed session fields that hold a string, number or
+  boolean (reserved keys such as `scopeId` are never picked), only for an
+  authenticated context;
+- `crossedFrom`, unless it is stale (no scope, or the same as the scope).
 
 ## Design notes
 

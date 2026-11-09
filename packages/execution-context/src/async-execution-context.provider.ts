@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { addOrJoinScope, crossExecutionContext } from './cross-execution-context.js';
 import {
   type ExecutionContextFactory,
   executionContextFactory,
@@ -6,9 +7,12 @@ import {
 import type { ExecutionContextProvider } from './execution-context.provider.js';
 import type { ExecutionContext } from './execution-context.type.js';
 import { resolveScopeId } from './resolve-scope-id.js';
+import type { ScopeCrossingPolicy } from './scope-crossing.policy.js';
 
 export type AsyncExecutionContextProviderOptions = {
   readonly factory?: ExecutionContextFactory;
+  /** Required to cross between scopes. A thunk is resolved on first use. */
+  readonly scopeCrossing?: ScopeCrossingPolicy | (() => ScopeCrossingPolicy);
 };
 
 /**
@@ -19,9 +23,11 @@ export type AsyncExecutionContextProviderOptions = {
 export class AsyncExecutionContextProvider implements ExecutionContextProvider {
   private readonly storage = new AsyncLocalStorage<ExecutionContext>();
   readonly factory: ExecutionContextFactory;
+  private scopeCrossing: AsyncExecutionContextProviderOptions['scopeCrossing'];
 
   constructor(options?: AsyncExecutionContextProviderOptions) {
     this.factory = options?.factory ?? executionContextFactory;
+    this.scopeCrossing = options?.scopeCrossing;
   }
 
   getContext(): ExecutionContext {
@@ -39,17 +45,24 @@ export class AsyncExecutionContextProvider implements ExecutionContextProvider {
   }
 
   async withScope<T>(scopeId: string, fn: () => Promise<T>): Promise<T> {
-    if (typeof scopeId !== 'string' || scopeId === '') {
-      throw new Error('withScope: scopeId must be a non-empty string');
-    }
     const ctx = this.getContext();
-    const current = resolveScopeId(ctx);
-    if (current === scopeId) return fn();
-    if (current !== undefined) {
+    const next = addOrJoinScope(ctx, scopeId, 'withScope');
+    if (!next) {
       throw new Error(
-        `withScope: context is already scoped to "${current}", cannot run in scope "${scopeId}"`,
+        `withScope: context is already scoped to "${resolveScopeId(ctx)}", cannot run in scope "${scopeId}"`,
       );
     }
-    return this.storage.run({ ...ctx, scopeId }, fn);
+    return next === ctx ? fn() : this.storage.run(next, fn);
+  }
+
+  async crossScope<T>(scopeId: string, fn: () => Promise<T>): Promise<T> {
+    const current = this.getContext();
+    const next = await crossExecutionContext(current, scopeId, this.resolvePolicy());
+    return next === current ? fn() : this.storage.run(next, fn);
+  }
+
+  private resolvePolicy(): ScopeCrossingPolicy | undefined {
+    if (typeof this.scopeCrossing === 'function') this.scopeCrossing = this.scopeCrossing();
+    return this.scopeCrossing;
   }
 }

@@ -43,6 +43,7 @@
   },
   "dependencies": {
     "@quilla-be-kit/ddd": "workspace:^",
+    "@quilla-be-kit/errors": "workspace:^",
     "@quilla-be-kit/observability": "workspace:^"
   }
 }
