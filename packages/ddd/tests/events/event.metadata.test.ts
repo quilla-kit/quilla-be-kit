@@ -135,3 +135,44 @@ describe('EventMetadata actorAttributes', () => {
     },
   );
 });
+
+describe('EventMetadata crossedFrom', () => {
+  const when = new Date('2026-01-01T00:00:00.000Z');
+  const base = {
+    kind: EventKind.DOMAIN,
+    correlationId: 'corr-1',
+    actorType: 'user',
+    scopeId: 'scope-1',
+    userId: 'user-1',
+    createdAt: when,
+  } as const;
+
+  it('carries and serializes crossedFrom when set', () => {
+    const meta = EventMetadata.create({ ...base, crossedFrom: 'platform' });
+    expect(meta.crossedFrom).toBe('platform');
+    expect(meta.toJSON().crossedFrom).toBe('platform');
+  });
+
+  it('leaves the JSON byte-identical when absent', () => {
+    expect(JSON.stringify(EventMetadata.create(base).toJSON())).toBe(
+      '{"kind":"domain","correlationId":"corr-1","actorType":"user","scopeId":"scope-1","userId":"user-1","createdAt":"2026-01-01T00:00:00.000Z"}',
+    );
+  });
+
+  it('rejects crossedFrom without a scopeId', () => {
+    expect(() =>
+      EventMetadata.create({
+        kind: EventKind.DOMAIN,
+        correlationId: 'corr-1',
+        actorType: 'system',
+        crossedFrom: 'platform',
+      }),
+    ).toThrow(/crossedFrom requires scopeId/);
+  });
+
+  it('rejects crossedFrom equal to scopeId', () => {
+    expect(() => EventMetadata.create({ ...base, crossedFrom: 'scope-1' })).toThrow(
+      /crossedFrom must differ from scopeId/,
+    );
+  });
+});

@@ -1,6 +1,7 @@
 import type { ExecutionContextProvider } from '@quilla-be-kit/execution-context';
 import type { Logger } from '@quilla-be-kit/observability';
 import type { BackgroundJob } from './background-job.interface.js';
+import { createJobExecution } from './job-execution.factory.js';
 import type { JobLeaseStore } from './job-lease-store.interface.js';
 import { JobLeaseManager, assertLeaseMs } from './job-lease.manager.js';
 import { JobInstances } from './job-run-on.type.js';
@@ -113,7 +114,8 @@ export class InProcessJobRunner implements JobRunner {
       throw fail('requires jitterMs to be a finite number >= 0 and below everyMs');
     }
 
-    const execute: JobRun = (signal) => this.execute(job, log, signal);
+    const runLog = this.logger.forMethod('execute').withMeta({ jobName: job.name });
+    const execute: JobRun = (signal) => this.execute(job, log, runLog, signal);
     const runOn = job.runOn;
     if (!runOn || runOn.instances === JobInstances.All) return execute;
     if (runOn.instances !== JobInstances.Any) {
@@ -188,10 +190,22 @@ export class InProcessJobRunner implements JobRunner {
     void execution.finally(() => this.inFlight.delete(job.name));
   }
 
-  private async execute(job: BackgroundJob, log: Logger, signal: AbortSignal): Promise<void> {
+  private async execute(
+    job: BackgroundJob,
+    log: Logger,
+    runLog: Logger,
+    signal: AbortSignal,
+  ): Promise<void> {
     try {
       log.debug(`Executing ${job.name}`);
-      await job.execute(signal);
+      const provider = this.executionContextProvider;
+      const execution = createJobExecution({
+        provider,
+        context: provider.getContext(),
+        logger: runLog,
+        signal,
+      });
+      await job.execute(signal, execution);
     } catch (err) {
       log.error(`Job "${job.name}" failed`, err);
     }

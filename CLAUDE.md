@@ -60,7 +60,7 @@ Files follow the shape **`{subject}.{type}.ts`** where:
   Current vocabulary: `provider`, `factory`, `formatter`, `event`, `metadata`,
   `enricher`, `observer`, `obfuscator`, `logger`, `entry`, `aggregate`, `root`,
   `error`, `repository`, `dao`, `manager`, `phase`, `result`, `transaction`,
-  `writer`, `context`, `mapper`, `store`, `interface`, `type`.
+  `writer`, `context`, `mapper`, `store`, `policy`, `interface`, `type`.
 - Use **`.interface.ts`** when the file's main export is a TypeScript
   `interface` (contract to be implemented by a class) and no more specific
   role fits (e.g. prefer `.provider.ts` or `.writer.ts` if accurate).
@@ -91,6 +91,7 @@ Files follow the shape **`{subject}.{type}.ts`** where:
 | `outbox-writer.interface.ts` | `outbox-writer` | `interface` |
 | `job-lease-store.interface.ts` | `job-lease-store` | `interface` |
 | `pg-job-lease.store.ts` | `pg-job-lease` | `store` |
+| `scope-crossing.policy.ts` | `scope-crossing` | `policy` |
 
 **Do not use compound type suffixes.** Never `context-provider`,
 `context-enricher`, or `entry-enricher` as the type segment. Flatten to the

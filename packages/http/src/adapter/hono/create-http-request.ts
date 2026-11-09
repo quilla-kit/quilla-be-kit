@@ -1,4 +1,7 @@
-import type { ExecutionContextProvider } from '@quilla-be-kit/execution-context';
+import {
+  type ExecutionContextProvider,
+  toExecutionContextView,
+} from '@quilla-be-kit/execution-context';
 import { HttpAttributes } from '../../request/http-attributes.js';
 import type { ValidatedRequest } from '../../validator/validated-request.type.js';
 
@@ -18,6 +21,15 @@ export function createHttpRequest(
   input: CreateHttpRequestInput,
   attributes: Map<string, unknown>,
 ): ValidatedRequest<unknown> {
+  const readContext = () => {
+    if (!input.executionContextProvider) {
+      throw new Error(
+        'No ExecutionContext provider wired on Router. Pass `executionContext: { provider }` to the Router options to read the request context.',
+      );
+    }
+    return input.executionContextProvider.getContext();
+  };
+
   return {
     getPath: () => input.path,
     getMethod: () => input.method,
@@ -48,14 +60,8 @@ export function createHttpRequest(
       }
       return fields;
     },
-    getExecutionContext: () => {
-      if (!input.executionContextProvider) {
-        throw new Error(
-          'No ExecutionContext provider wired on Router. Pass `executionContext: { provider, factory }` to the Router options to use `request.getExecutionContext()`.',
-        );
-      }
-      return input.executionContextProvider.getContext();
-    },
+    getContext: () => toExecutionContextView(readContext()),
+    getExecutionContext: readContext,
     setAttribute: (key, value) => {
       attributes.set(key, value);
     },

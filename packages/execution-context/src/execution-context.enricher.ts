@@ -1,5 +1,7 @@
 import type { LogEnricherContribution, LogEntryEnricher } from '@quilla-be-kit/observability';
 import type { ExecutionContextProvider } from './execution-context.provider.js';
+import { pickSessionKeys } from './pick-session-keys.js';
+import { effectiveCrossedFrom } from './resolve-scope-id.js';
 
 export type ExecutionContextEnricherOptions = {
   /**
@@ -40,6 +42,11 @@ export class ExecutionContextEnricher implements LogEntryEnricher {
       // Not `resolveScopeId`: a context carrying both scopes would throw and
       // drop every other log field. The conflict surfaces where scope is used.
       const scopeId = ctx.session ? ctx.session.scopeId : ctx.scopeId;
+      const crossedFrom = effectiveCrossedFrom(scopeId, ctx.crossedFrom);
+      const extra = {
+        ...(sessionExtra ? { session: sessionExtra } : {}),
+        ...(crossedFrom !== undefined ? { crossedFrom } : {}),
+      };
       return {
         context: {
           ...(scopeId !== undefined ? { scopeId } : {}),
@@ -48,7 +55,7 @@ export class ExecutionContextEnricher implements LogEntryEnricher {
           correlationId: ctx.correlationId,
           executionAttemptId: ctx.executionAttemptId,
         },
-        ...(sessionExtra ? { extra: { session: sessionExtra } } : {}),
+        ...(Object.keys(extra).length > 0 ? { extra } : {}),
       };
     } catch {
       return {};
@@ -58,15 +65,10 @@ export class ExecutionContextEnricher implements LogEntryEnricher {
   // Nested under `extra.session` so these keys cannot collide with flat
   // `extra` keys contributed by other enrichers.
   private sessionExtra(session: object | undefined): Record<string, unknown> | undefined {
-    if (!session) return undefined;
-    const source = session as Readonly<Record<string, unknown>>;
-    let picked: Record<string, unknown> | undefined;
-    for (const key of this.sessionKeys) {
-      if (Object.hasOwn(source, key) && source[key] !== undefined) {
-        picked ??= {};
-        picked[key] = source[key];
-      }
-    }
-    return picked;
+    return session ? pickSessionKeys(session, this.sessionKeys, isDefined) : undefined;
   }
+}
+
+function isDefined(value: unknown): value is unknown {
+  return value !== undefined;
 }

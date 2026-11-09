@@ -17,7 +17,10 @@ Node 22+, ESM-only.
 
 | Export | What it is |
 | --- | --- |
-| `BackgroundJob` | Interface your jobs implement — `name`, `schedule`, `runOn?`, `execute(signal)` |
+| `BackgroundJob` | Interface your jobs implement — `name`, `schedule`, `runOn?`, `execute(signal, execution)` |
+| `JobExecution` | Second argument of `execute` — `getContext()` and `forEachScope(...)` |
+| `ScopeRunResult` | What `forEachScope` resolves to — `succeeded`, `failed`, `skipped` |
+| `createJobExecution` | Builds the `JobExecution` a custom runner passes to `execute` |
 | `JobSchedule` / `JobScheduleType` | Schedule union + type constants |
 | `JobRunOn` / `JobInstances` | Where a job runs — `'all'` instances (default) or `'any'` one instance |
 | `JobRunner` | Runner contract — `register`, `stop`, `drain`, `dispose` |
@@ -111,6 +114,45 @@ If `execute()` throws, `InProcessJobRunner` catches the error, logs it at
 `error` level, and continues scheduling future ticks. A failing job does not
 crash the runner or affect other registered jobs.
 
+`execute(signal, execution)` also receives a `JobExecution`:
+
+- `execution.getContext()` — the run's `ExecutionContextView` (see
+  `@quilla-be-kit/execution-context`), read live: inside a `withScope` or a
+  `forEachScope` callback it reports that scope. It throws once the run is
+  over.
+- `execution.forEachScope(entries, fn)` — runs `fn(value, scopeId)` once per
+  `[scopeId, value]` entry (a `Map` works), one after another, each in
+  `withScope(scopeId)` so its unit of work, events and logs carry that scope.
+  A failing scope is logged with its `scopeId` and recorded; the others still
+  run. Once the signal aborts, the remaining scopes are recorded as skipped,
+  without error logs. It rejects if the context already has a scope — call it
+  from the job's own context, not inside another `withScope`.
+
+```ts
+async execute(signal: AbortSignal, execution: JobExecution): Promise<void> {
+  const byScope = groupBy(await this.invitations.findExpired(), (i) => i.scopeId);
+  const { failed } = await execution.forEachScope(byScope, (invitations) =>
+    this.uow.transaction(async (ctx) => {
+      // one transaction per scope
+    }),
+  );
+  if (failed.length > 0) this.metrics.increment('expire-invitations.scope-failed', failed.length);
+}
+```
+
+`forEachScope` resolves to a `ScopeRunResult<R>`:
+
+| Field | Holds |
+| --- | --- |
+| `succeeded` | `{ scopeId, value }` for each scope whose `fn` resolved, in order |
+| `failed` | `{ scopeId, error }` for each scope whose `fn` threw (already logged) |
+| `skipped` | scope ids not run, or interrupted, because the signal aborted |
+
+A custom `JobRunner` builds the argument with
+`createJobExecution({ provider, context, logger, signal })`, called inside the
+context it established for the run, with that `context`; `logger` receives
+the per-scope failure logs.
+
 ---
 
 ## Abort signal
@@ -138,7 +180,9 @@ async execute(signal: AbortSignal): Promise<void> {
 }
 ```
 
-Jobs written as `execute()` with no parameter still satisfy `BackgroundJob`.
+Jobs written as `execute()` or `execute(signal)` still satisfy `BackgroundJob`.
+Code that calls `execute` through the `BackgroundJob` type passes both
+arguments.
 
 ---
 
@@ -254,14 +298,17 @@ replicas with skewed clocks agree.
 `JobRunner` gets the same guarantees:
 
 ```ts
-import { JobLeaseManager } from '@quilla-be-kit/jobs';
+import { JobLeaseManager, createJobExecution } from '@quilla-be-kit/jobs';
 
 const leases = new JobLeaseManager({ store, logger }); // optional: instanceId, leaseMs
 
 async function onTick(job: BackgroundJob): Promise<void> {
   const controller = new AbortController(); // one per run; abort it to stop the run
   const ran = await leases.run(job.name, { cooldownMs: 55_000, signal: controller.signal }, (signal) =>
-    job.execute(signal),
+    job.execute(
+      signal,
+      createJobExecution({ provider, context: provider.getContext(), logger, signal }),
+    ),
   );
   // ran === false: held by another instance or not due yet
 }

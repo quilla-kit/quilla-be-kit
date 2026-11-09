@@ -39,4 +39,6 @@ export type ExecutionContext = {
   readonly executionAttemptId: string;
   readonly session?: AuthSession;
   readonly scopeId?: string;
+  /** The scope this operation crossed in from. Attribution only, never an authorization input. */
+  readonly crossedFrom?: string;
 };

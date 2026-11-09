@@ -706,3 +706,50 @@ describe('HonoServer session keys', () => {
     });
   });
 });
+
+describe('HttpRequest.getContext', () => {
+  it('returns the resolved context view inside a session-loaded route', async () => {
+    const provider = new AsyncExecutionContextProvider();
+    let view: unknown;
+
+    @Controller('/me')
+    class MeController {
+      @Get('/')
+      async me(req: HttpRequest): Promise<HttpResponse> {
+        view = req.getContext();
+        return { httpCode: 200 };
+      }
+    }
+
+    const { fetch } = buildServer({
+      provider,
+      controllers: [new MeController()],
+      authStacks: {
+        bearer: {
+          credentialVerification: async (_req, next) => {
+            await next();
+          },
+          sessionLoad: async (_req, next) => {
+            await provider.runWithContext(
+              {
+                ...provider.getContext(),
+                actorType: 'user',
+                session: { scopeId: 's-1', userId: 'u-1' },
+              },
+              next,
+            );
+          },
+        },
+      },
+      defaultAuthStack: 'bearer',
+    });
+
+    await fetch(new Request('http://localhost/me'));
+    expect(view).toMatchObject({
+      actorType: 'user',
+      scopeId: 's-1',
+      userId: 'u-1',
+      session: { scopeId: 's-1', userId: 'u-1' },
+    });
+  });
+});

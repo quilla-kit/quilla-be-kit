@@ -1,19 +1,24 @@
 import {
   AsyncExecutionContextProvider,
   type ExecutionContext,
+  requireScopeId,
 } from '@quilla-be-kit/execution-context';
 import { NoopLogger } from '@quilla-be-kit/observability';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import type { EventBusEntry } from '../../src/event-bus/event-bus-entry.type.js';
-import type { EventSubscription } from '../../src/event-bus/event-subscription.interface.js';
+import type {
+  EventSubscription,
+  ScopedEventSubscription,
+} from '../../src/event-bus/event-subscription.interface.js';
 import {
   EventConsumer,
   type EventConsumerOptions,
   SchemaValidationError,
 } from '../../src/event-bus/event.consumer.js';
 import { defineEvent } from '../../src/event-bus/event.descriptor.js';
-import type { HandlerEntry } from '../../src/event-bus/handler-entry.type.js';
+import { createHandlerEntry } from '../../src/event-bus/handler-entry.factory.js';
+import type { HandlerEntry, ScopedHandlerEntry } from '../../src/event-bus/handler-entry.type.js';
 import { FakeEventBusConsumer } from '../helpers/fake-bus.js';
 import { FakeLease } from '../helpers/fake-lease.js';
 
@@ -1137,5 +1142,256 @@ describe('EventConsumer execution context reconstruction', () => {
       createdAt: '2026-01-01T00:00:00.000Z',
     });
     expect(ctx.session).toEqual({ scopeId: 'scope-1', userId: 'user-1', projectId: 'p-1' });
+  });
+});
+
+describe('EventConsumer handler context', () => {
+  let bus: FakeEventBusConsumer;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    bus = new FakeEventBusConsumer();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const tenantMetadata = {
+    kind: 'domain',
+    correlationId: 'corr-1',
+    actorType: 'user',
+    scopeId: 'tenant-1',
+    userId: 'user-1',
+    createdAt: '2026-01-01T00:00:00.000Z',
+  };
+  const systemMetadata = { ...tenantMetadata, actorType: 'system', scopeId: null, userId: null };
+
+  function makeConsumer(
+    provider = new AsyncExecutionContextProvider(),
+    overrides: Partial<EventConsumerOptions> = {},
+  ) {
+    return new EventConsumer({
+      bus,
+      consumerName: 'test',
+      sourceService: 'svc-a',
+      logger: new NoopLogger(),
+      executionContext: { provider },
+      ...overrides,
+    });
+  }
+
+  function unwired() {
+    return new EventConsumer({
+      bus,
+      consumerName: 'test',
+      sourceService: 'svc-a',
+      logger: new NoopLogger(),
+    });
+  }
+
+  function withMetadata(metadata: Record<string, unknown>, overrides: Partial<EventBusEntry> = {}) {
+    return makeBusEntry({ payload: { payload: { foo: 'bar' }, metadata }, ...overrides });
+  }
+
+  async function run(
+    consumer: EventConsumer,
+    entries: Record<string, unknown> | EventBusEntry[],
+    ms = 1000,
+  ) {
+    bus.enqueueBatch(Array.isArray(entries) ? entries : [withMetadata(entries)]);
+    consumer.start();
+    await vi.advanceTimersByTimeAsync(ms);
+    await consumer.dispose();
+  }
+
+  it('exposes the resolved context view through entry.getContext()', async () => {
+    const consumer = makeConsumer();
+    let view: unknown;
+    consumer.on('test.happened', async (entry) => {
+      view = entry.getContext();
+    });
+    await run(consumer, tenantMetadata);
+    expect(view).toMatchObject({
+      actorType: 'user',
+      correlationId: 'corr-1',
+      scopeId: 'tenant-1',
+      userId: 'user-1',
+      session: { scopeId: 'tenant-1', userId: 'user-1' },
+    });
+  });
+
+  it('reads live: it follows withScope and crossScope inside the handler', async () => {
+    const provider = new AsyncExecutionContextProvider({ scopeCrossing: { authorize: () => {} } });
+    const consumer = makeConsumer(provider);
+    const seen: (string | undefined)[] = [];
+    consumer.on('test.happened', async (entry) => {
+      seen.push(entry.getContext().scopeId);
+      await provider.withScope('scope-a', async () => {
+        seen.push(entry.getContext().scopeId);
+        await provider.crossScope('scope-b', async () => {
+          seen.push(entry.getContext().scopeId);
+          seen.push(entry.getContext().crossedFrom);
+        });
+      });
+    });
+    await run(consumer, systemMetadata);
+    expect(seen).toEqual([undefined, 'scope-a', 'scope-b', 'scope-a']);
+  });
+
+  it('stays live after schema validation', async () => {
+    const consumer = makeConsumer();
+    const Described = defineEvent('test.happened', z.object({ foo: z.string() }));
+    let scopeId: string | undefined;
+    consumer.on(Described, async (entry) => {
+      scopeId = entry.getContext().scopeId;
+    });
+    await run(consumer, tenantMetadata);
+    expect(scopeId).toBe('tenant-1');
+  });
+
+  it('throws when the entry is read outside its dispatch', async () => {
+    const consumer = makeConsumer();
+    let captured: HandlerEntry | undefined;
+    consumer.on('test.happened', async (entry) => {
+      captured = entry;
+    });
+    await run(consumer, tenantMetadata);
+    expect(() => captured?.getContext()).toThrow(/outside the dispatch of its handler/);
+  });
+
+  it('throws when the entry escapes into another dispatch', async () => {
+    const provider = new AsyncExecutionContextProvider();
+    const consumer = makeConsumer(provider);
+    const entries: HandlerEntry[] = [];
+    let crossRead: unknown;
+    consumer.on('test.happened', async (entry) => {
+      const first = entries[0];
+      entries.push(entry);
+      if (first) {
+        try {
+          first.getContext();
+        } catch (err) {
+          crossRead = err;
+        }
+      }
+    });
+    await run(consumer, [
+      withMetadata(tenantMetadata, { id: 'e1' }),
+      withMetadata({ ...tenantMetadata, scopeId: 'tenant-2' }, { id: 'e2' }),
+    ]);
+    expect(entries).toHaveLength(2);
+    expect(crossRead).toBeInstanceOf(Error);
+    expect((crossRead as Error).message).toMatch(/outside the dispatch of its handler/);
+  });
+
+  it('re-checks the requirement on read after a scope-dropping runWithContext', async () => {
+    const provider = new AsyncExecutionContextProvider();
+    const consumer = makeConsumer(provider);
+    let caught: unknown;
+    consumer.on(
+      'test.happened',
+      async (entry) => {
+        const ctx = provider.getContext();
+        const { session: _session, ...unscoped } = ctx;
+        await provider.runWithContext(unscoped, async () => {
+          try {
+            entry.getContext();
+          } catch (err) {
+            caught = err;
+          }
+        });
+      },
+      { requires: 'scope' },
+    );
+    await run(consumer, tenantMetadata);
+    expect((caught as { code?: string }).code).toBe('MISSING_SCOPE');
+  });
+
+  it('serializes an entry from an unwired consumer without throwing', async () => {
+    const consumer = unwired();
+    let json: string | undefined;
+    let readError: unknown;
+    consumer.on('test.happened', async (entry) => {
+      json = JSON.stringify(entry);
+      try {
+        entry.getContext();
+      } catch (err) {
+        readError = err;
+      }
+    });
+    await run(consumer, [makeBusEntry()]);
+    expect(json).toContain('"id":"evt-1"');
+    expect((readError as Error).message).toMatch(/no `executionContext` wired/);
+  });
+
+  it('rejects a requirement on a consumer without executionContext at registration', () => {
+    expect(() => unwired().on('test.happened', async () => {}, { requires: 'scope' })).toThrow(
+      /requires a scope, but no `executionContext` is wired/,
+    );
+  });
+
+  it('runs no handler and fails the row when any requirement is unmet', async () => {
+    const plain = vi.fn(async () => {});
+    const needsSession = vi.fn(async () => {});
+    const onFailed = vi.fn();
+    const consumer = makeConsumer(undefined, { onFailed });
+    consumer.on('test.happened', plain);
+    consumer.on('test.happened', needsSession, { requires: 'session' });
+
+    bus.enqueueBatch([withMetadata(systemMetadata)]);
+    await run(consumer, [withMetadata(systemMetadata)], 2000);
+
+    expect(plain).not.toHaveBeenCalled();
+    expect(needsSession).not.toHaveBeenCalled();
+    expect(bus.marksFailed).toHaveLength(2);
+    expect(bus.marksFailed[0]?.reason).toMatch(/session is required/);
+    expect(onFailed).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not retry in process when a handler throws MissingScopeError', async () => {
+    const provider = new AsyncExecutionContextProvider();
+    const consumer = makeConsumer(provider);
+    const handler = vi.fn(async () => {
+      requireScopeId(provider.getContext());
+    });
+    consumer.on('test.happened', handler);
+    await run(consumer, systemMetadata);
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(bus.marksFailed).toHaveLength(1);
+  });
+
+  it('narrows the entry for a class-based ScopedEventSubscription', async () => {
+    const Described = defineEvent<{ foo: string }>('test.happened');
+    const seen: string[] = [];
+    class OnHappened implements ScopedEventSubscription<{ foo: string }> {
+      readonly descriptor = Described;
+      readonly requires = 'scope';
+      async handle(entry: ScopedHandlerEntry<{ foo: string }>): Promise<void> {
+        const scopeId: string = entry.getContext().scopeId;
+        seen.push(scopeId);
+      }
+    }
+    const consumer = makeConsumer();
+    consumer.subscribe([new OnHappened()]);
+    await run(consumer, tenantMetadata);
+    expect(seen).toEqual(['tenant-1']);
+  });
+});
+
+describe('createHandlerEntry', () => {
+  it('builds an entry whose getContext returns a fixed view', () => {
+    const view = {
+      actorType: 'user',
+      correlationId: 'c',
+      executionAttemptId: 'a',
+      scopeId: 's-1',
+    } as const;
+    const entry = createHandlerEntry(
+      { id: 'e', payload: 1, eventType: 't', eventVersion: 1, occurredAt: new Date(0) },
+      view,
+    );
+    const scoped: ScopedHandlerEntry<number> = entry;
+    expect(scoped.getContext().scopeId).toBe('s-1');
   });
 });

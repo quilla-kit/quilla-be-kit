@@ -135,3 +135,20 @@ describe('ExecutionContextEnricher sessionKeys', () => {
     });
   });
 });
+
+describe('ExecutionContextEnricher crossedFrom', () => {
+  it('logs the origin scope of a crossed context under extra.crossedFrom', async () => {
+    const provider = new AsyncExecutionContextProvider();
+    const enricher = new ExecutionContextEnricher(provider);
+    const ctx = {
+      actorType: 'user',
+      correlationId: 'corr-1',
+      executionAttemptId: 'attempt-1',
+      session: { scopeId: 'tenant-1', userId: 'admin-1' },
+      crossedFrom: 'platform',
+    } as const;
+    await provider.runWithContext(ctx, async () => {
+      expect(enricher.enrich().extra).toEqual({ crossedFrom: 'platform' });
+    });
+  });
+});

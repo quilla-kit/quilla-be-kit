@@ -44,6 +44,9 @@ importers:
       '@quilla-be-kit/ddd':
         specifier: workspace:^
         version: link:../ddd
+      '@quilla-be-kit/errors':
+        specifier: workspace:^
+        version: link:../errors
       '@quilla-be-kit/observability':
         specifier: workspace:^
         version: link:../observability

@@ -1,4 +1,4 @@
-import type { ExecutionContext } from '@quilla-be-kit/execution-context';
+import { type ExecutionContext, toExecutionContextView } from '@quilla-be-kit/execution-context';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { ValidateRequest } from '../../src/decorator/index.js';
@@ -49,6 +49,7 @@ function fakeRequest(init: FakeRequestInit = {}): ValidatedRequest<unknown> {
     getBinary: () => null,
     getFile: () => null,
     getFormFields: () => ({}),
+    getContext: () => toExecutionContextView(executionContext),
     getExecutionContext: () => executionContext,
     setAttribute: <T>(key: string, value: T) => {
       attributes.set(key, value);
