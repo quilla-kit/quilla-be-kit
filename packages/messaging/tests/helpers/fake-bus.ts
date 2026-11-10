@@ -40,6 +40,7 @@ export class FakeEventBusConsumer implements EventBusConsumer {
   }[] = [];
   readonly marksDone: string[] = [];
   readonly marksFailed: { id: string; reason: string }[] = [];
+  readonly marksFailedPermanently: { id: string; reason: string }[] = [];
   readonly markInstanceIds: (string | undefined)[] = [];
   readonly claimLost = new Set<string>();
   lease?: FakeLease;
@@ -75,12 +76,29 @@ export class FakeEventBusConsumer implements EventBusConsumer {
     reason: string,
     instanceId?: string,
   ): Promise<EventBusEntry | undefined> {
+    return this.recordFailure(this.marksFailed, this.failedStatus, id, reason, instanceId);
+  }
+
+  async markFailedPermanently(
+    id: string,
+    reason: string,
+    instanceId?: string,
+  ): Promise<EventBusEntry | undefined> {
+    return this.recordFailure(this.marksFailedPermanently, 'FAILED', id, reason, instanceId);
+  }
+
+  private recordFailure(
+    list: { id: string; reason: string }[],
+    status: 'PENDING' | 'FAILED',
+    id: string,
+    reason: string,
+    instanceId: string | undefined,
+  ): EventBusEntry | undefined {
     this.markInstanceIds.push(instanceId);
     if (this.claimLost.has(id)) throw new ClaimLostError(id);
-    this.marksFailed.push({ id, reason });
+    list.push({ id, reason });
     const entry = this.entries.get(id);
-    if (!entry) return undefined;
-    return failedCopy(entry, reason, this.failedStatus);
+    return entry && failedCopy(entry, reason, status);
   }
 
   async resetStale(_olderThan: Date): Promise<number> {

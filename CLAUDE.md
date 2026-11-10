@@ -107,6 +107,10 @@ always take `.type.ts` or `.interface.ts` — even when they are the
 package's central concept (prefer `logger.interface.ts` over `logger.ts`,
 `execution-context.type.ts` over `execution-context.ts`).
 
+**Subpath entry files** are named after their subpath, not `{subject}.{type}`:
+`src/testing.ts` (`@quilla-be-kit/<pkg>/testing`), `src/validator/zod.ts`
+(`@quilla-be-kit/http/validator/zod`).
+
 **Test files mirror** the source name with `.test.ts` appended:
 `domain.event.ts` → `domain.event.test.ts`.
 

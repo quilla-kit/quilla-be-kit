@@ -136,4 +136,71 @@ describe('createJobExecution', () => {
     const execution = await inRun(async (e) => e);
     expect(() => execution.getContext()).toThrow(/outside its run/);
   });
+
+  describe('onScopeFailed', () => {
+    const entries: [string, number][] = [
+      ['s-1', 1],
+      ['s-2', 2],
+    ];
+
+    it('replaces the default log and receives the failing scope and value', async () => {
+      const { logger, error } = makeLogger();
+      const onScopeFailed = vi.fn();
+      const boom = new Error('boom');
+      await inRun(
+        (execution) =>
+          execution.forEachScope(
+            entries,
+            async (_v, scopeId) => {
+              if (scopeId === 's-1') throw boom;
+            },
+            { onScopeFailed },
+          ),
+        undefined,
+        logger,
+      );
+      expect(onScopeFailed).toHaveBeenCalledWith(boom, 's-1', 1, { aborted: false });
+      expect(error).not.toHaveBeenCalled();
+    });
+
+    it('reports errors thrown after an abort with aborted: true, still as skipped', async () => {
+      const onScopeFailed = vi.fn();
+      const result = await inRun((execution, controller) =>
+        execution.forEachScope(
+          entries,
+          async () => {
+            controller.abort();
+            throw new Error('interrupted');
+          },
+          { onScopeFailed },
+        ),
+      );
+      expect(onScopeFailed).toHaveBeenCalledTimes(1);
+      expect(onScopeFailed.mock.calls[0]?.[3]).toEqual({ aborted: true });
+      expect(result.skipped).toEqual(['s-1', 's-2']);
+    });
+
+    it('contains a hook that throws or rejects', async () => {
+      const { logger, error } = makeLogger();
+      const result = await inRun(
+        (execution) =>
+          execution.forEachScope(
+            entries,
+            async () => {
+              throw new Error('boom');
+            },
+            {
+              onScopeFailed: async (_e, scopeId) => {
+                if (scopeId === 's-1') throw new Error('hook bug');
+                return Promise.reject(new Error('hook rejected'));
+              },
+            },
+          ),
+        undefined,
+        logger,
+      );
+      expect(result.failed.map((f) => f.scopeId)).toEqual(['s-1', 's-2']);
+      expect(error).toHaveBeenCalledTimes(2);
+    });
+  });
 });

@@ -7,6 +7,7 @@ export {
   EventConsumer,
   SchemaValidationError,
   type EventConsumerOptions,
+  type EventFailureInfo,
   type EventHandler,
   type ScopedEventHandler,
   type SessionEventHandler,

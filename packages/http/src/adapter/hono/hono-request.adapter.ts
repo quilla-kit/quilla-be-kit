@@ -1,11 +1,11 @@
 import type { ExecutionContextProvider } from '@quilla-be-kit/execution-context';
 import type { Context } from 'hono';
+import { createHttpRequest } from '../../request/create-http-request.js';
 import type { HttpRequest } from '../../request/http-request.interface.js';
 import type { HttpResponse } from '../../request/http-response.type.js';
 import type { RequestDeserializer } from '../../request/request-deserializer.interface.js';
 import type { ResponseSerializer } from '../../request/response-serializer.interface.js';
 import type { RequestAdapter } from '../../server/request-adapter.interface.js';
-import { createHttpRequest } from './create-http-request.js';
 import { getRequestAttributes } from './get-request-attributes.js';
 import {
   HONO_CONTEXT_HTTP_REQUEST_KEY,
@@ -87,11 +87,7 @@ export class HonoRequestAdapter implements RequestAdapter {
 }
 
 function normalizeHeaders(headers: Headers): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const [key, value] of headers.entries()) {
-    out[key.toLowerCase()] = value;
-  }
-  return out;
+  return Object.fromEntries(headers.entries());
 }
 
 function normalizeQuery(

@@ -140,6 +140,24 @@ async execute(signal: AbortSignal, execution: JobExecution): Promise<void> {
 }
 ```
 
+Pass `{ onScopeFailed }` to replace the default failure log, for example to
+keep a descriptive message and your own fields:
+
+```ts
+await execution.forEachScope(byScope, (invitations) => this.expire(invitations), {
+  onScopeFailed: (error, scopeId, invitations, { aborted }) => {
+    if (aborted) return;
+    log.error('expire-invitations-failed', error, { meta: { scopeId, count: invitations.length } });
+  },
+});
+```
+
+It runs for every failure, including an error thrown after the run was
+aborted (`aborted: true`; that scope is still recorded as skipped), and the
+kit then logs nothing itself. It runs in the job's own context, not the
+failing scope's, so `scopeId` and the value identify the scope. It may be
+async; a throw or rejection is logged and the loop continues.
+
 `forEachScope` resolves to a `ScopeRunResult<R>`:
 
 | Field | Holds |

@@ -6,7 +6,7 @@ import {
   toExecutionContextView,
 } from '@quilla-be-kit/execution-context';
 import type { Logger } from '@quilla-be-kit/observability';
-import type { JobExecution } from './job-execution.type.js';
+import type { ForEachScopeOptions, JobExecution } from './job-execution.type.js';
 import type { ScopeRunResult } from './scope-run.result.js';
 
 export type JobExecutionOptions = {
@@ -35,7 +35,9 @@ export function createJobExecution(options: JobExecutionOptions): JobExecution {
     async forEachScope<T, R>(
       entries: Iterable<readonly [string, T]>,
       fn: (value: T, scopeId: string) => Promise<R>,
+      options: ForEachScopeOptions<T> = {},
     ): Promise<ScopeRunResult<R>> {
+      const { onScopeFailed } = options;
       const outer = resolveScopeId(current());
       if (outer !== undefined) {
         throw new Error(
@@ -56,12 +58,20 @@ export function createJobExecution(options: JobExecutionOptions): JobExecution {
             value: await provider.withScope(scopeId, () => fn(value, scopeId)),
           });
         } catch (error) {
-          if (signal.aborted) {
-            skipped.push(scopeId);
-            continue;
+          const aborted = signal.aborted;
+          if (onScopeFailed) {
+            try {
+              await onScopeFailed(error, scopeId, value, { aborted });
+            } catch (hookError) {
+              logger.error('onScopeFailed hook threw', hookError, { meta: { scopeId } });
+            }
+          } else if (!aborted) {
+            logger.error('Scope failed; continuing with the next one', error, {
+              meta: { scopeId },
+            });
           }
-          logger.error('Scope failed; continuing with the next one', error, { meta: { scopeId } });
-          failed.push({ scopeId, error });
+          if (aborted) skipped.push(scopeId);
+          else failed.push({ scopeId, error });
         }
       }
       return { succeeded, failed, skipped };

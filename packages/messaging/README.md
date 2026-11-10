@@ -301,7 +301,9 @@ together:
    within one poll interval. Any delay between attempts comes from
    `retryDelaysMs`. With a lease that can't release, the skipped rows
    come back once their lease expires instead. An event that reaches
-   FAILED stops blocking its aggregate.
+   FAILED stops blocking its aggregate. A [permanent failure](#permanent-failures)
+   reaches FAILED on its first attempt: the rest of A is still skipped for
+   that batch, then processed from the next poll.
 
 Preconditions and limits:
 
@@ -628,12 +630,44 @@ consumer.on(UserCreated, async ({ payload }) => {
 });
 ```
 
-Validation failures are **not** retried in process — the schema result is
-deterministic — and the row is marked failed with the issue summary in its
-`last_error` column. Like any failure, the bus redelivers it until its
-`maxRetries` is spent, then it stays `FAILED`. Log/metrics pipelines can
-`instanceof`-check the exported `SchemaValidationError` to alert on
-contract drift between producer and consumer.
+Validation failures are a [permanent failure](#permanent-failures): the
+schema result is deterministic, so the event is dead-lettered on its first
+attempt (`status: 'FAILED'`), with the issue summary in its `last_error`
+column. Log/metrics pipelines can `instanceof`-check the exported
+`SchemaValidationError` to alert on contract drift between producer and
+consumer.
+
+### Permanent failures
+
+A failure a retry cannot fix is **permanent**: the handler isn't retried in
+process, and when every failing handler of an event failed permanently, the
+event is dead-lettered at once with `markFailedPermanently` instead of being
+redelivered until `maxRetries`. These are always permanent:
+
+- `SchemaValidationError`;
+- `MissingScopeError` / `MissingSessionError` (an unmet `requires`, or
+  `requireScopeId` in handler code);
+- an error rebuilding the execution context from the event's metadata.
+
+Classify your own with `isPermanentFailure(error, { entry })`, for example
+an event about an aggregate that no longer exists:
+
+```ts
+new EventConsumer({
+  // ...
+  isPermanentFailure: (error, { entry }) => error instanceof AggregateGoneError,
+  onFailed: (entry, { permanent }) => deadLetters.record(entry, { permanent }),
+});
+```
+
+A predicate that throws is logged and the failure treated as transient.
+
+When an event has both a permanent and a transient failure, it is
+redelivered: the transient one may succeed. Handlers that succeeded run
+again on redelivery, as with any failure. `onFailed` receives
+`{ permanent }`, so a dead-letter observer can tell a first-attempt dead
+letter (`retryCount` 1) from exhausted retries. `last_error` holds the
+error's message.
 
 ### Handler context
 
@@ -715,24 +749,31 @@ are bivariant, so the base interface accepts the narrowed handler without
 `requires`, and nothing then checks the context.
 
 Declaring `requires` on a consumer with no `executionContext` throws when the
-handler is registered. At dispatch, every handler's requirement is checked
-before any of them runs. If one is unmet, none runs and the row is marked
-failed with a `MISSING_SCOPE` / `MISSING_SESSION` reason, so handlers that
-would have succeeded never run twice. Like schema failures, these skip
-in-process retries, and the bus redelivers the row until `maxRetries` is
-spent. A `MissingScopeError` / `MissingSessionError` thrown from handler code
-(for example by `requireScopeId`) also skips in-process retries.
+handler is registered. At dispatch, **each handler checks its own
+requirement** before it runs. An unmet one fails only that handler, as a
+[permanent failure](#permanent-failures): the other handlers of the event
+still run. If only requirements (or other permanent failures) failed, the
+event is dead-lettered once, so the handlers that succeeded never run twice.
+Each unmet handler logs its own error.
 
-**Tests.** Build entries with `createHandlerEntry(fields, view)`; the view is
-what `getContext()` returns:
+**Tests.** `@quilla-be-kit/messaging/testing` builds entries with defaults
+for everything you don't set:
 
 ```ts
-const entry = createHandlerEntry(
-  { id: 'e-1', payload, eventType: 'invoice.paid', eventVersion: 1, occurredAt: new Date() },
-  { actorType: 'user', correlationId: 'c-1', executionAttemptId: 'a-1', scopeId: 'tenant-1' },
-);
+import { testContextView } from '@quilla-be-kit/execution-context/testing';
+import { createTestHandlerEntry } from '@quilla-be-kit/messaging/testing';
+
+const entry = createTestHandlerEntry(payload, {
+  context: testContextView({ scopeId: 'tenant-1' }), // a ScopedHandlerEntry
+  fields: { eventType: 'invoice.paid' },             // optional envelope overrides
+});
 await new OnInvoicePaid().handle(entry);
 ```
+
+Defaults: a random `id`, `eventType: 'test.event'`, `eventVersion: 1`,
+`occurredAt` now, and an unscoped context. `context` also accepts a function,
+read on every `getContext()`. `createHandlerEntry(fields, view)` from the main
+export builds one with every field explicit.
 
 ---
 
@@ -806,8 +847,9 @@ new EventConsumer({
   renewIntervalMs: 20_000,           // defaults to a third of the bus's lease; 0 disables
   instanceId: 'replica-<id>',        // must be unique per process
   executionContext: { provider }, // optional: reconstruct + scope per handler; required by `requires` and entry.getContext()
+  isPermanentFailure: (error, { entry }) => false, // dead-letter app errors a retry can't fix
   onProcessed: (entry) => bumpMetric(entry),
-  onFailed: (entry) => bumpMetric(entry), // entry.status === 'FAILED' when dead-lettered
+  onFailed: (entry, { permanent }) => bumpMetric(entry), // entry.status === 'FAILED' when dead-lettered
   onLeaseLost: ({ id, eventType, stage }) => bumpMetric({ id, eventType, stage }),
 });
 ```
@@ -1117,6 +1159,7 @@ class KafkaBus implements EventBusPublisher, EventBusConsumer {
   async claim(instanceId, batchSize, allowedTopics) { /* pull + transition; filter by allowedTopics */ }
   async markDone(id, instanceId) { /* commit offset */ }
   async markFailed(id, reason, instanceId) { /* retry or DLQ; return the updated entry */ }
+  async markFailedPermanently(id, reason, instanceId) { /* DLQ now, no redelivery */ }
   async resetStale(olderThan) { /* broker-specific recovery */ }
 }
 
@@ -1139,6 +1182,10 @@ const forwarder = new OutboxForwarder({
   to the queue at once, resolving to the ids released. Without it, a
   consumer renews unstarted rows instead of handing them to other
   replicas.
+- `markFailedPermanently` dead-letters at once, without redelivery, for
+  [permanent failures](#permanent-failures). It is required: an adapter
+  that redelivers there instead re-runs the event's successful handlers on
+  every redelivery.
 - `markFailed` resolves to the updated entry, so `onFailed` can tell a
   dead letter (`status: 'FAILED'`) from a retry. Resolve to `undefined`
   when the broker can't report it; `onFailed` is then skipped.

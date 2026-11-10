@@ -137,6 +137,16 @@ export class PgEventBus implements EventBusPublisher, EventBusConsumer {
     return row && this.rowToEntry(row);
   }
 
+  async markFailedPermanently(
+    id: string,
+    reason: string,
+    instanceId?: string,
+  ): Promise<EventBusEntry | undefined> {
+    // A retry budget of 0 dead-letters on this attempt.
+    const row = await this.claims.markFailed<EventsRow>(id, reason, 0, instanceId);
+    return row && this.rowToEntry(row);
+  }
+
   resetStale(olderThan: Date): Promise<number> {
     return this.claims.resetStale(olderThan);
   }

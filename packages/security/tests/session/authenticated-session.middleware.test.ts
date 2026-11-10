@@ -4,9 +4,9 @@ import {
   executionContextFactory,
 } from '@quilla-be-kit/execution-context';
 import { HttpAttributes } from '@quilla-be-kit/http';
+import { createTestHttpRequest } from '@quilla-be-kit/http/testing';
 import { describe, expect, it, vi } from 'vitest';
 import { authenticatedSessionMiddleware } from '../../src/session/authenticated-session.middleware.js';
-import { fakeHttpRequest } from '../helpers/fake-http-request.js';
 import { makeSession, makeSessionStore, makeToken } from '../helpers/test-factories.js';
 
 function runWithBaseline<T>(
@@ -24,7 +24,7 @@ describe('authenticatedSessionMiddleware', () => {
       executionContextProvider: provider,
     });
 
-    const request = fakeHttpRequest();
+    const request = createTestHttpRequest();
     request.setAttribute(HttpAttributes.VERIFIED_TOKEN, makeToken());
 
     let observed: ReturnType<typeof provider.getContext> | undefined;
@@ -47,7 +47,7 @@ describe('authenticatedSessionMiddleware', () => {
       executionContextProvider: provider,
     });
 
-    const request = fakeHttpRequest();
+    const request = createTestHttpRequest();
     request.setAttribute(HttpAttributes.VERIFIED_TOKEN, makeToken());
 
     const baseline = executionContextFactory.createBaselineContext({ correlationId: 'corr-42' });
@@ -71,7 +71,7 @@ describe('authenticatedSessionMiddleware', () => {
       executionContextProvider: provider,
     });
 
-    const request = fakeHttpRequest();
+    const request = createTestHttpRequest();
     request.setAttribute(HttpAttributes.VERIFIED_TOKEN, makeToken());
 
     const baseline = executionContextFactory.createBaselineContext();
@@ -91,7 +91,7 @@ describe('authenticatedSessionMiddleware', () => {
       sessionStore: makeSessionStore(makeSession()),
       executionContextProvider: provider,
     });
-    const request = fakeHttpRequest();
+    const request = createTestHttpRequest();
 
     await expect(
       runWithBaseline(provider, () => middleware(request, vi.fn())),
@@ -104,7 +104,7 @@ describe('authenticatedSessionMiddleware', () => {
       sessionStore: makeSessionStore(null),
       executionContextProvider: provider,
     });
-    const request = fakeHttpRequest();
+    const request = createTestHttpRequest();
     request.setAttribute(HttpAttributes.VERIFIED_TOKEN, makeToken());
 
     await expect(
@@ -118,7 +118,7 @@ describe('authenticatedSessionMiddleware', () => {
       sessionStore: makeSessionStore(makeSession({ securityStamp: 'stamp-v2' })),
       executionContextProvider: provider,
     });
-    const request = fakeHttpRequest();
+    const request = createTestHttpRequest();
     request.setAttribute(HttpAttributes.VERIFIED_TOKEN, makeToken({ securityStamp: 'stamp-v1' }));
 
     const next = vi.fn(async () => {});

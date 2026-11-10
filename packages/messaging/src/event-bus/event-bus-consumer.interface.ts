@@ -11,6 +11,12 @@ export interface EventBusConsumer {
   markDone(id: string, instanceId?: string): Promise<void>;
   // Resolves to the updated entry (`status` FAILED once retries are exhausted).
   markFailed(id: string, reason: string, instanceId?: string): Promise<EventBusEntry | undefined>;
+  // Dead-letters at once (`status` FAILED, no redelivery), for failures a retry cannot fix.
+  markFailedPermanently(
+    id: string,
+    reason: string,
+    instanceId?: string,
+  ): Promise<EventBusEntry | undefined>;
   // Cutoff applies to claims without a lease; leased claims expire on their own deadline.
   resetStale(olderThan: Date): Promise<number>;
   readonly lease?: ClaimLease;

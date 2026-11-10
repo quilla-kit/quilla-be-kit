@@ -47,6 +47,11 @@ type Registration = {
   readonly requires: ContextRequirement | undefined;
 };
 
+type HandlerFailure = { readonly message: string; readonly permanent: boolean };
+
+/** Passed to `onFailed`: `permanent` failures are dead-lettered on the first attempt. */
+export type EventFailureInfo = { readonly permanent: boolean };
+
 export type EventConsumerOptions = {
   readonly bus: EventBusConsumer;
   readonly consumerName: string;
@@ -65,7 +70,15 @@ export type EventConsumerOptions = {
   readonly onProcessed?: (entry: EventBusEntry) => void;
   // After each failed attempt is recorded; `entry.status === 'FAILED'` means dead-lettered.
   // Not called when the claim was lost (onLeaseLost reports it).
-  readonly onFailed?: (entry: EventBusEntry) => void;
+  readonly onFailed?: (entry: EventBusEntry, info: EventFailureInfo) => void;
+  /**
+   * Classifies a handler error a retry cannot fix; the event is then dead-lettered on the
+   * first attempt. Schema, missing-context and context-rebuild errors always are.
+   */
+  readonly isPermanentFailure?: (
+    error: unknown,
+    info: { readonly entry: EventBusEntry },
+  ) => boolean;
   readonly onLeaseLost?: (info: LeaseLostInfo) => void;
   readonly subscriptions?: ReadonlyArray<EventSubscription<unknown>>;
 };
@@ -121,12 +134,11 @@ export class EventConsumer implements Disposable {
   private readonly staleClaimAfterMs: number;
   private readonly instanceId: string;
   private readonly executionContext: EventConsumerOptions['executionContext'];
-  private readonly onProcessed: ((entry: EventBusEntry) => void) | undefined;
-  private readonly onFailed: ((entry: EventBusEntry) => void) | undefined;
+  private readonly onProcessed: EventConsumerOptions['onProcessed'];
+  private readonly onFailed: EventConsumerOptions['onFailed'];
+  private readonly isPermanentFailure: EventConsumerOptions['isPermanentFailure'];
   private readonly leases: ClaimLeaseManager;
   private readonly handlers = new Map<string, Registration[]>();
-  // The strongest requirement among each event type's handlers.
-  private readonly requirements = new Map<string, ContextRequirement>();
   private topicKeys: readonly string[] = [];
 
   private intervalHandle: ReturnType<typeof setInterval> | null = null;
@@ -147,6 +159,7 @@ export class EventConsumer implements Disposable {
     this.executionContext = options.executionContext;
     this.onProcessed = options.onProcessed;
     this.onFailed = options.onFailed;
+    this.isPermanentFailure = options.isPermanentFailure;
     this.leases = new ClaimLeaseManager({
       lease: options.bus.lease,
       instanceId: this.instanceId,
@@ -223,9 +236,6 @@ export class EventConsumer implements Disposable {
     const isNewType = !this.handlers.has(eventType);
     const existing = this.handlers.get(eventType) ?? [];
     existing.push({ handler: wrapped, requires });
-    if (requires === 'session' || (requires === 'scope' && !this.requirements.has(eventType))) {
-      this.requirements.set(eventType, requires);
-    }
     this.handlers.set(eventType, existing);
     if (isNewType) this.topicKeys = [...this.handlers.keys()];
     return this;
@@ -299,37 +309,30 @@ export class EventConsumer implements Disposable {
         }
 
         this.leases.hold(event);
-        const unmet = this.checkRequirement(event);
-        if (unmet !== undefined) {
-          const failed = await this.leases.settle(event, 'failed', () =>
-            this.bus.markFailed(event.id, unmet, this.instanceId),
-          );
-          if (failed) this.callHook('onFailed', this.onFailed, failed);
-          continue;
-        }
-
         const fields = this.entryFields(event);
-        let allSucceeded = true;
-        let lastError: string | undefined;
+        const failures: HandlerFailure[] = [];
         for (const registration of handlers) {
           const failure = await this.executeWithRetry(event, fields, registration);
-          if (failure !== undefined) {
-            allSucceeded = false;
-            lastError = failure;
-          }
+          if (failure) failures.push(failure);
         }
 
-        if (allSucceeded) {
-          this.callHook('onProcessed', this.onProcessed, event);
+        const last = failures.at(-1);
+        if (!last) {
+          this.callHook('onProcessed', event.id, () => this.onProcessed?.(event));
           await this.leases.settle(event, 'done', () =>
             this.bus.markDone(event.id, this.instanceId),
           );
-        } else {
-          const failed = await this.leases.settle(event, 'failed', () =>
-            this.bus.markFailed(event.id, lastError ?? 'unknown failure', this.instanceId),
-          );
-          if (failed) this.callHook('onFailed', this.onFailed, failed);
+          continue;
         }
+        // Only when every failure is permanent: a transient one may still succeed on redelivery.
+        const permanent = failures.every((f) => f.permanent);
+        const failed = await this.leases.settle(event, 'failed', () =>
+          permanent
+            ? this.bus.markFailedPermanently(event.id, last.message, this.instanceId)
+            : this.bus.markFailed(event.id, last.message, this.instanceId),
+        );
+        if (failed)
+          this.callHook('onFailed', event.id, () => this.onFailed?.(failed, { permanent }));
       }
     } catch (err) {
       this.logger.error('tick error', err);
@@ -338,15 +341,11 @@ export class EventConsumer implements Disposable {
     }
   }
 
-  private callHook(
-    name: string,
-    hook: ((entry: EventBusEntry) => void) | undefined,
-    entry: EventBusEntry,
-  ): void {
+  private callHook(name: string, eventId: string, call: () => void): void {
     try {
-      hook?.(entry);
+      call();
     } catch (err) {
-      this.logger.error(`${name} hook threw`, err, { meta: { eventId: entry.id } });
+      this.logger.error(`${name} hook threw`, err, { meta: { eventId } });
     }
   }
 
@@ -361,27 +360,6 @@ export class EventConsumer implements Disposable {
       }
     } catch (err) {
       this.logger.error('stale sweep failed', err);
-    }
-  }
-
-  // Every handler's requirement is checked before any runs, so a deterministic
-  // failure never re-runs the handlers that would have succeeded.
-  private checkRequirement(event: EventBusEntry): string | undefined {
-    const requires = this.requirements.get(event.eventType);
-    const ctx = requires ? this.buildExecutionContext(event) : undefined;
-    if (!requires || !ctx) return undefined;
-    try {
-      requireContext(ctx, requires);
-      return undefined;
-    } catch (err) {
-      this.logger.error(
-        'event does not meet a handler context requirement; skipping all handlers',
-        err,
-        {
-          meta: { eventId: event.id, eventType: event.eventType },
-        },
-      );
-      return err instanceof Error ? err.message : String(err);
     }
   }
 
@@ -401,13 +379,25 @@ export class EventConsumer implements Disposable {
     event: EventBusEntry,
     fields: HandlerEntryFields,
     { handler, requires }: Registration,
-  ): Promise<string | undefined> {
+  ): Promise<HandlerFailure | undefined> {
+    const meta = { eventId: event.id, eventType: event.eventType };
+    // Rebuilding the context and checking the requirement depend only on the event.
+    let firstCtx: ExecutionContext | undefined;
+    try {
+      firstCtx = this.buildExecutionContext(event);
+      if (requires !== undefined && firstCtx) requireContext(firstCtx, requires);
+    } catch (err) {
+      this.logger.error('handler context is unusable; dead-lettering', err, { meta });
+      return { message: errorMessage(err), permanent: true };
+    }
+
     const maxAttempts = this.retryDelaysMs.length + 1;
     let lastError: string | undefined;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      if (this.stopping) return lastError ?? 'shutdown in progress';
+      if (this.stopping) return { message: lastError ?? 'shutdown in progress', permanent: false };
       try {
-        const ctx = this.buildExecutionContext(event);
+        // Each retry is a new attempt, so it gets a fresh context (and executionAttemptId).
+        const ctx = attempt === 1 ? firstCtx : this.buildExecutionContext(event);
         const entry = createHandlerEntry(fields, () => this.readContext(ctx, requires));
         const run = async () => handler(entry);
         if (ctx && this.executionContext) {
@@ -417,40 +407,53 @@ export class EventConsumer implements Disposable {
         }
         return undefined;
       } catch (err) {
-        lastError = err instanceof Error ? err.message : String(err);
-        // Deterministic failures: retrying in process cannot help.
-        if (err instanceof SchemaValidationError) {
-          this.logger.error('schema validation failed; skipping in-process retries', err, {
-            meta: { eventId: event.id, eventType: event.eventType, issues: err.issues },
+        lastError = errorMessage(err);
+        if (this.isPermanent(err, event, meta)) {
+          this.logger.error('permanent handler failure; skipping retries', err, {
+            meta: err instanceof SchemaValidationError ? { ...meta, issues: err.issues } : meta,
           });
-          return lastError;
-        }
-        if (MissingScopeError.is(err) || MissingSessionError.is(err)) {
-          this.logger.error('context requirement not met; skipping in-process retries', err, {
-            meta: { eventId: event.id, eventType: event.eventType },
-          });
-          return lastError;
+          return { message: lastError, permanent: true };
         }
         const delayMs = this.retryDelaysMs[attempt - 1];
         if (attempt >= maxAttempts || delayMs === undefined) {
           this.logger.error(`handler failed after ${attempt} attempt(s)`, err, {
-            meta: { eventId: event.id, eventType: event.eventType, attempt },
+            meta: { ...meta, attempt },
           });
-          return lastError;
+          return { message: lastError, permanent: false };
         }
         this.logger.warn(`handler failed, retrying in ${delayMs}ms`, {
-          meta: {
-            eventId: event.id,
-            eventType: event.eventType,
-            attempt,
-            maxAttempts,
-            error: lastError,
-          },
+          meta: { ...meta, attempt, maxAttempts, error: lastError },
         });
         await this.sleep(delayMs);
       }
     }
-    return lastError;
+    return { message: lastError ?? 'unknown failure', permanent: false };
+  }
+
+  private isPermanent(
+    err: unknown,
+    entry: EventBusEntry,
+    meta: Readonly<Record<string, unknown>>,
+  ): boolean {
+    if (
+      err instanceof SchemaValidationError ||
+      MissingScopeError.is(err) ||
+      MissingSessionError.is(err)
+    ) {
+      return true;
+    }
+    if (!this.isPermanentFailure) return false;
+    try {
+      return this.isPermanentFailure(err, { entry });
+    } catch (predicateError) {
+      // A broken classifier must never leave the event unsettled: treat the failure as transient.
+      this.logger.error(
+        'isPermanentFailure threw; treating the failure as transient',
+        predicateError,
+        { meta },
+      );
+      return false;
+    }
   }
 
   private readContext(
@@ -498,4 +501,8 @@ export class EventConsumer implements Disposable {
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
