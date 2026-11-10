@@ -2,8 +2,8 @@ import {
   type ExecutionContextProvider,
   toExecutionContextView,
 } from '@quilla-be-kit/execution-context';
-import { HttpAttributes } from '../../request/http-attributes.js';
-import type { ValidatedRequest } from '../../validator/validated-request.type.js';
+import type { ValidatedRequest } from '../validator/validated-request.type.js';
+import { HttpAttributes } from './http-attributes.js';
 
 export type CreateHttpRequestInput = {
   readonly path: string;
@@ -14,7 +14,7 @@ export type CreateHttpRequestInput = {
   readonly body: unknown;
   readonly binary: Uint8Array | null;
   readonly formData: FormData | null;
-  readonly executionContextProvider: ExecutionContextProvider | undefined;
+  readonly executionContextProvider: Pick<ExecutionContextProvider, 'getContext'> | undefined;
 };
 
 export function createHttpRequest(
@@ -30,13 +30,18 @@ export function createHttpRequest(
     return input.executionContextProvider.getContext();
   };
 
+  // Header names are case-insensitive; store them lower-cased so getHeader can match any casing.
+  const headers = Object.fromEntries(
+    Object.entries(input.headers).map(([name, value]) => [name.toLowerCase(), value]),
+  );
+
   return {
     getPath: () => input.path,
     getMethod: () => input.method,
     getQuery: () => input.query,
     getParams: () => input.params,
-    getHeaders: () => input.headers,
-    getHeader: (name) => input.headers[name.toLowerCase()] ?? null,
+    getHeaders: () => headers,
+    getHeader: (name) => headers[name.toLowerCase()] ?? null,
     getBody: () => input.body,
     getBinary: () => input.binary,
     getFile: (name) => {

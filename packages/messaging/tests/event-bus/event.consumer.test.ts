@@ -1,6 +1,7 @@
 import {
   AsyncExecutionContextProvider,
   type ExecutionContext,
+  executionContextFactory,
   requireScopeId,
 } from '@quilla-be-kit/execution-context';
 import { NoopLogger } from '@quilla-be-kit/observability';
@@ -431,7 +432,7 @@ describe('EventConsumer', () => {
     }
   });
 
-  it('validates payload against the descriptor schema before dispatch and markFailed on failure', async () => {
+  it('validates payload against the descriptor schema and dead-letters a mismatch', async () => {
     const schema = z.object({ orderId: z.string(), total: z.number() });
     const OrderPlaced = defineEvent('order.placed', schema);
     const handler = vi.fn(async () => {});
@@ -453,8 +454,9 @@ describe('EventConsumer', () => {
 
     expect(handler).not.toHaveBeenCalled();
     expect(bus.marksDone).toHaveLength(0);
-    expect(bus.marksFailed).toHaveLength(1);
-    expect(bus.marksFailed[0]?.reason).toMatch(/schema validation failed/);
+    expect(bus.marksFailed).toHaveLength(0);
+    expect(bus.marksFailedPermanently).toHaveLength(1);
+    expect(bus.marksFailedPermanently[0]?.reason).toMatch(/schema validation failed/);
   });
 
   it('passes the schema-validated payload to the handler on success', async () => {
@@ -505,7 +507,7 @@ describe('EventConsumer', () => {
 
     expect(handler).not.toHaveBeenCalled();
     expect(validateSpy).toHaveBeenCalledTimes(1);
-    expect(bus.marksFailed).toHaveLength(1);
+    expect(bus.marksFailedPermanently).toHaveLength(1);
   });
 
   it('SchemaValidationError carries eventType + issues', () => {
@@ -1016,6 +1018,27 @@ describe('EventConsumer per-aggregate ordering within a batch', () => {
     expect(bus.marksDone).toEqual(['y1', 'n1']);
   });
 
+  it('holds an aggregate behind a permanent failure for the rest of the batch only', async () => {
+    const handled: string[] = [];
+    const consumer = run(async (entry) => {
+      handled.push(entry.id);
+      if (entry.id === 'x1') throw new SchemaValidationError('test.happened', []);
+    });
+    bus.enqueueBatch([
+      makeBusEntry({ id: 'x1', aggregateId: 'X' }),
+      makeBusEntry({ id: 'x2', aggregateId: 'X' }),
+    ]);
+    bus.enqueueBatch([makeBusEntry({ id: 'x2', aggregateId: 'X' })]);
+
+    consumer.start();
+    await vi.advanceTimersByTimeAsync(2000);
+    await consumer.dispose();
+
+    expect(bus.marksFailedPermanently.map((m) => m.id)).toEqual(['x1']);
+    expect(handled).toEqual(['x1', 'x2']);
+    expect(bus.marksDone).toEqual(['x2']);
+  });
+
   it('skips the rest of an aggregate after a lost claim before dispatch', async () => {
     const lease = new FakeLease(60_000);
     const slow = Promise.withResolvers<void>();
@@ -1331,7 +1354,7 @@ describe('EventConsumer handler context', () => {
     );
   });
 
-  it('runs no handler and fails the row when any requirement is unmet', async () => {
+  it('fails only the handler whose requirement is unmet and dead-letters the event once', async () => {
     const plain = vi.fn(async () => {});
     const needsSession = vi.fn(async () => {});
     const onFailed = vi.fn();
@@ -1339,17 +1362,20 @@ describe('EventConsumer handler context', () => {
     consumer.on('test.happened', plain);
     consumer.on('test.happened', needsSession, { requires: 'session' });
 
-    bus.enqueueBatch([withMetadata(systemMetadata)]);
-    await run(consumer, [withMetadata(systemMetadata)], 2000);
+    await run(consumer, systemMetadata);
 
-    expect(plain).not.toHaveBeenCalled();
+    expect(plain).toHaveBeenCalledTimes(1);
     expect(needsSession).not.toHaveBeenCalled();
-    expect(bus.marksFailed).toHaveLength(2);
-    expect(bus.marksFailed[0]?.reason).toMatch(/session is required/);
-    expect(onFailed).toHaveBeenCalledTimes(2);
+    expect(bus.marksFailed).toHaveLength(0);
+    expect(bus.marksFailedPermanently).toHaveLength(1);
+    expect(bus.marksFailedPermanently[0]?.reason).toMatch(/session is required/);
+    expect(onFailed).toHaveBeenCalledTimes(1);
+    expect(onFailed).toHaveBeenCalledWith(expect.objectContaining({ status: 'FAILED' }), {
+      permanent: true,
+    });
   });
 
-  it('does not retry in process when a handler throws MissingScopeError', async () => {
+  it('dead-letters without in-process retries when a handler throws MissingScopeError', async () => {
     const provider = new AsyncExecutionContextProvider();
     const consumer = makeConsumer(provider);
     const handler = vi.fn(async () => {
@@ -1358,7 +1384,7 @@ describe('EventConsumer handler context', () => {
     consumer.on('test.happened', handler);
     await run(consumer, systemMetadata);
     expect(handler).toHaveBeenCalledTimes(1);
-    expect(bus.marksFailed).toHaveLength(1);
+    expect(bus.marksFailedPermanently).toHaveLength(1);
   });
 
   it('narrows the entry for a class-based ScopedEventSubscription', async () => {
@@ -1393,5 +1419,125 @@ describe('createHandlerEntry', () => {
     );
     const scoped: ScopedHandlerEntry<number> = entry;
     expect(scoped.getContext().scopeId).toBe('s-1');
+  });
+});
+
+describe('EventConsumer permanent failures', () => {
+  let bus: FakeEventBusConsumer;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    bus = new FakeEventBusConsumer();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  class Gone extends Error {}
+
+  function makeConsumer(overrides: Partial<EventConsumerOptions> = {}) {
+    return new EventConsumer({
+      bus,
+      consumerName: 'test',
+      sourceService: 'svc-a',
+      logger: new NoopLogger(),
+      retryDelaysMs: [10, 10],
+      ...overrides,
+    });
+  }
+
+  async function runOnce(consumer: EventConsumer, entry: EventBusEntry = makeBusEntry()) {
+    bus.enqueueBatch([entry]);
+    consumer.start();
+    await vi.advanceTimersByTimeAsync(1100);
+    await consumer.dispose();
+  }
+
+  it('dead-letters an error the app classifies as permanent, without retries', async () => {
+    const handler = vi.fn(async () => {
+      throw new Gone('aggregate deleted');
+    });
+    const isPermanentFailure = vi.fn((err: unknown) => err instanceof Gone);
+    const onFailed = vi.fn();
+    const consumer = makeConsumer({ isPermanentFailure, onFailed });
+    consumer.on('test.happened', handler);
+    await runOnce(consumer);
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(isPermanentFailure).toHaveBeenCalledWith(expect.any(Gone), {
+      entry: expect.objectContaining({ id: 'evt-1', eventType: 'test.happened' }),
+    });
+    expect(bus.marksFailedPermanently).toEqual([{ id: 'evt-1', reason: 'aggregate deleted' }]);
+    expect(onFailed).toHaveBeenCalledWith(expect.anything(), { permanent: true });
+  });
+
+  it('treats the failure as transient when the classifier throws', async () => {
+    const handler = vi.fn(async () => {
+      throw new Error('boom');
+    });
+    const consumer = makeConsumer({
+      isPermanentFailure: () => {
+        throw new Error('classifier bug');
+      },
+    });
+    consumer.on('test.happened', handler);
+    await runOnce(consumer);
+
+    expect(handler).toHaveBeenCalledTimes(3);
+    expect(bus.marksFailed).toEqual([{ id: 'evt-1', reason: 'boom' }]);
+    expect(bus.marksFailedPermanently).toHaveLength(0);
+  });
+
+  it('redelivers when a permanent failure is mixed with a transient one', async () => {
+    const onFailed = vi.fn();
+    const consumer = makeConsumer({ isPermanentFailure: (e) => e instanceof Gone, onFailed });
+    consumer.on('test.happened', async () => {
+      throw new Gone('gone');
+    });
+    consumer.on('test.happened', async () => {
+      throw new Error('flaky');
+    });
+    await runOnce(consumer);
+
+    expect(bus.marksFailed).toEqual([{ id: 'evt-1', reason: 'flaky' }]);
+    expect(bus.marksFailedPermanently).toHaveLength(0);
+    expect(onFailed).toHaveBeenCalledWith(expect.anything(), { permanent: false });
+  });
+
+  it('redelivers a handler cut short by shutdown even after a permanent failure', async () => {
+    const consumer = makeConsumer({ isPermanentFailure: (e) => e instanceof Gone });
+    consumer.on('test.happened', async () => {
+      throw new Gone('gone');
+    });
+    consumer.on('test.happened', async () => {
+      void consumer.dispose();
+      throw new Error('interrupted');
+    });
+    await runOnce(consumer);
+
+    expect(bus.marksFailedPermanently).toHaveLength(0);
+    expect(bus.marksFailed).toHaveLength(1);
+  });
+
+  it('dead-letters when the execution context cannot be rebuilt from the event', async () => {
+    const factory = {
+      ...executionContextFactory,
+      createFromEventMetadata: () => {
+        throw new Error('corrupt metadata');
+      },
+    };
+    const consumer = makeConsumer({
+      executionContext: { provider: new AsyncExecutionContextProvider({ factory }) },
+    });
+    const handler = vi.fn(async () => {});
+    consumer.on('test.happened', handler);
+    await runOnce(
+      consumer,
+      makeBusEntry({ payload: { payload: {}, metadata: { actorType: 'user' } } }),
+    );
+
+    expect(handler).not.toHaveBeenCalled();
+    expect(bus.marksFailedPermanently).toEqual([{ id: 'evt-1', reason: 'corrupt metadata' }]);
   });
 });

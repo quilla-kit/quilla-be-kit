@@ -8,7 +8,7 @@ import type {
 
 export interface EventSubscription<TPayload = unknown> {
   readonly descriptor: EventDescriptor<TPayload>;
-  /** Checked before any handler of the event runs; a failure skips them all. */
+  /** Checked before this handler runs; an unmet requirement fails it as a permanent failure. */
   readonly requires?: ContextRequirement | undefined;
   // Method syntax: bivariant in TPayload (heterogeneous arrays type-check) and
   // lets classes `implements` this with a plain `async handle(entry)` method.

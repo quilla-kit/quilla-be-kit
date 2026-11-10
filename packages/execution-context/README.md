@@ -584,6 +584,28 @@ It writes:
   authenticated context;
 - `crossedFrom`, unless it is stale (no scope, or the same as the scope).
 
+## Testing
+
+`@quilla-be-kit/execution-context/testing` builds contexts for tests. Ids
+are random unless you pass them.
+
+```ts
+import { testContextView, testExecutionContext } from '@quilla-be-kit/execution-context/testing';
+
+testExecutionContext();                                  // actorType 'system', fresh ids
+testExecutionContext({ scopeId: 'tenant-1' });           // an ExecutionContext to run code in
+
+testContextView({ scopeId: 'tenant-1' });                // ScopedExecutionContextView
+testContextView({ actorType: 'user', session: { scopeId: 'tenant-1', userId: 'u-1' } });
+                                                         // SessionExecutionContextView
+```
+
+`testContextView` builds the view with `toExecutionContextView`, so
+`scopeId` and `userId` always follow the session, and passing both a
+`session` and a session-less `scopeId` is a type error. An extended session
+is typed back as `AuthSession`, as in every view. The messaging and http
+test builders take these as their `context`.
+
 ## Design notes
 
 - **Throws on missing context, not silent fallback.** Masking "forgot to run

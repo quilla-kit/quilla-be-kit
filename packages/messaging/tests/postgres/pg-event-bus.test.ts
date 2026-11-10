@@ -220,6 +220,21 @@ describe('PgEventBus', () => {
     });
   });
 
+  describe('markFailedPermanently', () => {
+    it('dead-letters on this attempt by passing a retry budget of 0', async () => {
+      const custom = new PgEventBus({ pool: pool.asPool(), maxRetries: 3 });
+      pool.enqueue([], 1);
+      await custom.markFailedPermanently('evt-1', 'schema mismatch', 'replica-1');
+
+      const call = pool.calls[0];
+      expect(call?.sql).toContain(
+        `CASE WHEN retry_count + 1 >= $3 THEN 'FAILED' ELSE 'PENDING' END`,
+      );
+      expect(call?.params.slice(0, 3)).toEqual(['schema mismatch', 'evt-1', 0]);
+      expect(call?.params[4]).toBe('replica-1');
+    });
+  });
+
   describe('resetStale', () => {
     it('flips stale CLAIMED rows back to PENDING', async () => {
       pool.enqueue([], 2);

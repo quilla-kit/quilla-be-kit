@@ -1008,14 +1008,24 @@ If you need Express or Fastify: open an issue. Adapter sub-paths ship as library
 
 ## Testing controllers
 
-Since controllers are plain classes with decorators, you test them the way you'd test any class — construct an instance, pass a fake `HttpRequest`, assert the `HttpResponse`. No framework, no server, no adapter.
+Since controllers are plain classes with decorators, you test them the way you'd test any class — construct an instance, pass a request, assert the `HttpResponse`. No framework, no server, no adapter.
+
+`@quilla-be-kit/http/testing` builds the request with the same function the adapters use, so it implements every `HttpRequest` method, including ones added later:
 
 ```ts
+import { testExecutionContext } from '@quilla-be-kit/execution-context/testing';
+import { createTestHttpRequest } from '@quilla-be-kit/http/testing';
+
 const controller = new UsersController();
-const response = await controller.show(fakeRequest({ params: { id: '42' } }));
+const response = await controller.show(
+  createTestHttpRequest({
+    params: { id: '42' },
+    context: testExecutionContext({ actorType: 'user', session: { scopeId: 's-1', userId: 'u-1' } }),
+  }),
+);
 expect(response.httpCode).toBe(200);
 ```
 
-A fake `HttpRequest` implements `getContext()` too; build its result from a fixed context with `toExecutionContextView(ctx)` from `@quilla-be-kit/execution-context`.
+Options: `method` (default `GET`), `path` (default `/`), `params`, `query`, `headers` (looked up case-insensitively, as in production), `body`, `binary`, `formData`, `attributes`, `validatedInput` (what `getValidatedInput()` returns, as if `@ValidateRequest` had run), and `context`. `context` is a fixed `ExecutionContext`, or a provider read live, for middleware that establishes a context with a nested `runWithContext`. Without it, `getContext()` throws. `createTestHttpRequest<typeof Schema>(…)` types `getValidatedInput()`.
 
 For integration tests, use `HonoServer` with a `serve` callback that captures `app.fetch` — see this package's adapter tests for the pattern.

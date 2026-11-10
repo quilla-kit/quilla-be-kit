@@ -1,9 +1,10 @@
-import { type ExecutionContext, toExecutionContextView } from '@quilla-be-kit/execution-context';
+import { testExecutionContext } from '@quilla-be-kit/execution-context/testing';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { ValidateRequest } from '../../src/decorator/index.js';
 import { HttpAttributes } from '../../src/request/http-attributes.js';
 import type { HttpResponse } from '../../src/request/http-response.type.js';
+import { createTestHttpRequest } from '../../src/testing.js';
 import type { ValidatedRequest } from '../../src/validator/index.js';
 import { SESSION_KEYS_ATTRIBUTE } from '../../src/validator/input-injection.metadata.js';
 import type { RequestValidator } from '../../src/validator/request-validator.interface.js';
@@ -24,39 +25,21 @@ type FakeRequestInit = {
 };
 
 function fakeRequest(init: FakeRequestInit = {}): ValidatedRequest<unknown> {
-  const attributes = new Map<string, unknown>();
-  attributes.set(HttpAttributes.REQUEST_VALIDATOR, init.validator ?? validator);
-  if (init.stampedKeys) attributes.set(SESSION_KEYS_ATTRIBUTE, init.stampedKeys);
-
-  const headers = Object.fromEntries(
-    Object.entries(init.headers ?? {}).map(([k, v]) => [k.toLowerCase(), v]),
-  );
-  const executionContext: ExecutionContext = {
-    actorType: 'user',
-    correlationId: 'corr-1',
-    executionAttemptId: 'attempt-1',
-    ...(init.session ? { session: init.session } : {}),
-  };
-
-  return {
-    getPath: () => '/',
-    getMethod: () => 'POST',
-    getQuery: () => init.query ?? {},
-    getParams: () => init.params ?? {},
-    getHeaders: () => headers,
-    getHeader: (name: string) => headers[name.toLowerCase()] ?? null,
-    getBody: () => init.body ?? null,
-    getBinary: () => null,
-    getFile: () => null,
-    getFormFields: () => ({}),
-    getContext: () => toExecutionContextView(executionContext),
-    getExecutionContext: () => executionContext,
-    setAttribute: <T>(key: string, value: T) => {
-      attributes.set(key, value);
+  const { session, stampedKeys, validator: requestValidator, ...request } = init;
+  return createTestHttpRequest({
+    method: 'POST',
+    ...request,
+    attributes: {
+      [HttpAttributes.REQUEST_VALIDATOR]: requestValidator ?? validator,
+      ...(stampedKeys ? { [SESSION_KEYS_ATTRIBUTE]: stampedKeys } : {}),
     },
-    getAttribute: <T>(key: string) => attributes.get(key) as T | undefined,
-    getValidatedInput: () => attributes.get(HttpAttributes.VALIDATED_INPUT),
-  };
+    context: testExecutionContext({
+      actorType: 'user',
+      correlationId: 'corr-1',
+      executionAttemptId: 'attempt-1',
+      ...(session ? { session } : {}),
+    }),
+  });
 }
 
 class Recorder {

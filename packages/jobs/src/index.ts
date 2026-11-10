@@ -1,5 +1,5 @@
 export type { BackgroundJob } from './background-job.interface.js';
-export type { JobExecution } from './job-execution.type.js';
+export type { ForEachScopeOptions, JobExecution } from './job-execution.type.js';
 export { createJobExecution, type JobExecutionOptions } from './job-execution.factory.js';
 export type { ScopeRunResult } from './scope-run.result.js';
 export type { JobRunner } from './job-runner.interface.js';
