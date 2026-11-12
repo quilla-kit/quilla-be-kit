@@ -25,6 +25,11 @@ export type {
   SessionHandlerEntry,
 } from './handler-entry.type.js';
 export { createHandlerEntry, type HandlerEntryFields } from './handler-entry.factory.js';
+export type {
+  ClearHandlerOutcomesOptions,
+  HandlerOutcome,
+  HandlerOutcomeStore,
+} from './handler-outcome-store.interface.js';
 export type { ContextRequirement } from '@quilla-be-kit/execution-context';
 export type { StandardSchemaV1 } from './standard-schema.type.js';
 export {

@@ -1,8 +1,9 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ClaimLostError } from '../../src/event-bus/claim-lost.error.js';
 import { RELEASE_CLAIM } from '../../src/postgres/claim.dao.js';
 import { MissingColumnError } from '../../src/postgres/missing-column.error.js';
 import { PgEventBus } from '../../src/postgres/pg-event-bus.js';
+import { InMemoryHandlerOutcomeStore } from '../../src/testing.js';
 import { FakePgPool } from '../helpers/fake-pg-pool.js';
 
 const OCCURRED_AT = new Date('2025-12-31T23:59:00Z');
@@ -273,6 +274,68 @@ describe('PgEventBus', () => {
       expect(deleted).toBe(4);
       expect(pool.calls[0]?.sql).toContain('LIMIT $2');
       expect(pool.calls[0]?.params[1]).toBe(50);
+    });
+  });
+
+  describe('replay', () => {
+    const flat = (sql: string) => sql.replace(/\s+/g, ' ').trim();
+
+    it('resets only FAILED rows and resolves to the ids replayed', async () => {
+      pool.enqueue([{ id: 'e1' }]);
+      const replayed = await bus.replay(['e1', 'e2']);
+
+      expect(replayed).toEqual(['e1']);
+      expect(pool.calls).toHaveLength(1);
+      expect(flat(pool.calls[0]?.sql ?? '')).toContain(
+        `SET status = 'PENDING', retry_count = 0, failed_at = NULL, ${RELEASE_CLAIM}`,
+      );
+      expect(pool.calls[0]?.sql).toContain("WHERE id = ANY($1) AND status = 'FAILED'");
+      expect(pool.calls[0]?.params).toEqual([['e1', 'e2']]);
+    });
+
+    it("clears the FAILED rows' dead outcomes before resetting them", async () => {
+      const handlerOutcomes = new InMemoryHandlerOutcomeStore();
+      let queriesBeforeClear = -1;
+      const clear = vi.spyOn(handlerOutcomes, 'clear').mockImplementation(async () => {
+        queriesBeforeClear = pool.calls.length;
+      });
+      pool.enqueue([{ id: 'e1' }]);
+      pool.enqueue([{ id: 'e1' }]);
+
+      expect(await bus.replay(['e1', 'e2'], { handlerOutcomes })).toEqual(['e1']);
+
+      expect(pool.calls[0]?.sql).toContain(
+        "SELECT id FROM events WHERE id = ANY($1) AND status = 'FAILED'",
+      );
+      expect(clear).toHaveBeenCalledWith(['e1'], { includeDone: false });
+      expect(queriesBeforeClear).toBe(1);
+      expect(pool.calls[1]?.sql).toContain('UPDATE events');
+      expect(pool.calls[1]?.params).toEqual([['e1']]);
+    });
+
+    it('clears done outcomes too with includeDone', async () => {
+      const handlerOutcomes = new InMemoryHandlerOutcomeStore();
+      const clear = vi.spyOn(handlerOutcomes, 'clear');
+      pool.enqueue([{ id: 'e1' }]);
+      pool.enqueue([{ id: 'e1' }]);
+
+      await bus.replay(['e1'], { handlerOutcomes, includeDone: true });
+
+      expect(clear).toHaveBeenCalledWith(['e1'], { includeDone: true });
+    });
+
+    it('stops before clearing or resetting when no row is FAILED', async () => {
+      const handlerOutcomes = new InMemoryHandlerOutcomeStore();
+      const clear = vi.spyOn(handlerOutcomes, 'clear');
+
+      expect(await bus.replay(['e1'], { handlerOutcomes })).toEqual([]);
+      expect(clear).not.toHaveBeenCalled();
+      expect(pool.calls).toHaveLength(1);
+    });
+
+    it('does nothing for no ids', async () => {
+      expect(await bus.replay([])).toEqual([]);
+      expect(pool.calls).toEqual([]);
     });
   });
 

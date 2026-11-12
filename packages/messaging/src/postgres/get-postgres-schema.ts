@@ -1,6 +1,8 @@
 export type PostgresSchemaOptions = {
   readonly outboxTable?: string;
   readonly eventsTable?: string;
+  /** Emits the table `PgHandlerOutcomeStore` writes (default name `event_handler_outcomes`). */
+  readonly handlerOutcomes?: boolean | { readonly table?: string };
 };
 
 // Every upgrade step checks the catalog first: ALTER TABLE and CREATE INDEX take table locks
@@ -118,6 +120,21 @@ export function getPostgresSchema(options?: PostgresSchemaOptions): string {
       true,
     ),
   ];
+
+  const outcomes = options?.handlerOutcomes;
+  if (outcomes) {
+    const outcomesTable =
+      (typeof outcomes === 'object' ? outcomes.table : undefined) ?? 'event_handler_outcomes';
+    // Cascades with its bus row, so markDone and cleanupFailed clean it up.
+    statements.push(`CREATE TABLE IF NOT EXISTS ${outcomesTable} (
+  event_id UUID NOT NULL REFERENCES ${eventsTable}(id) ON DELETE CASCADE,
+  handler_key TEXT NOT NULL,
+  outcome TEXT NOT NULL,
+  error TEXT,
+  recorded_at TIMESTAMPTZ NOT NULL,
+  PRIMARY KEY (event_id, handler_key)
+);`);
+  }
 
   return `${statements.join('\n\n')}\n`;
 }

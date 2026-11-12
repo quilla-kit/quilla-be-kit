@@ -43,7 +43,9 @@ matter which service owns each topic.
 
 **In-process fan-out works normally.** A single consumer can register
 multiple handlers for the same event type via `consumer.on(...)` — all of
-them run when that replica claims the event.
+them run when that replica claims the event. They share the row's
+delivery and retries; [per-handler outcomes](#per-handler-outcomes) keep a
+redelivery from re-running the ones that already finished.
 
 ## Not pub-sub fan-out
 
@@ -301,9 +303,9 @@ together:
    within one poll interval. Any delay between attempts comes from
    `retryDelaysMs`. With a lease that can't release, the skipped rows
    come back once their lease expires instead. An event that reaches
-   FAILED stops blocking its aggregate. A [permanent failure](#permanent-failures)
-   reaches FAILED on its first attempt: the rest of A is still skipped for
-   that batch, then processed from the next poll.
+   FAILED stops blocking its aggregate. An event whose failures are all
+   [permanent](#permanent-failures) reaches FAILED on that attempt: the rest
+   of A is still skipped for that batch, then processed from the next poll.
 
 Preconditions and limits:
 
@@ -383,9 +385,23 @@ run may have happened.
 ### No DLQ table
 
 FAILED rows stay in the main table with full context — `status='FAILED'`,
-`retry_count`, `last_error`, `failed_at`. Query them to inspect, replay
-by setting `status='PENDING'`, `retry_count=0` and `failed_at=NULL`. One
-less table to reason about.
+`retry_count`, `last_error`, `failed_at`. Query them to inspect, and replay
+them with `bus.replay(ids)`: it returns FAILED rows to PENDING with a fresh
+retry budget (`retry_count = 0`, `failed_at = NULL`, claim cleared;
+`last_error` is kept until the next failure), leaves rows in any other
+status alone, and resolves to the ids it replayed. One less table to
+reason about.
+
+```ts
+const replayed = await bus.replay(ids, {
+  handlerOutcomes, // with per-handler outcomes: clears their marks before the reset
+  includeDone: false, // true also re-runs the handlers that succeeded
+});
+```
+
+With [per-handler outcomes](#per-handler-outcomes), pass the store:
+replaying through SQL alone leaves the `dead` marks in place, so those
+handlers stay skipped.
 
 To be told when a row is dead-lettered, use `onFailed` on `EventConsumer`
 or `OutboxForwarder`. It runs after every failed attempt is recorded, with
@@ -421,24 +437,27 @@ one bus attempt per claim.
 
 The bus delivers each event **at least once**, never exactly-once. The
 forwarder-replay path is closed by publisher-side dedup (see
-[Publisher dedup](#publisher-dedup-via-origin_event_id) below), but two
+[Publisher dedup](#publisher-dedup-via-origin_event_id) below), but these
 operational paths still cause a consumer to see the same event more than
 once:
 
 - **Handler retry:** a handler in the chain throws, the row goes back to
   PENDING with `retry_count++`, and the whole event is re-dispatched. All
-  handlers for that event re-run, including ones that already succeeded.
+  handlers for that event re-run, including ones that already succeeded,
+  unless [per-handler outcomes](#per-handler-outcomes) are wired: then only
+  the handlers that haven't finished run again.
 - **Crash after handler success but before `markDone`:** the row stays
   CLAIMED, `resetStale` flips it back to PENDING once the lease expires,
   the next replica re-dispatches **the same bus row** — same `id`, same
-  payload.
+  payload. Every handler runs again, even with per-handler outcomes: those
+  are only recorded when an attempt fails.
 - **Lost lease:** a replica that can't renew in time (blocked event loop,
   database outage, long pause) loses its claim while still running;
   another replica may run the same row concurrently. Owner-checked
   completion keeps the two runs from clobbering each other, and
   `onLeaseLost` reports it.
 
-In both cases the *same bus row* is re-dispatched: the bus row `id` is
+In each case the *same bus row* is re-dispatched: the bus row `id` is
 stable across these re-dispatches. (Contrast with forwarder replay, which
 the publisher dedups away — no second bus row gets created.)
 
@@ -605,6 +624,12 @@ export const orderSubscriptions = (): EventSubscription[] => [
 ];
 ```
 
+The third argument and the subscription also take a `key` (alone or with
+`requires`), the handler's identity for
+[per-handler outcomes](#per-handler-outcomes):
+`consumer.on(OrderPlaced, onOrderPlaced, { key: 'notify', requires: 'scope' })`,
+`{ descriptor: OrderPlaced, key: 'notify', handle: onOrderPlaced }`.
+
 ### Automatic payload validation (Standard Schema v1)
 
 When an `EventDescriptor` carries a schema, `EventConsumer.on` wraps the
@@ -664,10 +689,106 @@ A predicate that throws is logged and the failure treated as transient.
 
 When an event has both a permanent and a transient failure, it is
 redelivered: the transient one may succeed. Handlers that succeeded run
-again on redelivery, as with any failure. `onFailed` receives
-`{ permanent }`, so a dead-letter observer can tell a first-attempt dead
-letter (`retryCount` 1) from exhausted retries. `last_error` holds the
-error's message.
+again on redelivery, as with any failure, unless
+[per-handler outcomes](#per-handler-outcomes) are wired. `onFailed`
+receives `{ permanent }`, so a dead-letter observer can tell a dead letter
+no retry can fix from exhausted retries. `permanent` describes the failure,
+not the attempt: `retryCount` says how many attempts the row took, which is
+more than 1 when earlier attempts failed transiently or, with per-handler
+outcomes, when the other handlers needed retries to finish. `last_error`
+holds the error's message.
+
+### Per-handler outcomes
+
+By default every handler of an event shares the row's delivery: when one
+fails, the redelivery runs all of them again. Pass a `HandlerOutcomeStore`
+and the consumer remembers, per handler, what finished, so a redelivery runs
+only the handlers still outstanding. `retry_count`, `maxRetries` and
+dead-lettering still count per row.
+
+```ts
+import { PgHandlerOutcomeStore, getPostgresSchema } from '@quilla-be-kit/messaging/postgres';
+
+await pool.query(getPostgresSchema({ handlerOutcomes: true })); // adds event_handler_outcomes
+
+new EventConsumer({
+  // ...
+  handlerOutcomes: new PgHandlerOutcomeStore({ pool }),
+})
+  .on(UserDisabled, bridgeToIntegrationEvent, { key: 'bridge' })
+  .on(UserDisabled, sendDisabledEmail, { key: 'email' });
+```
+
+**Keys.** When an event type has several handlers, each needs a `key`,
+unique for that event type: `on(descriptor, handler, { key })`, or `key` on
+an `EventSubscription`. Registering a handler throws if a key is missing or
+repeated (`on()`, `subscribe()` or the `subscriptions` option). A key is a persistent identifier stored with
+the outcome: renaming one makes that handler run again on events that are
+being retried. An event type with a single handler doesn't use the store.
+
+**What is recorded.** Nothing on success: the row is deleted. When an
+attempt fails, before the row is marked failed, the consumer records each
+handler that ran: `done` if it succeeded, `dead` if it failed
+[permanently](#permanent-failures). Transient failures aren't recorded, so
+those handlers run again. On the next delivery:
+
+- a `done` handler is skipped;
+- a `dead` handler is skipped too, so it doesn't fail again on every
+  retry, until its mark is cleared by a [replay](#no-dlq-table);
+- once no handler is left that a retry could fix, the row is dead-lettered
+  with `markFailedPermanently`, and `last_error` holds the dead handler's
+  error.
+
+```
+handlers A, B, C        ✓ success   ✗ failure   · skipped
+
+attempt 1
+  A ✓      B ✗ permanent      C ✗ transient
+  ledger ← A=done, B=dead
+  row    → PENDING, retry_count 1
+
+attempt 2
+  A · done      B · dead      C ✓
+  ledger ← C=done
+  row    → FAILED (permanent), last_error = B's error
+
+bus.replay([id], { handlerOutcomes })   clears B=dead, resets the row
+  A · done      B runs again      C · done
+```
+
+| On redelivery | Without a store | With a store |
+| --- | --- | --- |
+| Handler that succeeded | runs again | skipped |
+| Handler that failed permanently | runs again (and fails again) | skipped until a replay |
+| Handler that failed transiently | runs again | runs again |
+
+**Replay.** `bus.replay(ids, { handlerOutcomes })` clears the `dead` marks of
+the FAILED rows among `ids`, then resets those rows, so the dead handlers run
+again and the done ones don't. Clearing first is safe: no consumer claims a
+FAILED row. `includeDone: true` clears the `done` marks too, for a full
+replay. It takes any `HandlerOutcomeStore`. A replay that leaves the `dead`
+marks in place (raw SQL, or no `handlerOutcomes`) runs nothing: the row is
+dead-lettered again at once, and the consumer logs a warning.
+
+**Still at-least-once per handler.** A handler that succeeds just before a
+crash, a lost claim or a failed write to the store runs again: outcomes are
+written only after the attempt, and a store error is logged and treated as
+"nothing recorded". Handlers stay idempotent; for an
+exact guarantee, write a dedup row in the handler's own transaction (see
+[At-least-once delivery](#at-least-once-delivery--handlers-must-be-idempotent)).
+
+**Concurrent replicas.** Writes upsert by `(event_id, handler_key)`, and
+`done` is final: a replica that lost its claim and writes `dead` late never
+undoes another replica's `done`.
+
+**Storage.** `PgHandlerOutcomeStore({ pool, tableName })` reads with one
+query per claimed batch that has multi-handler events. Its rows reference
+the bus row with `ON DELETE CASCADE`, so `markDone` and `cleanupFailed`
+remove them. `InMemoryHandlerOutcomeStore` from
+`@quilla-be-kit/messaging/testing` covers tests. A custom store implements
+`load(eventIds)`, `record(eventId, outcomes)` and `clear(eventIds, options)`, must keep `done` final,
+must not fail when the event no longer exists, and must eventually drop the
+outcomes of deleted events.
 
 ### Handler context
 
@@ -807,6 +928,11 @@ new PgEventBus({
 });
 ```
 
+Beyond the `EventBusConsumer` contract it adds `cleanupFailed(olderThan,
+{ limit })` (see [Retention and cleanup](#retention-and-cleanup)) and
+`replay(ids, { handlerOutcomes, includeDone })` (see
+[No DLQ table](#no-dlq-table)).
+
 ### `OutboxForwarder`
 
 ```ts
@@ -848,6 +974,7 @@ new EventConsumer({
   instanceId: 'replica-<id>',        // must be unique per process
   executionContext: { provider }, // optional: reconstruct + scope per handler; required by `requires` and entry.getContext()
   isPermanentFailure: (error, { entry }) => false, // dead-letter app errors a retry can't fix
+  handlerOutcomes: new PgHandlerOutcomeStore({ pool }), // optional: redeliveries run only unfinished handlers
   onProcessed: (entry) => bumpMetric(entry),
   onFailed: (entry, { permanent }) => bumpMetric(entry), // entry.status === 'FAILED' when dead-lettered
   onLeaseLost: ({ id, eventType, stage }) => bumpMetric({ id, eventType, stage }),
@@ -867,7 +994,8 @@ doesn't hold rows other replicas could run.
 
 ## Schema
 
-`getPostgresSchema()` returns DDL for the two tables:
+`getPostgresSchema()` returns DDL for the two tables, plus the
+[per-handler outcomes](#per-handler-outcomes) table when asked:
 
 ```ts
 import { getPostgresSchema } from '@quilla-be-kit/messaging/postgres';
@@ -875,6 +1003,7 @@ import { getPostgresSchema } from '@quilla-be-kit/messaging/postgres';
 const sql = getPostgresSchema({
   outboxTable: 'orders_outbox',   // defaults: 'outbox_events'
   eventsTable: 'svc_events',      // defaults: 'events'
+  handlerOutcomes: { table: 'svc_outcomes' }, // or true for 'event_handler_outcomes'; omitted: no table
 });
 await pool.query(sql);
 ```
@@ -885,6 +1014,29 @@ locked. On an existing table that lacks a later version's indexes, it
 builds them without `CONCURRENTLY`, which scans the whole table and blocks
 writes while it runs: for production tables, apply the upgrade SQL below
 instead.
+
+### Upgrading to 0.13.0 (per-handler outcomes)
+
+Nothing to migrate unless you wire [per-handler outcomes](#per-handler-outcomes).
+To turn them on, create one table; `events` gains no column or index. Its
+foreign key briefly locks `events` against writes while the table is
+created, so set a `lock_timeout` as for the other upgrades (adjust the
+table names):
+
+```sql
+SET LOCAL lock_timeout = '5s';
+CREATE TABLE IF NOT EXISTS event_handler_outcomes (
+  event_id UUID NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+  handler_key TEXT NOT NULL,
+  outcome TEXT NOT NULL,
+  error TEXT,
+  recorded_at TIMESTAMPTZ NOT NULL,
+  PRIMARY KEY (event_id, handler_key)
+);
+```
+
+`getPostgresSchema({ handlerOutcomes: true })` emits the same `CREATE TABLE` (without the `lock_timeout`).
+Deploy the table before any consumer is given a `PgHandlerOutcomeStore`.
 
 ### Upgrading to 0.9.0
 
@@ -1017,6 +1169,14 @@ the claim order: only the database can hand out a counter that increases
 across every process that writes, so it comes from
 `DEFAULT nextval('<table>_seq')` and library code never writes it.
 
+The one piece of behaviour left to the database is `ON DELETE CASCADE`
+from `event_handler_outcomes` to `events`, emitted only with
+[per-handler outcomes](#per-handler-outcomes). It keeps the bus unaware of
+the outcome store: `markDone` and `cleanupFailed` delete bus rows as
+always, and their outcomes go with them. Doing that in library code would
+make `PgEventBus` depend on the store, and a missed delete path would leave
+orphaned rows.
+
 ### Indexes created
 
 - **Both tables** — `(failed_at) WHERE status = 'FAILED'` for `cleanupFailed`.
@@ -1035,6 +1195,8 @@ across every process that writes, so it comes from
   for the lease-expiry sweep in `resetStale`, and a **partial unique index** on `(origin_event_id) WHERE
   origin_event_id IS NOT NULL` that enforces the publisher dedup contract
   described in [At-least-once delivery](#at-least-once-delivery--handlers-must-be-idempotent).
+- **Handler outcomes** (when emitted) — the primary key `(event_id, handler_key)`
+  serves both the consumer's batch read and the cascade from `events`.
 
 ---
 
@@ -1073,6 +1235,8 @@ from being picked up by a second replica.
   publisher supplies. Rows with no `failed_at` (dead-lettered before
   0.9.0) are kept until the backfill in
   [Upgrading to 0.9.0](#upgrading-to-090) starts their window.
+- Handler outcome rows are deleted with their bus row (cascade), by
+  `markDone` and by `cleanupFailed`.
 
 ### Local outbox (`outbox_events` table)
 
@@ -1117,9 +1281,9 @@ processing chatter:
 | Level | When it fires |
 | --- | --- |
 | `info` | Lifecycle transitions: `starting`, `stopped`. One-shot per component per replica. |
-| `debug` | Per-tick / per-batch processing: `forwarding N event(s)`, `registered event types`, `handed back N unstarted claim(s)`, `claim expired before dispatch; skipping`. High frequency. |
-| `warn` | Recoverable anomalies: handler retry, stale-claim sweep hits, lost claim leases, renewal disabled at start, transient handler failures. |
-| `error` | Terminal failures: handler exhausted retries, schema validation failed, tick crashed, a hook threw, a hand-back failed. |
+| `debug` | Per-tick / per-batch processing: `forwarding N event(s)`, `registered event types`, `handed back N unstarted claim(s)`, `claim expired before dispatch; skipping`, `skipping handler; outcome already recorded`. High frequency. |
+| `warn` | Recoverable anomalies: handler retry, stale-claim sweep hits, lost claim leases, renewal disabled at start, transient handler failures, dead-lettering without running a handler (per-handler outcomes). |
+| `error` | Terminal failures: handler exhausted retries, schema validation failed, tick crashed, a hook threw, a hand-back failed, loading or recording handler outcomes failed. |
 
 `EventConsumer` splits its startup log to avoid unbounded `meta`
 payloads in the info stream: the info entry carries
@@ -1186,6 +1350,10 @@ const forwarder = new OutboxForwarder({
   [permanent failures](#permanent-failures). It is required: an adapter
   that redelivers there instead re-runs the event's successful handlers on
   every redelivery.
+- [Per-handler outcomes](#per-handler-outcomes) don't involve the adapter:
+  `HandlerOutcomeStore` is a separate port, so a Kafka or SQS consumer can
+  keep its outcomes in any database. Clear an event's outcomes when the
+  adapter replays it.
 - `markFailed` resolves to the updated entry, so `onFailed` can tell a
   dead letter (`status: 'FAILED'`) from a retry. Resolve to `undefined`
   when the broker can't report it; `onFailed` is then skipped.
