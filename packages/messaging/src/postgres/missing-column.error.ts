@@ -25,9 +25,13 @@ export async function withColumnHint<T>(query: Promise<T>, table: string): Promi
   }
 }
 
+export function pgErrorCode(err: unknown): unknown {
+  return typeof err === 'object' && err !== null ? (err as { code?: unknown }).code : undefined;
+}
+
 function missingKitColumn(err: unknown): string | undefined {
-  if (typeof err !== 'object' || err === null) return undefined;
-  const { code, message } = err as { code?: unknown; message?: unknown };
-  if (code !== UNDEFINED_COLUMN || typeof message !== 'string') return undefined;
+  if (pgErrorCode(err) !== UNDEFINED_COLUMN) return undefined;
+  const { message } = err as { message?: unknown };
+  if (typeof message !== 'string') return undefined;
   return KIT_COLUMNS.find((column) => message.includes(`"${column}"`));
 }

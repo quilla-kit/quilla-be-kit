@@ -14,6 +14,23 @@ describe('getPostgresSchema', () => {
     expect(sql).not.toContain('dead_letter_events');
   });
 
+  it('emits the handler outcomes table only when asked', () => {
+    expect(getPostgresSchema()).not.toContain('event_handler_outcomes');
+    const sql = getPostgresSchema({ handlerOutcomes: true });
+    expect(sql).toContain('CREATE TABLE IF NOT EXISTS event_handler_outcomes');
+    expect(sql).toContain('REFERENCES events(id) ON DELETE CASCADE');
+    expect(sql).toContain('PRIMARY KEY (event_id, handler_key)');
+  });
+
+  it('names the handler outcomes table and its foreign key from the options', () => {
+    const sql = getPostgresSchema({
+      eventsTable: 'svc_events',
+      handlerOutcomes: { table: 'svc_outcomes' },
+    });
+    expect(sql).toContain('CREATE TABLE IF NOT EXISTS svc_outcomes');
+    expect(sql).toContain('REFERENCES svc_events(id) ON DELETE CASCADE');
+  });
+
   it('honors table name overrides', () => {
     const sql = getPostgresSchema({
       outboxTable: 'svc_outbox',

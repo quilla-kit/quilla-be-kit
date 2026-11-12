@@ -32,6 +32,7 @@ import type {
   ScopedHandlerEntry,
   SessionHandlerEntry,
 } from './handler-entry.type.js';
+import type { HandlerOutcome, HandlerOutcomeStore } from './handler-outcome-store.interface.js';
 import type { StandardSchemaV1 } from './standard-schema.type.js';
 
 export type EventHandler<TPayload = unknown> = (entry: HandlerEntry<TPayload>) => Promise<void>;
@@ -45,7 +46,12 @@ export type SessionEventHandler<TPayload = unknown> = (
 type Registration = {
   readonly handler: EventHandler;
   readonly requires: ContextRequirement | undefined;
+  readonly key: string | undefined;
 };
+
+type KeyOption = { readonly key?: string | undefined };
+
+const NO_OUTCOMES: ReadonlyMap<string, readonly HandlerOutcome[]> = new Map();
 
 type HandlerFailure = { readonly message: string; readonly permanent: boolean };
 
@@ -80,6 +86,12 @@ export type EventConsumerOptions = {
     info: { readonly entry: EventBusEntry },
   ) => boolean;
   readonly onLeaseLost?: (info: LeaseLostInfo) => void;
+  /**
+   * Records each handler's outcome when an attempt fails, so a redelivery runs only the
+   * handlers that haven't finished. Event types with several handlers then need a `key` on each,
+   * checked as each handler is registered.
+   */
+  readonly handlerOutcomes?: HandlerOutcomeStore;
   readonly subscriptions?: ReadonlyArray<EventSubscription<unknown>>;
 };
 
@@ -137,8 +149,9 @@ export class EventConsumer implements Disposable {
   private readonly onProcessed: EventConsumerOptions['onProcessed'];
   private readonly onFailed: EventConsumerOptions['onFailed'];
   private readonly isPermanentFailure: EventConsumerOptions['isPermanentFailure'];
+  private readonly handlerOutcomes: HandlerOutcomeStore | undefined;
   private readonly leases: ClaimLeaseManager;
-  private readonly handlers = new Map<string, Registration[]>();
+  private readonly handlers = new Map<string, readonly Registration[]>();
   private topicKeys: readonly string[] = [];
 
   private intervalHandle: ReturnType<typeof setInterval> | null = null;
@@ -160,6 +173,7 @@ export class EventConsumer implements Disposable {
     this.onProcessed = options.onProcessed;
     this.onFailed = options.onFailed;
     this.isPermanentFailure = options.isPermanentFailure;
+    this.handlerOutcomes = options.handlerOutcomes;
     this.leases = new ClaimLeaseManager({
       lease: options.bus.lease,
       instanceId: this.instanceId,
@@ -180,37 +194,50 @@ export class EventConsumer implements Disposable {
     return this.topicKeys;
   }
 
-  on<TPayload>(descriptor: EventDescriptor<TPayload>, handler: EventHandler<TPayload>): this;
+  on<TPayload>(
+    descriptor: EventDescriptor<TPayload>,
+    handler: EventHandler<TPayload>,
+    options?: KeyOption,
+  ): this;
   on<TPayload>(
     descriptor: EventDescriptor<TPayload>,
     handler: ScopedEventHandler<TPayload>,
-    options: { readonly requires: 'scope' },
+    options: { readonly requires: 'scope' } & KeyOption,
   ): this;
   on<TPayload>(
     descriptor: EventDescriptor<TPayload>,
     handler: SessionEventHandler<TPayload>,
-    options: { readonly requires: 'session' },
+    options: { readonly requires: 'session' } & KeyOption,
   ): this;
-  on(eventType: string, handler: EventHandler): this;
-  on(eventType: string, handler: ScopedEventHandler, options: { readonly requires: 'scope' }): this;
+  on(eventType: string, handler: EventHandler, options?: KeyOption): this;
+  on(
+    eventType: string,
+    handler: ScopedEventHandler,
+    options: { readonly requires: 'scope' } & KeyOption,
+  ): this;
   on(
     eventType: string,
     handler: SessionEventHandler,
-    options: { readonly requires: 'session' },
+    options: { readonly requires: 'session' } & KeyOption,
   ): this;
   on(
     eventTypeOrDescriptor: string | EventDescriptor<unknown>,
     handler: EventHandler | ScopedEventHandler | SessionEventHandler,
-    options?: { readonly requires?: ContextRequirement | undefined },
+    options?: { readonly requires?: ContextRequirement | undefined } & KeyOption,
   ): this {
     // The overloads pair each narrowed handler with the requirement checked before it runs.
-    return this.register(eventTypeOrDescriptor, handler as EventHandler, options?.requires);
+    return this.register(
+      eventTypeOrDescriptor,
+      handler as EventHandler,
+      options?.requires,
+      options?.key,
+    );
   }
 
   subscribe(subscriptions: ReadonlyArray<EventSubscription<unknown>>): this {
     for (const sub of subscriptions) {
       // Arrow preserves `this` for class-based subscriptions — a bare method ref detaches.
-      this.register(sub.descriptor, (entry) => sub.handle(entry), sub.requires);
+      this.register(sub.descriptor, (entry) => sub.handle(entry), sub.requires, sub.key);
     }
     return this;
   }
@@ -219,6 +246,7 @@ export class EventConsumer implements Disposable {
     eventTypeOrDescriptor: string | EventDescriptor<unknown>,
     handler: EventHandler,
     requires: ContextRequirement | undefined,
+    key: string | undefined,
   ): this {
     const eventType =
       typeof eventTypeOrDescriptor === 'string'
@@ -234,9 +262,12 @@ export class EventConsumer implements Disposable {
     const wrapped: EventHandler =
       schema !== undefined ? wrapWithSchema(eventType, schema, handler) : handler;
     const isNewType = !this.handlers.has(eventType);
-    const existing = this.handlers.get(eventType) ?? [];
-    existing.push({ handler: wrapped, requires });
-    this.handlers.set(eventType, existing);
+    const registrations = [
+      ...(this.handlers.get(eventType) ?? []),
+      { handler: wrapped, requires, key },
+    ];
+    this.assertKeys(eventType, registrations);
+    this.handlers.set(eventType, registrations);
     if (isNewType) this.topicKeys = [...this.handlers.keys()];
     return this;
   }
@@ -284,6 +315,7 @@ export class EventConsumer implements Disposable {
       if (this.topicKeys.length === 0) return;
       const events = await this.bus.claim(this.instanceId, this.batchSize, this.topicKeys);
       this.leases.begin(events);
+      const outcomes = await this.loadOutcomes(events);
 
       for (const event of events) {
         if (this.stopping) break;
@@ -309,35 +341,121 @@ export class EventConsumer implements Disposable {
         }
 
         this.leases.hold(event);
-        const fields = this.entryFields(event);
-        const failures: HandlerFailure[] = [];
-        for (const registration of handlers) {
-          const failure = await this.executeWithRetry(event, fields, registration);
-          if (failure) failures.push(failure);
-        }
-
-        const last = failures.at(-1);
-        if (!last) {
-          this.callHook('onProcessed', event.id, () => this.onProcessed?.(event));
-          await this.leases.settle(event, 'done', () =>
-            this.bus.markDone(event.id, this.instanceId),
-          );
-          continue;
-        }
-        // Only when every failure is permanent: a transient one may still succeed on redelivery.
-        const permanent = failures.every((f) => f.permanent);
-        const failed = await this.leases.settle(event, 'failed', () =>
-          permanent
-            ? this.bus.markFailedPermanently(event.id, last.message, this.instanceId)
-            : this.bus.markFailed(event.id, last.message, this.instanceId),
-        );
-        if (failed)
-          this.callHook('onFailed', event.id, () => this.onFailed?.(failed, { permanent }));
+        await this.dispatch(event, handlers, outcomes.get(event.id));
       }
     } catch (err) {
       this.logger.error('tick error', err);
     } finally {
       await this.leases.finish();
+    }
+  }
+
+  private async dispatch(
+    event: EventBusEntry,
+    registrations: readonly Registration[],
+    prior: readonly HandlerOutcome[] | undefined,
+  ): Promise<void> {
+    const meta = { eventId: event.id, eventType: event.eventType };
+    const tracked = this.tracks(registrations);
+    const priorByKey = tracked && prior ? new Map(prior.map((o) => [o.key, o])) : undefined;
+    const fields = this.entryFields(event);
+    const failures: HandlerFailure[] = [];
+    const recorded: HandlerOutcome[] = [];
+    let skippedDead: HandlerOutcome | undefined;
+    let ran = 0;
+
+    for (const registration of registrations) {
+      const key = tracked ? registration.key : undefined;
+      const previous = key !== undefined ? priorByKey?.get(key) : undefined;
+      if (previous) {
+        this.logger.debug('skipping handler; outcome already recorded', {
+          meta: { ...meta, handlerKey: previous.key, outcome: previous.outcome },
+        });
+        if (previous.outcome === 'dead') skippedDead = previous;
+        continue;
+      }
+      ran++;
+      const failure = await this.executeWithRetry(event, fields, registration);
+      if (failure) failures.push(failure);
+      if (key === undefined) continue;
+      if (!failure) recorded.push({ key, outcome: 'done' });
+      else if (failure.permanent) recorded.push({ key, outcome: 'dead', error: failure.message });
+    }
+
+    if (failures.length === 0 && !skippedDead) {
+      this.callHook('onProcessed', event.id, () => this.onProcessed?.(event));
+      await this.leases.settle(event, 'done', () => this.bus.markDone(event.id, this.instanceId));
+      return;
+    }
+
+    // Written before settling: if the process dies in between, the outcomes are still true.
+    if (recorded.length > 0) await this.recordOutcomes(event, recorded);
+    // Only when every failure is permanent: a transient one may still succeed on redelivery.
+    const permanent = failures.every((f) => f.permanent);
+    const message =
+      failures.at(-1)?.message ?? skippedDead?.error ?? 'handler failed permanently earlier';
+    if (ran === 0) {
+      this.logger.warn(
+        'dead-lettering without running a handler: every remaining one failed permanently earlier; replay with bus.replay() (or clear its handler outcomes) to re-run them',
+        { meta },
+      );
+    }
+    const failed = await this.leases.settle(event, 'failed', () =>
+      permanent
+        ? this.bus.markFailedPermanently(event.id, message, this.instanceId)
+        : this.bus.markFailed(event.id, message, this.instanceId),
+    );
+    if (failed) this.callHook('onFailed', event.id, () => this.onFailed?.(failed, { permanent }));
+  }
+
+  private async loadOutcomes(
+    events: readonly EventBusEntry[],
+  ): Promise<ReadonlyMap<string, readonly HandlerOutcome[]>> {
+    const store = this.handlerOutcomes;
+    if (!store) return NO_OUTCOMES;
+    const ids = events.filter((e) => this.tracks(this.handlers.get(e.eventType))).map((e) => e.id);
+    if (ids.length === 0) return NO_OUTCOMES;
+    try {
+      return await store.load(ids);
+    } catch (err) {
+      this.logger.error('loading handler outcomes failed; running every handler', err, {
+        meta: { eventIds: ids },
+      });
+      return NO_OUTCOMES;
+    }
+  }
+
+  private async recordOutcomes(
+    event: EventBusEntry,
+    outcomes: readonly HandlerOutcome[],
+  ): Promise<void> {
+    try {
+      await this.handlerOutcomes?.record(event.id, outcomes);
+    } catch (err) {
+      this.logger.error('recording handler outcomes failed; they will run again', err, {
+        meta: { eventId: event.id, eventType: event.eventType },
+      });
+    }
+  }
+
+  // One handler re-runs alone on redelivery, so only event types with several are tracked.
+  private tracks(registrations: readonly Registration[] | undefined): boolean {
+    return this.handlerOutcomes !== undefined && (registrations?.length ?? 0) > 1;
+  }
+
+  private assertKeys(eventType: string, registrations: readonly Registration[]): void {
+    if (!this.tracks(registrations)) return;
+    const seen = new Set<string>();
+    for (const { key } of registrations) {
+      if (!key) {
+        throw new Error(
+          `EventConsumer: "${eventType}" has ${registrations.length} handlers and \`handlerOutcomes\` is wired, so each handler needs a \`key\``,
+        );
+      }
+      if (seen.has(key)) {
+        throw new Error(`EventConsumer: duplicate handler key "${key}" for "${eventType}"`);
+      }
+      seen.add(key);
     }
   }
 

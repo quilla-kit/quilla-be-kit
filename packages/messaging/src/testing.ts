@@ -4,6 +4,8 @@ import { testContextView } from '@quilla-be-kit/execution-context/testing';
 import { type HandlerEntryFields, createHandlerEntry } from './event-bus/handler-entry.factory.js';
 import type { HandlerEntryWithContext } from './event-bus/handler-entry.type.js';
 
+export { InMemoryHandlerOutcomeStore } from './event-bus/in-memory-handler-outcome.store.js';
+
 export type TestHandlerEntryOptions<TView extends ExecutionContextView> = {
   /** What `getContext()` returns: a fixed view, or a function read on every call. */
   readonly context?: TView | (() => TView);

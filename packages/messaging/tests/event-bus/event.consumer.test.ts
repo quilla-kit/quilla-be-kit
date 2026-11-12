@@ -22,6 +22,7 @@ import { createHandlerEntry } from '../../src/event-bus/handler-entry.factory.js
 import type { HandlerEntry, ScopedHandlerEntry } from '../../src/event-bus/handler-entry.type.js';
 import { FakeEventBusConsumer } from '../helpers/fake-bus.js';
 import { FakeLease } from '../helpers/fake-lease.js';
+import { FakeOutcomeStore } from '../helpers/fake-outcome-store.js';
 
 function makeBusEntry(overrides: Partial<EventBusEntry> = {}): EventBusEntry {
   return {
@@ -1541,3 +1542,422 @@ describe('EventConsumer permanent failures', () => {
     expect(bus.marksFailedPermanently).toEqual([{ id: 'evt-1', reason: 'corrupt metadata' }]);
   });
 });
+
+describe('EventConsumer handler outcomes', () => {
+  let bus: FakeEventBusConsumer;
+  let store: FakeOutcomeStore;
+  let logger: NoopLogger;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    bus = new FakeEventBusConsumer();
+    store = new FakeOutcomeStore();
+    logger = new NoopLogger();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  class Gone extends Error {}
+
+  function makeConsumer(overrides: Partial<EventConsumerOptions> = {}) {
+    return new EventConsumer({
+      bus,
+      consumerName: 'test',
+      sourceService: 'svc-a',
+      logger,
+      retryDelaysMs: [],
+      handlerOutcomes: store,
+      isPermanentFailure: (err) => err instanceof Gone,
+      ...overrides,
+    });
+  }
+
+  async function run(consumer: EventConsumer, entries: EventBusEntry[]) {
+    bus.enqueueBatch(entries);
+    consumer.start();
+    await vi.advanceTimersByTimeAsync(1100);
+    await consumer.dispose();
+  }
+
+  // One bus attempt per call; the fake bus doesn't redeliver, so each attempt is enqueued.
+  const attempt = (consumer: EventConsumer, retryCount: number) =>
+    run(consumer, [makeBusEntry({ retryCount })]);
+
+  function failTimes(times: number, error: () => Error = () => new Error('smtp down')) {
+    let calls = 0;
+    return vi.fn(async () => {
+      calls++;
+      if (calls <= times) throw error();
+    });
+  }
+
+  it('re-runs only the handler that failed: a succeeded neighbour runs once', async () => {
+    const bridge = vi.fn(async () => {});
+    const email = failTimes(1);
+    const consumer = makeConsumer()
+      .on('test.happened', bridge, { key: 'bridge' })
+      .on('test.happened', email, { key: 'email' });
+
+    await attempt(consumer, 0);
+    await attempt(consumer, 1);
+
+    expect(bridge).toHaveBeenCalledTimes(1);
+    expect(email).toHaveBeenCalledTimes(2);
+    expect(bus.marksFailed).toEqual([{ id: 'evt-1', reason: 'smtp down' }]);
+    expect(bus.marksDone).toEqual(['evt-1']);
+    expect(store.records).toEqual([
+      { eventId: 'evt-1', outcomes: [{ key: 'bridge', outcome: 'done' }] },
+    ]);
+  });
+
+  it('runs the succeeded handler once while the other exhausts retries', async () => {
+    const bridge = vi.fn(async () => {});
+    const email = failTimes(Number.POSITIVE_INFINITY);
+    const onFailed = vi.fn();
+    const consumer = makeConsumer({ onFailed })
+      .on('test.happened', bridge, { key: 'bridge' })
+      .on('test.happened', email, { key: 'email' });
+
+    for (const retryCount of [0, 1, 2]) await attempt(consumer, retryCount);
+
+    expect(bridge).toHaveBeenCalledTimes(1);
+    expect(email).toHaveBeenCalledTimes(3);
+    expect(bus.marksFailed.map((m) => m.reason)).toEqual(['smtp down', 'smtp down', 'smtp down']);
+    expect(onFailed).toHaveBeenLastCalledWith(expect.objectContaining({ lastError: 'smtp down' }), {
+      permanent: false,
+    });
+  });
+
+  it('skips a permanently failed handler while a transient one retries, then dead-letters', async () => {
+    const a = vi.fn(async () => {});
+    const b = vi.fn(async () => {
+      throw new Gone('aggregate gone');
+    });
+    const c = failTimes(1);
+    const onFailed = vi.fn();
+    const consumer = makeConsumer({ onFailed })
+      .on('test.happened', a, { key: 'a' })
+      .on('test.happened', b, { key: 'b' })
+      .on('test.happened', c, { key: 'c' });
+
+    await attempt(consumer, 0);
+    expect(bus.marksFailed).toHaveLength(1);
+    expect(store.outcomesOf('evt-1').get('b')).toEqual({
+      key: 'b',
+      outcome: 'dead',
+      error: 'aggregate gone',
+    });
+
+    await attempt(consumer, 1);
+
+    expect([a, b, c].map((h) => h.mock.calls.length)).toEqual([1, 1, 2]);
+    expect(bus.marksFailedPermanently).toEqual([{ id: 'evt-1', reason: 'aggregate gone' }]);
+    expect(onFailed).toHaveBeenLastCalledWith(expect.anything(), { permanent: true });
+    expect(store.outcomesOf('evt-1').get('c')?.outcome).toBe('done');
+  });
+
+  it('re-runs dead handlers once their outcomes are cleared, but not done ones', async () => {
+    const a = vi.fn(async () => {});
+    const b = vi.fn(async () => {});
+    await store.record('evt-1', [
+      { key: 'a', outcome: 'done' },
+      { key: 'b', outcome: 'dead', error: 'old bug' },
+    ]);
+    await store.clear(['evt-1']);
+    const consumer = makeConsumer()
+      .on('test.happened', a, { key: 'a' })
+      .on('test.happened', b, { key: 'b' });
+
+    await attempt(consumer, 0);
+
+    expect(a).not.toHaveBeenCalled();
+    expect(b).toHaveBeenCalledTimes(1);
+    expect(bus.marksDone).toEqual(['evt-1']);
+  });
+
+  it('keeps skipping a dead handler whatever the retryCount until it is cleared', async () => {
+    const b = vi.fn(async () => {});
+    await store.record('evt-1', [
+      { key: 'a', outcome: 'done' },
+      { key: 'b', outcome: 'dead', error: 'old bug' },
+    ]);
+    const consumer = makeConsumer()
+      .on('test.happened', async () => {}, { key: 'a' })
+      .on('test.happened', b, { key: 'b' });
+
+    // e.g. a crash between recording and markFailed: the row comes back with retryCount 0
+    await attempt(consumer, 0);
+
+    expect(b).not.toHaveBeenCalled();
+    expect(bus.marksFailedPermanently).toEqual([{ id: 'evt-1', reason: 'old bug' }]);
+  });
+
+  it('dead-letters without running anything, and warns, when only dead handlers remain', async () => {
+    const warn = vi.spyOn(logger, 'warn');
+    const a = vi.fn(async () => {});
+    const b = vi.fn(async () => {});
+    await store.record('evt-1', [
+      { key: 'a', outcome: 'done' },
+      { key: 'b', outcome: 'dead', error: 'old bug' },
+    ]);
+    const consumer = makeConsumer()
+      .on('test.happened', a, { key: 'a' })
+      .on('test.happened', b, { key: 'b' });
+
+    await attempt(consumer, 3);
+
+    expect(a).not.toHaveBeenCalled();
+    expect(b).not.toHaveBeenCalled();
+    expect(bus.marksFailedPermanently).toEqual([{ id: 'evt-1', reason: 'old bug' }]);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('bus.replay()'), expect.anything());
+  });
+
+  it('writes nothing on the happy path and loads once per batch', async () => {
+    const consumer = makeConsumer()
+      .on('test.happened', async () => {}, { key: 'a' })
+      .on('test.happened', async () => {}, { key: 'b' });
+    await run(consumer, [makeBusEntry({ id: 'e1' }), makeBusEntry({ id: 'e2' })]);
+
+    expect(store.loads).toEqual([['e1', 'e2']]);
+    expect(store.records).toEqual([]);
+    expect(bus.marksDone).toEqual(['e1', 'e2']);
+  });
+
+  it('leaves single-handler event types out of the ledger', async () => {
+    const handler = failTimes(1);
+    const consumer = makeConsumer().on('test.happened', handler);
+
+    await attempt(consumer, 0);
+    await attempt(consumer, 1);
+
+    expect(handler).toHaveBeenCalledTimes(2);
+    expect(store.loads).toEqual([]);
+    expect(store.records).toEqual([]);
+  });
+
+  it('runs every handler when loading outcomes fails', async () => {
+    const error = vi.spyOn(logger, 'error');
+    store.loadError = new Error('db down');
+    await store.record('evt-1', [{ key: 'a', outcome: 'done' }]);
+    const a = vi.fn(async () => {});
+    const consumer = makeConsumer()
+      .on('test.happened', a, { key: 'a' })
+      .on('test.happened', async () => {}, { key: 'b' });
+
+    await attempt(consumer, 1);
+
+    expect(a).toHaveBeenCalledTimes(1);
+    expect(bus.marksDone).toEqual(['evt-1']);
+    expect(error).toHaveBeenCalledWith(
+      expect.stringContaining('loading handler outcomes failed'),
+      store.loadError,
+      expect.anything(),
+    );
+  });
+
+  it('still settles when recording outcomes fails', async () => {
+    store.recordError = new Error('db down');
+    const consumer = makeConsumer()
+      .on('test.happened', async () => {}, { key: 'a' })
+      .on('test.happened', failTimes(1), { key: 'b' });
+
+    await attempt(consumer, 0);
+
+    expect(bus.marksFailed).toEqual([{ id: 'evt-1', reason: 'smtp down' }]);
+  });
+
+  it('requires a unique key per handler of a multi-handler type as it is registered', () => {
+    const missing = makeConsumer().on('test.happened', async () => {}, { key: 'a' });
+    expect(() => missing.on('test.happened', async () => {})).toThrow(/each handler needs a `key`/);
+
+    const duplicate = makeConsumer().on('test.happened', async () => {}, { key: 'a' });
+    expect(() => duplicate.on('test.happened', async () => {}, { key: 'a' })).toThrow(
+      /duplicate handler key "a"/,
+    );
+  });
+
+  it('does not require keys for one handler, or without a store', () => {
+    expect(() => makeConsumer().on('test.happened', async () => {})).not.toThrow();
+    const noStore = new EventConsumer({
+      bus,
+      consumerName: 'test',
+      sourceService: 'svc-a',
+      logger,
+    });
+    expect(() =>
+      noStore.on('test.happened', async () => {}).on('test.happened', async () => {}),
+    ).not.toThrow();
+  });
+
+  it('takes keys from subscriptions', async () => {
+    const OrderPlaced = defineEvent<{ orderId: string }>('test.happened');
+    const a = vi.fn(async () => {});
+    const subs: EventSubscription<unknown>[] = [
+      { descriptor: OrderPlaced, key: 'a', handle: a },
+      { descriptor: OrderPlaced, key: 'b', handle: failTimes(1) },
+    ];
+    const consumer = makeConsumer({ subscriptions: subs });
+
+    await attempt(consumer, 0);
+    await attempt(consumer, 1);
+
+    expect(a).toHaveBeenCalledTimes(1);
+  });
+
+  describe('edge cases', () => {
+    it('loads outcomes only for events of multi-handler types in a mixed batch', async () => {
+      const consumer = makeConsumer()
+        .on('test.happened', async () => {}, { key: 'a' })
+        .on('test.happened', async () => {}, { key: 'b' })
+        .on('other.thing', async () => {});
+
+      await run(consumer, [
+        makeBusEntry({ id: 'e1' }),
+        makeBusEntry({ id: 'e2', eventType: 'other.thing' }),
+      ]);
+
+      expect(store.loads).toEqual([['e1']]);
+      expect(bus.marksDone).toEqual(['e1', 'e2']);
+    });
+
+    it('records every handler dead and dead-letters once when all fail permanently', async () => {
+      const onFailed = vi.fn();
+      const consumer = makeConsumer({ onFailed })
+        .on(
+          'test.happened',
+          async () => {
+            throw new Gone('a gone');
+          },
+          { key: 'a' },
+        )
+        .on(
+          'test.happened',
+          async () => {
+            throw new Gone('b gone');
+          },
+          { key: 'b' },
+        );
+
+      await run(consumer, [makeBusEntry()]);
+
+      expect(bus.marksFailed).toEqual([]);
+      expect(bus.marksFailedPermanently).toEqual([{ id: 'evt-1', reason: 'b gone' }]);
+      expect(store.records).toEqual([
+        {
+          eventId: 'evt-1',
+          outcomes: [
+            { key: 'a', outcome: 'dead', error: 'a gone' },
+            { key: 'b', outcome: 'dead', error: 'b gone' },
+          ],
+        },
+      ]);
+      expect(onFailed).toHaveBeenCalledWith(expect.anything(), { permanent: true });
+    });
+
+    it('keeps recorded outcomes and reports a lost claim instead of onFailed', async () => {
+      bus.claimLost.add('evt-1');
+      const onFailed = vi.fn();
+      const onLeaseLost = vi.fn();
+      const consumer = makeConsumer({ onFailed, onLeaseLost })
+        .on('test.happened', async () => {}, { key: 'a' })
+        .on(
+          'test.happened',
+          async () => {
+            throw new Error('flaky');
+          },
+          { key: 'b' },
+        );
+
+      await run(consumer, [makeBusEntry()]);
+
+      expect(store.outcomesOf('evt-1').get('a')?.outcome).toBe('done');
+      expect(onFailed).not.toHaveBeenCalled();
+      expect(onLeaseLost).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'evt-1', stage: 'failed' }),
+      );
+    });
+
+    it('ignores stored outcomes whose key no longer matches a handler', async () => {
+      await store.record('evt-1', [
+        { key: 'renamed-away', outcome: 'done' },
+        { key: 'removed', outcome: 'dead', error: 'old' },
+      ]);
+      const a = vi.fn(async () => {});
+      const b = vi.fn(async () => {});
+      const consumer = makeConsumer()
+        .on('test.happened', a, { key: 'a' })
+        .on('test.happened', b, { key: 'b' });
+
+      await run(consumer, [makeBusEntry({ retryCount: 1 })]);
+
+      expect(a).toHaveBeenCalledTimes(1);
+      expect(b).toHaveBeenCalledTimes(1);
+      expect(bus.marksDone).toEqual(['evt-1']);
+    });
+
+    it('marks the row done without a warning when every handler already finished', async () => {
+      const warn = vi.spyOn(logger, 'warn');
+      await store.record('evt-1', [
+        { key: 'a', outcome: 'done' },
+        { key: 'b', outcome: 'done' },
+      ]);
+      const a = vi.fn(async () => {});
+      const consumer = makeConsumer()
+        .on('test.happened', a, { key: 'a' })
+        .on('test.happened', async () => {}, { key: 'b' });
+
+      await run(consumer, [makeBusEntry({ retryCount: 1 })]);
+
+      expect(a).not.toHaveBeenCalled();
+      expect(bus.marksDone).toEqual(['evt-1']);
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('records finished handlers when shutdown interrupts an attempt', async () => {
+      const b = vi.fn(async () => {});
+      const consumer = makeConsumer();
+      consumer
+        .on(
+          'test.happened',
+          async () => {
+            void consumer.dispose();
+          },
+          { key: 'a' },
+        )
+        .on('test.happened', b, { key: 'b' });
+
+      await run(consumer, [makeBusEntry()]);
+
+      expect(b).not.toHaveBeenCalled();
+      expect(store.records).toEqual([
+        { eventId: 'evt-1', outcomes: [{ key: 'a', outcome: 'done' }] },
+      ]);
+      expect(bus.marksFailed).toEqual([{ id: 'evt-1', reason: 'shutdown in progress' }]);
+    });
+  });
+});
+
+// Compiled by `pnpm typecheck`, never run.
+function _keyOptionTypes(consumer: EventConsumer, sub: EventSubscription) {
+  const Placed = defineEvent<{ orderId: string }>('order.placed');
+  const scoped = async (_entry: ScopedHandlerEntry<{ orderId: string }>) => {};
+  consumer.on(Placed, async () => {}, { key: 'a' });
+  consumer.on('order.placed', async () => {}, { key: 'a' });
+  consumer.on(Placed, scoped, { key: 'a', requires: 'scope' });
+  consumer.on('order.placed', scoped as never, { requires: 'session', key: 'a' });
+  // @ts-expect-error a scoped handler needs `requires`, not just a key
+  consumer.on(Placed, scoped, { key: 'a' });
+  // @ts-expect-error keys are strings
+  consumer.on(Placed, async () => {}, { key: 1 });
+  const keyed: EventSubscription = { ...sub, key: 'a' };
+  const scopedSub: ScopedEventSubscription = {
+    descriptor: Placed,
+    requires: 'scope',
+    key: 'a',
+    handle: scoped,
+  };
+  return [keyed, scopedSub];
+}
+void _keyOptionTypes;

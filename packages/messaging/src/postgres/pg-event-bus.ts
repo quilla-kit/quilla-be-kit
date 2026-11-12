@@ -5,7 +5,11 @@ import { DEFAULT_LEASE_MS } from '../event-bus/defaults.js';
 import type { EventBusConsumer } from '../event-bus/event-bus-consumer.interface.js';
 import type { EventBusEntry, EventBusStatus } from '../event-bus/event-bus-entry.type.js';
 import type { EventBusPublisher } from '../event-bus/event-bus-publisher.interface.js';
-import { ClaimDao } from './claim.dao.js';
+import type {
+  ClearHandlerOutcomesOptions,
+  HandlerOutcomeStore,
+} from '../event-bus/handler-outcome-store.interface.js';
+import { ClaimDao, RELEASE_CLAIM } from './claim.dao.js';
 
 const DEFAULT_EVENTS_TABLE = 'events';
 const DEFAULT_MAX_RETRIES = 3;
@@ -31,6 +35,11 @@ type EventsRow = {
   created_at: Date;
   published_at: Date;
   occurred_at: Date;
+};
+
+export type PgEventBusReplayOptions = ClearHandlerOutcomesOptions & {
+  /** Clears the replayed events' handler outcomes, so their failed handlers run again. */
+  readonly handlerOutcomes?: HandlerOutcomeStore;
 };
 
 export type PgEventBusOptions = {
@@ -149,6 +158,38 @@ export class PgEventBus implements EventBusPublisher, EventBusConsumer {
 
   resetStale(olderThan: Date): Promise<number> {
     return this.claims.resetStale(olderThan);
+  }
+
+  /**
+   * Returns FAILED rows to PENDING with a fresh retry budget; other rows are left alone.
+   * Resolves to the ids replayed. `last_error` is kept until the next failure.
+   */
+  async replay(
+    ids: readonly string[],
+    options?: PgEventBusReplayOptions,
+  ): Promise<readonly string[]> {
+    let targets = ids;
+    const store = options?.handlerOutcomes;
+    if (store && targets.length > 0) {
+      const { rows } = await this.claims.query<{ id: string }>(
+        `SELECT id FROM ${this.eventsTable} WHERE id = ANY($1) AND status = 'FAILED'`,
+        [[...targets]],
+      );
+      targets = rows.map((r) => r.id);
+      // Cleared before the reset: consumers never claim a FAILED row, so none sees stale marks.
+      if (targets.length > 0) {
+        await store.clear(targets, { includeDone: options?.includeDone ?? false });
+      }
+    }
+    if (targets.length === 0) return [];
+    const { rows } = await this.claims.query<{ id: string }>(
+      `UPDATE ${this.eventsTable}
+       SET status = 'PENDING', retry_count = 0, failed_at = NULL, ${RELEASE_CLAIM}
+       WHERE id = ANY($1) AND status = 'FAILED'
+       RETURNING id`,
+      [[...targets]],
+    );
+    return rows.map((r) => r.id);
   }
 
   cleanupFailed(olderThan: Date, options?: { readonly limit?: number }): Promise<number> {
