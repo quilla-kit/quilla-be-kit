@@ -3,6 +3,7 @@ export const DEFAULT_POLL_INTERVAL_MS = 1000;
 export const DEFAULT_BATCH_SIZE = 100;
 export const DEFAULT_STALE_CLAIM_MS = 5 * 60 * 1000;
 export const DEFAULT_LEASE_MS = 60 * 1000;
+export const DEFAULT_DELIVERY_BATCH_SIZE = 10;
 // The failover window, in poll intervals: other replicas get at least one full poll.
 export const DEFAULT_FAILOVER_WINDOW_POLLS = 2;
 

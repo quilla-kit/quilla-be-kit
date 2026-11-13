@@ -7,6 +7,7 @@ import {
   type EventBusPublisher,
   type MarkFailedOptions,
 } from '../../src/index.js';
+import type { FakeDeliveryQueue } from './fake-deliveries.js';
 import { type FakeLease, failedCopy } from './fake-lease.js';
 
 export class FakeEventBusPublisher implements EventBusPublisher {
@@ -48,6 +49,7 @@ export class FakeEventBusConsumer implements EventBusConsumer {
   readonly markInstanceIds: (string | undefined)[] = [];
   readonly claimLost = new Set<string>();
   lease?: FakeLease;
+  deliveries?: FakeDeliveryQueue;
   failedStatus: 'PENDING' | 'FAILED' = 'PENDING';
   private batches: EventBusEntry[][] = [];
   private readonly entries = new Map<string, EventBusEntry>();

@@ -1,4 +1,4 @@
-import type { Pool, QueryResult, QueryResultRow } from 'pg';
+import type { Pool, PoolClient, QueryResult, QueryResultRow } from 'pg';
 import type { ClaimLease } from '../event-bus/claim-lease.type.js';
 import { ClaimLostError } from '../event-bus/claim-lost.error.js';
 import type { ClaimOptions } from '../event-bus/claim-options.type.js';
@@ -7,6 +7,16 @@ import { withColumnHint } from './missing-column.error.js';
 
 export const RELEASE_CLAIM = 'claimed_by = NULL, claimed_at = NULL, lease_expires_at = NULL';
 export const CLEAR_FAILURE = 'failed_at = NULL, last_failed_by = NULL, next_attempt_at = NULL';
+
+// A retrying row is due at next_attempt_at, or one failover window later for the instance that
+// failed it. Arguments are the parameter numbers of the claimer, now, and the failover cutoff.
+export function dueBy(alias: string, instance: number, now: number, cutoff: number): string {
+  return `CASE WHEN ${alias}.last_failed_by = $${instance} THEN $${cutoff}::timestamptz ELSE $${now}::timestamptz END`;
+}
+
+export function failoverCutoff(now: Date, options: ClaimOptions | undefined): Date {
+  return new Date(now.getTime() - (options?.failoverWindowMs ?? 0));
+}
 
 export type ClaimDaoOptions = {
   readonly pool: Pool;
@@ -63,21 +73,18 @@ export class ClaimDao implements ClaimLease {
     if (hasTopics) params.push([...topics]);
     params.push(this.expiryFrom(now));
     const expiryParam = params.length;
-    params.push(new Date(now.getTime() - (options?.failoverWindowMs ?? 0)));
-    // A retrying row is due at next_attempt_at, or one failover window later for the instance
-    // that failed it.
-    const dueBy = (alias: string) =>
-      `CASE WHEN ${alias}.last_failed_by = $2 THEN $${params.length}::timestamptz ELSE $3::timestamptz END`;
+    params.push(failoverCutoff(now, options));
+    const due = (alias: string) => dueBy(alias, 2, 3, params.length);
     const claimSql = `WITH claimed AS (
          SELECT id FROM ${this.table} e
          WHERE e.status = 'PENDING'
            ${hasTopics ? 'AND e.event_type = ANY($4)' : ''}
-           AND (e.next_attempt_at IS NULL OR e.next_attempt_at <= ${dueBy('e')})
+           AND (e.next_attempt_at IS NULL OR e.next_attempt_at <= ${due('e')})
            AND NOT EXISTS (
              SELECT 1 FROM ${this.table} w
              WHERE w.aggregate_id = e.aggregate_id AND w.status = 'PENDING'
                ${hasTopics ? 'AND w.event_type = ANY($4)' : ''}
-               AND w.next_attempt_at > ${dueBy('w')} AND w.seq < e.seq
+               AND w.next_attempt_at > ${due('w')} AND w.seq < e.seq
            )
            AND NOT EXISTS (
              SELECT 1 FROM ${this.table} e2
@@ -98,9 +105,7 @@ export class ClaimDao implements ClaimLease {
        )
        SELECT * FROM updated ORDER BY seq NULLS FIRST, created_at`;
 
-    const client = await this.pool.connect();
-    try {
-      await client.query('BEGIN');
+    return this.transaction(async (client) => {
       const rows = (await withColumnHint(client.query<R>(claimSql, params), this.table)).rows;
       let kept = rows;
       if (rows.some((row) => row.aggregate_id !== null)) {
@@ -126,14 +131,30 @@ export class ClaimDao implements ClaimLease {
         const releasedIds = new Set(released.rows.map((row) => row.id));
         kept = rows.filter((row) => !releasedIds.has(row.id));
       }
-      await client.query('COMMIT');
       return kept;
+    });
+  }
+
+  async transaction<T>(work: (client: PoolClient) => Promise<T>): Promise<T> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const result = await work(client);
+      await client.query('COMMIT');
+      return result;
     } catch (err) {
       await client.query('ROLLBACK').catch(() => {});
       throw err;
     } finally {
       client.release();
     }
+  }
+
+  async deleteOwned(id: string, instanceId: string | undefined): Promise<void> {
+    const params: unknown[] = [id];
+    const owned = this.ownedBy(params, instanceId);
+    const result = await this.query(`DELETE FROM ${this.table} WHERE id = $1${owned}`, params);
+    this.assertOwned(result, id, instanceId);
   }
 
   // Appends the owner param and returns its predicate; empty when the caller isn't fencing.

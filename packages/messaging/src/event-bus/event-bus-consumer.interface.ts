@@ -1,5 +1,6 @@
 import type { ClaimLease } from './claim-lease.type.js';
 import type { ClaimOptions } from './claim-options.type.js';
+import type { DeliveryQueue } from './delivery-queue.interface.js';
 import type { EventBusEntry } from './event-bus-entry.type.js';
 import type { MarkFailedOptions } from './mark-failed-options.type.js';
 
@@ -28,4 +29,6 @@ export interface EventBusConsumer {
   // Cutoff applies to claims without a lease; leased claims expire on their own deadline.
   resetStale(olderThan: Date): Promise<number>;
   readonly lease?: ClaimLease;
+  // Per-subscriber deliveries, needed by consumers with `isolation`.
+  readonly deliveries?: DeliveryQueue;
 }

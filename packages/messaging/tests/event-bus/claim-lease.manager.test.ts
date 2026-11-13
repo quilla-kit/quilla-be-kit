@@ -407,4 +407,27 @@ describe('ClaimLeaseManager', () => {
       expect(error).toHaveBeenCalledWith('onLeaseLost hook threw', expect.any(Error));
     });
   });
+
+  describe('orderKey', () => {
+    it('blocks entries that share an order key, whatever their aggregate', async () => {
+      type Laned = { id: string; eventType: string; lane: string };
+      const manager = new ClaimLeaseManager<Laned>({
+        lease,
+        instanceId: 'replica-1',
+        renewIntervalMs: 20_000,
+        logger,
+        onLeaseLost: undefined,
+        orderKey: (entry) => entry.lane,
+      });
+      const first = { id: 'd-1', eventType: 't', lane: 'mail\0agg-1' };
+      const second = { id: 'd-2', eventType: 't', lane: 'mail\0agg-1' };
+      const other = { id: 'd-3', eventType: 't', lane: 'audit\0agg-1' };
+      manager.begin([first, second, other]);
+
+      expect(await manager.acquire(first)).toBe(true);
+      expect(await manager.acquire(second)).toBe(false);
+      expect(await manager.acquire(other)).toBe(true);
+      await manager.finish();
+    });
+  });
 });

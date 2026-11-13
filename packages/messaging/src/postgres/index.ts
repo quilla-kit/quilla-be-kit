@@ -4,6 +4,7 @@ export {
   type PgEventBusOptions,
   type PgEventBusReplayOptions,
 } from './pg-event-bus.js';
+export { PgDeliveryQueue, type PgDeliveryQueueOptions } from './pg-delivery.queue.js';
 export {
   PgHandlerOutcomeStore,
   type PgHandlerOutcomeStoreOptions,

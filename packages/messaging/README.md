@@ -38,14 +38,17 @@ events table
 
 **Per-aggregate ordering is preserved across services.** The `NOT EXISTS`
 guard and `pg_try_advisory_xact_lock(hashtext(aggregate_id))` operate
-bus-wide, so events for the same `aggregate_id` serialize naturally no
-matter which service owns each topic.
+bus-wide, so attempts on events of the same `aggregate_id` never overlap,
+whichever service owns each topic. A row waiting for its retry holds back
+only its own consumer's later events. Under
+[subscriber isolation](#subscriber-isolation), a subscriber's retries are
+ordered within its own lane.
 
 **In-process fan-out works normally.** A single consumer can register
 multiple handlers for the same event type via `consumer.on(...)` — all of
-them run when that replica claims the event. They share the row's
-delivery and retries; [per-handler outcomes](#per-handler-outcomes) keep a
-redelivery from re-running the ones that already finished.
+them run when that replica claims the event. By default they share the
+row's delivery and retries. [Subscriber isolation](#subscriber-isolation)
+gives each failing handler its own delivery and retry schedule instead.
 
 ## Not pub-sub fan-out
 
@@ -324,8 +327,10 @@ constraint to preserve.
 
 ### Retries and failover
 
-A claim makes **one attempt**. When it fails, the row goes straight back
-to PENDING with:
+A claim makes **one attempt**. (Under [subscriber
+isolation](#subscriber-isolation) the same schedule applies to each
+subscriber's deliveries instead, with a per-subscriber budget.) When it
+fails, the row goes straight back to PENDING with:
 
 - `next_attempt_at`: now plus the retry delay. The n-th retry waits
   `retryDelaysMs[n - 1]`, and the last value repeats. No replica claims
@@ -509,7 +514,9 @@ once:
   PENDING with `retry_count++`, and the whole event is re-dispatched. All
   handlers for that event re-run, including ones that already succeeded,
   unless [per-handler outcomes](#per-handler-outcomes) are wired: then only
-  the handlers that haven't finished run again.
+  the handlers that haven't finished run again. Under
+  [subscriber isolation](#subscriber-isolation) only the failed handler
+  retries, from its own delivery, and `entry.id` stays the event's id.
 - **Crash after handler success but before `markDone`:** the row stays
   CLAIMED, `resetStale` flips it back to PENDING once the lease expires,
   the next replica re-dispatches **the same bus row** — same `id`, same
@@ -754,7 +761,10 @@ A predicate that throws is logged and the failure treated as transient.
 When an event has both a permanent and a transient failure, it is
 redelivered: the transient one may succeed. Handlers that succeeded run
 again on redelivery, as with any failure, unless
-[per-handler outcomes](#per-handler-outcomes) are wired. `onFailed`
+[per-handler outcomes](#per-handler-outcomes) are wired. Under
+[subscriber isolation](#subscriber-isolation) a permanent failure
+dead-letters only that handler's delivery, and the event isn't redelivered
+at all. `onFailed`
 receives `{ permanent }`, so a dead-letter observer can tell a dead letter
 no retry can fix from exhausted retries. `permanent` describes the failure,
 not the attempt: `retryCount` says how many attempts the row took, which is
@@ -765,7 +775,10 @@ holds the error's message.
 ### Per-handler outcomes
 
 By default every handler of an event shares the row's delivery: when one
-fails, the redelivery runs all of them again. Pass a `HandlerOutcomeStore`
+fails, the redelivery runs all of them again. [Subscriber
+isolation](#subscriber-isolation) solves this and more (a failing handler
+also stops holding up its siblings), and the two can't be combined. Without
+isolation, pass a `HandlerOutcomeStore`
 and the consumer remembers, per handler, what finished, so a redelivery runs
 only the handlers still outstanding. `retry_count`, `maxRetries` and
 dead-lettering still count per row.
@@ -853,6 +866,151 @@ remove them. `InMemoryHandlerOutcomeStore` from
 `load(eventIds)`, `record(eventId, outcomes)` and `clear(eventIds, options)`, must keep `done` final,
 must not fail when the event no longer exists, and must eventually drop the
 outcomes of deleted events.
+
+### Subscriber isolation
+
+By default an event's handlers share one row. When one handler fails, the
+row retries, and until it settles it holds back the aggregate's later
+events, for **every** handler of the consumer. A provider outage behind
+one handler then stalls everything else on those aggregates.
+
+With `isolation: true`, each handler is a **subscriber** with its own
+delivery and retry schedule:
+
+- An event runs every handler once. A handler that fails gets a
+  **delivery**: a copy of the event in `event_deliveries`, for that
+  subscriber only. The event row is settled straight away, so the
+  aggregate moves on.
+- A subscriber's deliveries form a **lane** per aggregate
+  (`consumerName`, `aggregateId`, `key`). A lane runs one delivery at a
+  time, in order. When a later event of the aggregate arrives while the
+  subscriber's lane holds work, that subscriber's part is queued behind it
+  instead of running. The event's other handlers run as usual.
+- Retries, [failover](#retries-and-failover) and dead-lettering happen per
+  delivery. A dead delivery is that subscriber's dead letter only.
+
+```
+handlers mail (provider down), projection          ✓ success  ✗ failure  ⇢ queued
+
+event 1 (agg A)   projection ✓   mail ✗ → delivery d1 (retry in 5 s)    event 1 settled
+event 2 (agg A)   projection ✓   mail ⇢ delivery d2 (behind d1)         event 2 settled
+event 3 (agg B)   projection ✓   mail ✗ → delivery d3 (lane B)          event 3 settled
+
+provider back     lane A: d1 mail ✓ → d2 mail ✓      lane B: d3 mail ✓
+```
+
+```ts
+import { PgEventBus, getPostgresSchema } from '@quilla-be-kit/messaging/postgres';
+
+await pool.query(getPostgresSchema({ deliveries: true })); // adds event_deliveries
+
+const bus = new PgEventBus({ pool, deliveries: true });
+
+new EventConsumer({
+  bus,
+  consumerName: 'iam', // part of every subscriber's identity: unique and stable
+  sourceService: 'iam',
+  logger,
+  isolation: true,
+})
+  .on(UserDisabled, sendAccountEmail, {
+    key: 'iam.users.send-account-email',
+    // Ride out a provider outage of up to a day before dead-lettering.
+    retry: {
+      delaysMs: [5_000, 30_000, 120_000, 600_000, 1_800_000, 3_600_000],
+      maxAttempts: Infinity,
+      maxAgeMs: 24 * 60 * 60 * 1000,
+    },
+  })
+  .on(UserDisabled, projectUser, { key: 'iam.users.project' })
+  // Same key, same subscriber: one lane per user across both event types.
+  .on(UserReenabled, sendAccountEmail, { key: 'iam.users.send-account-email' });
+```
+
+**Keys are durable identity.** Under isolation every handler needs a
+`key`, and the same key on several event types is one subscriber, with
+one lane per aggregate across those types. Deliveries store
+`consumerName` and `key`, so both must be unique in the deployment and
+stable: use explicit strings, not class names. To rename a key, add the
+old one to `previousKeys: ['OldKey']` on the registration. At start, the
+consumer moves the old key's queued deliveries to the new key before it
+dispatches anything, so order holds. Drop `previousKeys` once nothing is
+left under the old key. The consumer also warns at start when deliveries
+exist for `(key, event type)` pairs it doesn't register.
+
+**Retry policy.** `retry: { delaysMs, maxAttempts, maxAgeMs }` on the
+registration, or on an `EventSubscription`. One policy per subscriber:
+give it on any one of its event types, and registering two different
+policies for one key throws. What isn't set falls back to the consumer:
+`retryDelaysMs`, then `maxAttempts` (default `delaysMs.length + 1`). The
+last delay repeats. Whichever budget runs out first dead-letters the
+delivery:
+
+- `maxAttempts` counts every attempt, the first one included.
+  `Infinity` means no cap.
+- `maxAgeMs` counts from when the delivery was queued. The next retry is
+  moved up to the deadline, so one attempt always runs at it, and an
+  attempt at or past it that fails dead-letters. In the example above the
+  delays reach an hour after about 43 minutes, then run hourly: 30
+  attempts in all, the first on the event and the last 24 hours after the
+  delivery was queued. A delivery queued behind another counts from its
+  own queueing.
+
+`PgEventBus({ maxRetries })` doesn't apply to deliveries. Under isolation an
+event row is never retried: it's settled after one attempt.
+
+**What a handler sees.** `entry.id` is the **event's** id on every
+attempt, so idempotency keys stay stable (see
+[At-least-once delivery](#at-least-once-delivery--handlers-must-be-idempotent)).
+
+**Hooks.** `onProcessed` and `onFailed` get an `info.source`. With
+`'event'`, `entry` is the bus event. With `'delivery'`, `entry` is a
+`DeliveryEntry` (`id` is the delivery's, `eventId` the event's), and
+`info.handlerKey` names the subscriber. A failure on an event's first
+attempt is reported on the delivery it created.
+
+**Dead deliveries and replay.** A dead delivery stays in
+`event_deliveries` with `status = 'FAILED'`. Replay one subscriber's work
+with `bus.deliveries.replay(ids)`: it gets a fresh budget, and the handlers
+that finished don't run again. A replayed delivery runs after events of its
+aggregate that already ran, as any replay does. To find dead or orphaned
+deliveries:
+
+```sql
+-- Dead deliveries of one consumer
+SELECT id, event_id, handler_key, event_type, aggregate_id, retry_count, last_error, failed_at
+FROM event_deliveries
+WHERE consumer_name = 'iam' AND status = 'FAILED'
+ORDER BY failed_at;
+
+-- Queued work for a key nothing registers any more (after a rename without previousKeys)
+SELECT handler_key, event_type, count(*)
+FROM event_deliveries
+WHERE consumer_name = 'iam' AND status IN ('PENDING', 'CLAIMED')
+GROUP BY handler_key, event_type;
+```
+
+**Guarantee.** A handler that finished never runs again because a sibling
+failed. Delivery is still at-least-once: a crash, a lost claim or a failed
+write while an event is being settled runs all its handlers again, so keep
+handlers idempotent.
+
+**Deliveries run on their own loop**, with their own batch
+(`deliveryBatchSize`, default 10) and lease, so a slow subscriber never
+holds up the event path. They're drained whenever the bus offers
+`deliveries`, even without `isolation`, so turning isolation off never
+strands queued work. Without isolation, though, handlers run directly and
+don't wait for their lane.
+
+**Rollout.** Enable isolation on every replica of a consumer at once, and
+rename keys the same way. A replica without isolation runs handlers
+without checking lanes, and retries whole events. `handlerOutcomes` and
+`isolation` are exclusive.
+
+**Cost.** Deliveries are written only when a handler fails or has to
+queue. On the happy path each claimed batch adds one lookup of open lanes,
+and each poll of the delivery loop runs a stale sweep and a claim on
+`event_deliveries`, even when it's empty.
 
 ### Handler context
 
@@ -988,14 +1146,19 @@ new PgEventBus({
   pool,
   eventsTableName: 'events',
   maxRetries: 4,                // attempts before FAILED: one plus a retry per default delay
-  leaseMs: 60_000,              // DEFAULT_LEASE_MS — claim lease duration
+  leaseMs: 60_000,              // DEFAULT_LEASE_MS — claim lease duration (deliveries too)
+  deliveries: true,             // offer per-subscriber deliveries (subscriber isolation)
+  deliveriesTableName: 'event_deliveries',
 });
 ```
 
 Beyond the `EventBusConsumer` contract it adds `cleanupFailed(olderThan,
 { limit })` (see [Retention and cleanup](#retention-and-cleanup)) and
 `replay(ids, { handlerOutcomes, includeDone })` (see
-[No DLQ table](#no-dlq-table)).
+[No DLQ table](#no-dlq-table)). With `deliveries: true`, `bus.deliveries` is
+a `PgDeliveryQueue`: besides what consumers call, operators use its
+`replay(ids)` and `cleanupFailed(olderThan, { limit })` (see
+[Subscriber isolation](#subscriber-isolation)).
 
 ### `OutboxForwarder`
 
@@ -1043,8 +1206,11 @@ new EventConsumer({
   executionContext: { provider }, // optional: reconstruct + scope per handler; required by `requires` and entry.getContext()
   isPermanentFailure: (error, { entry }) => false, // dead-letter app errors a retry can't fix
   handlerOutcomes: new PgHandlerOutcomeStore({ pool }), // optional: redeliveries run only unfinished handlers
-  onProcessed: (entry) => bumpMetric(entry),
-  onFailed: (entry, { permanent }) => bumpMetric(entry), // entry.status === 'FAILED' when dead-lettered
+  isolation: false,                  // per-subscriber deliveries; needs keys and a bus with deliveries (excludes handlerOutcomes)
+  maxAttempts: 4,                    // default attempt budget of a delivery: retryDelaysMs.length + 1; Infinity for none
+  deliveryBatchSize: 10,             // deliveries claimed per poll
+  onProcessed: (entry, { source }) => bumpMetric(entry), // source: 'event' | 'delivery'
+  onFailed: (entry, { permanent, source, handlerKey }) => bumpMetric(entry), // entry.status === 'FAILED' when dead-lettered
   onLeaseLost: ({ id, eventType, stage }) => bumpMetric({ id, eventType, stage }),
 });
 ```
@@ -1063,7 +1229,8 @@ doesn't hold rows other replicas could run.
 ## Schema
 
 `getPostgresSchema()` returns DDL for the two tables, plus the
-[per-handler outcomes](#per-handler-outcomes) table when asked:
+[per-handler outcomes](#per-handler-outcomes) and
+[deliveries](#subscriber-isolation) tables when asked:
 
 ```ts
 import { getPostgresSchema } from '@quilla-be-kit/messaging/postgres';
@@ -1072,6 +1239,7 @@ const sql = getPostgresSchema({
   outboxTable: 'orders_outbox',   // defaults: 'outbox_events'
   eventsTable: 'svc_events',      // defaults: 'events'
   handlerOutcomes: { table: 'svc_outcomes' }, // or true for 'event_handler_outcomes'; omitted: no table
+  deliveries: { table: 'svc_deliveries' },    // or true for 'event_deliveries'; omitted: no table
 });
 await pool.query(sql);
 ```
@@ -1082,6 +1250,16 @@ locked. On an existing table that lacks a later version's indexes, it
 builds them without `CONCURRENTLY`, which scans the whole table and blocks
 writes while it runs: for production tables, apply the upgrade SQL below
 instead.
+
+### Upgrading to 0.15.0 (subscriber isolation)
+
+Nothing to migrate: isolation is opt-in and adds a table of its own. To use
+it, create `event_deliveries` with `getPostgresSchema({ deliveries: true })`
+(the other steps are no-ops on up-to-date tables). Changes for everyone:
+
+- `onProcessed` gets a second argument, and `onFailed`'s info gains
+  `source` (`'event'` outside isolation).
+- `EventBusConsumer` gains an optional `deliveries`; adapters may ignore it.
 
 ### Upgrading to 0.14.0 (retries and failover)
 
@@ -1303,6 +1481,13 @@ orphaned rows.
   described in [At-least-once delivery](#at-least-once-delivery--handlers-must-be-idempotent).
 - **Handler outcomes** (when emitted) — the primary key `(event_id, handler_key)`
   serves both the consumer's batch read and the cascade from `events`.
+- **Deliveries** (when emitted) — a unique index on `(event_id, consumer_name,
+  handler_key)` so an event never queues one subscriber twice; `(consumer_name,
+  seq) WHERE status = 'PENDING'` for the claim; `(consumer_name, aggregate_id,
+  handler_key, seq) WHERE aggregate_id IS NOT NULL AND status IN ('PENDING',
+  'CLAIMED')` for the lane guards and the open-lane lookup; `(claimed_at)` and
+  `(failed_at)` partial indexes as on the other tables. The guard against a
+  busy event uses the events table's `(aggregate_id, status)` index.
 
 ---
 
@@ -1343,6 +1528,8 @@ from being picked up by a second replica.
   [Upgrading to 0.9.0](#upgrading-to-090) starts their window.
 - Handler outcome rows are deleted with their bus row (cascade), by
   `markDone` and by `cleanupFailed`.
+- Deliveries are deleted when they succeed. Dead ones stay, like FAILED
+  rows: `await bus.deliveries?.cleanupFailed(cutoff, { limit: 1000 })`.
 
 ### Local outbox (`outbox_events` table)
 
@@ -1388,8 +1575,10 @@ processing chatter:
 | --- | --- |
 | `info` | Lifecycle transitions: `starting`, `stopped`. One-shot per component per replica. |
 | `debug` | Per-tick / per-batch processing: `forwarding N event(s)`, `registered event types`, `handed back N unstarted claim(s)`, `claim expired before dispatch; skipping`, `skipping handler; outcome already recorded`. High frequency. |
-| `warn` | Recoverable anomalies: handler retry, stale-claim sweep hits, lost claim leases, renewal disabled at start, transient handler failures, dead-lettering without running a handler (per-handler outcomes). |
-| `error` | Terminal failures: handler exhausted retries, schema validation failed, tick crashed, a hook threw, a hand-back failed, loading or recording handler outcomes failed. |
+| `warn` | Recoverable anomalies: handler retry, stale-claim sweep hits, lost claim leases, renewal disabled at start, transient handler failures, dead-lettering without running a handler (per-handler outcomes), queued deliveries no registration claims. |
+| `error` | Terminal failures: handler exhausted retries, schema validation failed, tick or delivery tick crashed, a hook threw, a hand-back failed, loading or recording handler outcomes failed, preparing deliveries failed. |
+
+`info` also reports deliveries moved to a renamed subscriber (`previousKeys`).
 
 `EventConsumer` splits its startup log to avoid unbounded `meta`
 payloads in the info stream: the info entry carries
@@ -1456,6 +1645,18 @@ const forwarder = new OutboxForwarder({
   [permanent failures](#permanent-failures). It is required: an adapter
   that redelivers there instead re-runs the event's successful handlers on
   every redelivery.
+- `deliveries` (optional) — a `DeliveryQueue` for
+  [subscriber isolation](#subscriber-isolation). Leave it out and consumers
+  can't turn isolation on. Implementing it means a store with the lane
+  rules in its JSDoc: `settle` removes the claimed event and queues its
+  deliveries in one step, owner-checked; a lane runs one delivery at a
+  time, in queue order, never while an event of that aggregate the
+  subscriber handles is claimed; claims filter by `(handlerKey, eventType)`
+  pairs. The consumer applies each subscriber's retry budget itself:
+  `markFailed` only schedules the retry `retryAfterMs` from now, and
+  `markFailedPermanently` dead-letters. `rekey` and `countOrphans` back
+  `previousKeys` and the startup warning. `PgDeliveryQueue` is the
+  reference.
 - [Per-handler outcomes](#per-handler-outcomes) don't involve the adapter:
   `HandlerOutcomeStore` is a separate port, so a Kafka or SQS consumer can
   keep its outcomes in any database. Clear an event's outcomes when the
