@@ -145,4 +145,23 @@ describe('getPostgresSchema', () => {
     expect(sql).not.toContain('created_at_idx');
     expect(sql).toContain("events (failed_at) WHERE status = 'FAILED'");
   });
+
+  it('emits the deliveries table only when asked', () => {
+    expect(getPostgresSchema()).not.toContain('event_deliveries');
+    const sql = getPostgresSchema({ deliveries: true });
+    expect(sql).toContain('CREATE SEQUENCE IF NOT EXISTS event_deliveries_seq;');
+    expect(sql).toContain('CREATE TABLE IF NOT EXISTS event_deliveries');
+    expect(sql).toContain("seq BIGINT NOT NULL DEFAULT nextval('event_deliveries_seq')");
+    expect(sql).toContain('ALTER SEQUENCE event_deliveries_seq OWNED BY event_deliveries.seq;');
+    expect(sql).toContain(
+      'CREATE UNIQUE INDEX event_deliveries_event_subscriber_uq ON event_deliveries (event_id, consumer_name, handler_key);',
+    );
+    expect(sql).toContain('event_deliveries (consumer_name, aggregate_id, handler_key, seq)');
+  });
+
+  it('names the deliveries table from the options', () => {
+    const sql = getPostgresSchema({ deliveries: { table: 'svc_deliveries' } });
+    expect(sql).toContain('CREATE TABLE IF NOT EXISTS svc_deliveries');
+    expect(sql).not.toContain('event_deliveries');
+  });
 });

@@ -4,12 +4,21 @@ export type { EventBusConsumer } from './event-bus-consumer.interface.js';
 export type { ClaimLease, LeaseLostInfo, LeaseLostStage } from './claim-lease.type.js';
 export type { ClaimOptions } from './claim-options.type.js';
 export type { MarkFailedOptions } from './mark-failed-options.type.js';
+export type { DeliveryQueue } from './delivery-queue.interface.js';
+export type {
+  DeliveryEntry,
+  DeliveryLane,
+  DeliveryPair,
+  NewDelivery,
+} from './delivery-entry.type.js';
+export type { RetryPolicy } from './retry.policy.js';
 export { ClaimLostError } from './claim-lost.error.js';
 export {
   EventConsumer,
   SchemaValidationError,
   type EventConsumerOptions,
   type EventFailureInfo,
+  type EventProcessedInfo,
   type EventHandler,
   type ScopedEventHandler,
   type SessionEventHandler,

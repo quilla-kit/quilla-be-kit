@@ -4,7 +4,7 @@ import type { ClaimLease } from '../event-bus/claim-lease.type.js';
 import type { ClaimOptions } from '../event-bus/claim-options.type.js';
 import { DEFAULT_LEASE_MS } from '../event-bus/defaults.js';
 import type { EventBusConsumer } from '../event-bus/event-bus-consumer.interface.js';
-import type { EventBusEntry, EventBusStatus } from '../event-bus/event-bus-entry.type.js';
+import type { EventBusEntry } from '../event-bus/event-bus-entry.type.js';
 import type { EventBusPublisher } from '../event-bus/event-bus-publisher.interface.js';
 import type {
   ClearHandlerOutcomesOptions,
@@ -12,35 +12,13 @@ import type {
 } from '../event-bus/handler-outcome-store.interface.js';
 import type { MarkFailedOptions } from '../event-bus/mark-failed-options.type.js';
 import { CLEAR_FAILURE, ClaimDao, RELEASE_CLAIM } from './claim.dao.js';
+import { type EventsRow, toEventBusEntry } from './events.mapper.js';
+import { PgDeliveryQueue } from './pg-delivery.queue.js';
 
 const DEFAULT_EVENTS_TABLE = 'events';
+const DEFAULT_DELIVERIES_TABLE = 'event_deliveries';
 // One attempt plus one retry per DEFAULT_RETRY_DELAYS_MS step.
 const DEFAULT_MAX_RETRIES = 4;
-
-type EventsRow = {
-  id: string;
-  event_type: string;
-  event_version: number;
-  event_kind: string;
-  payload: unknown;
-  source_service: string;
-  aggregate_id: string | null;
-  correlation_id: string | null;
-  origin_event_id: string | null;
-  status: EventBusStatus;
-  claimed_by: string | null;
-  claimed_at: Date | null;
-  lease_expires_at: Date | null;
-  failed_at: Date | null;
-  last_failed_by: string | null;
-  next_attempt_at: Date | null;
-  seq: string | null;
-  retry_count: number;
-  last_error: string | null;
-  created_at: Date;
-  published_at: Date;
-  occurred_at: Date;
-};
 
 export type PgEventBusReplayOptions = ClearHandlerOutcomesOptions & {
   /** Clears the replayed events' handler outcomes, so their failed handlers run again. */
@@ -52,12 +30,17 @@ export type PgEventBusOptions = {
   readonly eventsTableName?: string;
   readonly maxRetries?: number;
   readonly leaseMs?: number;
+  /** Offers per-subscriber deliveries, for consumers with `isolation`. */
+  readonly deliveries?: boolean;
+  readonly deliveriesTableName?: string;
 };
+
 export class PgEventBus implements EventBusPublisher, EventBusConsumer {
   private readonly pool: Pool;
   private readonly eventsTable: string;
   private readonly maxRetries: number;
   readonly lease: ClaimLease;
+  readonly deliveries?: PgDeliveryQueue;
   private readonly claims: ClaimDao;
 
   constructor(options: PgEventBusOptions) {
@@ -71,6 +54,14 @@ export class PgEventBus implements EventBusPublisher, EventBusConsumer {
       lockScope: 'aggregate',
     });
     this.lease = this.claims;
+    if (options.deliveries) {
+      this.deliveries = new PgDeliveryQueue({
+        pool: this.pool,
+        table: options.deliveriesTableName ?? DEFAULT_DELIVERIES_TABLE,
+        eventsTable: this.eventsTable,
+        leaseMs: this.claims.durationMs,
+      });
+    }
   }
 
   async publish(
@@ -130,17 +121,11 @@ export class PgEventBus implements EventBusPublisher, EventBusConsumer {
     options?: ClaimOptions,
   ): Promise<readonly EventBusEntry[]> {
     const rows = await this.claims.claim<EventsRow>(instanceId, batchSize, allowedTopics, options);
-    return rows.map((r) => this.rowToEntry(r));
+    return rows.map((r) => toEventBusEntry(r));
   }
 
-  async markDone(id: string, instanceId?: string): Promise<void> {
-    const params: unknown[] = [id];
-    const owned = this.claims.ownedBy(params, instanceId);
-    const result = await this.claims.query(
-      `DELETE FROM ${this.eventsTable} WHERE id = $1${owned}`,
-      params,
-    );
-    this.claims.assertOwned(result, id, instanceId);
+  markDone(id: string, instanceId?: string): Promise<void> {
+    return this.claims.deleteOwned(id, instanceId);
   }
 
   async markFailed(
@@ -156,7 +141,7 @@ export class PgEventBus implements EventBusPublisher, EventBusConsumer {
       instanceId,
       options,
     );
-    return row && this.rowToEntry(row);
+    return row && toEventBusEntry(row);
   }
 
   async markFailedPermanently(
@@ -166,7 +151,7 @@ export class PgEventBus implements EventBusPublisher, EventBusConsumer {
   ): Promise<EventBusEntry | undefined> {
     // A retry budget of 0 dead-letters on this attempt.
     const row = await this.claims.markFailed<EventsRow>(id, reason, 0, instanceId);
-    return row && this.rowToEntry(row);
+    return row && toEventBusEntry(row);
   }
 
   resetStale(olderThan: Date): Promise<number> {
@@ -207,30 +192,5 @@ export class PgEventBus implements EventBusPublisher, EventBusConsumer {
 
   cleanupFailed(olderThan: Date, options?: { readonly limit?: number }): Promise<number> {
     return this.claims.cleanupFailed(olderThan, options?.limit);
-  }
-
-  private rowToEntry(row: EventsRow): EventBusEntry {
-    return {
-      id: row.id,
-      eventType: row.event_type,
-      eventVersion: row.event_version,
-      eventKind: row.event_kind,
-      payload: row.payload,
-      sourceService: row.source_service,
-      occurredAt: row.occurred_at,
-      ...(row.aggregate_id !== null ? { aggregateId: row.aggregate_id } : {}),
-      ...(row.correlation_id !== null ? { correlationId: row.correlation_id } : {}),
-      status: row.status,
-      ...(row.claimed_by !== null ? { claimedBy: row.claimed_by } : {}),
-      ...(row.claimed_at !== null ? { claimedAt: row.claimed_at } : {}),
-      ...(row.lease_expires_at !== null ? { leaseExpiresAt: row.lease_expires_at } : {}),
-      retryCount: row.retry_count,
-      ...(row.last_error !== null ? { lastError: row.last_error } : {}),
-      ...(row.failed_at !== null ? { failedAt: row.failed_at } : {}),
-      ...(row.last_failed_by !== null ? { lastFailedBy: row.last_failed_by } : {}),
-      ...(row.next_attempt_at !== null ? { nextAttemptAt: row.next_attempt_at } : {}),
-      createdAt: row.created_at,
-      publishedAt: row.published_at,
-    };
   }
 }

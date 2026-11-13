@@ -20,7 +20,9 @@ import {
 import { defineEvent } from '../../src/event-bus/event.descriptor.js';
 import { createHandlerEntry } from '../../src/event-bus/handler-entry.factory.js';
 import type { HandlerEntry, ScopedHandlerEntry } from '../../src/event-bus/handler-entry.type.js';
+import type { RetryPolicy } from '../../src/event-bus/retry.policy.js';
 import { FakeEventBusConsumer } from '../helpers/fake-bus.js';
+import { FakeDeliveryQueue, makeDelivery } from '../helpers/fake-deliveries.js';
 import { FakeLease } from '../helpers/fake-lease.js';
 import { FakeOutcomeStore } from '../helpers/fake-outcome-store.js';
 
@@ -1424,6 +1426,7 @@ describe('EventConsumer handler context', () => {
     expect(onFailed).toHaveBeenCalledTimes(1);
     expect(onFailed).toHaveBeenCalledWith(expect.objectContaining({ status: 'FAILED' }), {
       permanent: true,
+      source: 'event',
     });
   });
 
@@ -1521,7 +1524,7 @@ describe('EventConsumer permanent failures', () => {
       entry: expect.objectContaining({ id: 'evt-1', eventType: 'test.happened' }),
     });
     expect(bus.marksFailedPermanently).toEqual([{ id: 'evt-1', reason: 'aggregate deleted' }]);
-    expect(onFailed).toHaveBeenCalledWith(expect.anything(), { permanent: true });
+    expect(onFailed).toHaveBeenCalledWith(expect.anything(), { permanent: true, source: 'event' });
   });
 
   it('treats the failure as transient when the classifier throws', async () => {
@@ -1554,7 +1557,7 @@ describe('EventConsumer permanent failures', () => {
 
     expect(bus.marksFailed).toEqual([{ id: 'evt-1', reason: 'flaky' }]);
     expect(bus.marksFailedPermanently).toHaveLength(0);
-    expect(onFailed).toHaveBeenCalledWith(expect.anything(), { permanent: false });
+    expect(onFailed).toHaveBeenCalledWith(expect.anything(), { permanent: false, source: 'event' });
   });
 
   it('redelivers a handler cut short by shutdown even after a permanent failure', async () => {
@@ -1678,6 +1681,7 @@ describe('EventConsumer handler outcomes', () => {
     expect(bus.marksFailed.map((m) => m.reason)).toEqual(['smtp down', 'smtp down', 'smtp down']);
     expect(onFailed).toHaveBeenLastCalledWith(expect.objectContaining({ lastError: 'smtp down' }), {
       permanent: false,
+      source: 'event',
     });
   });
 
@@ -1705,7 +1709,10 @@ describe('EventConsumer handler outcomes', () => {
 
     expect([a, b, c].map((h) => h.mock.calls.length)).toEqual([1, 1, 2]);
     expect(bus.marksFailedPermanently).toEqual([{ id: 'evt-1', reason: 'aggregate gone' }]);
-    expect(onFailed).toHaveBeenLastCalledWith(expect.anything(), { permanent: true });
+    expect(onFailed).toHaveBeenLastCalledWith(expect.anything(), {
+      permanent: true,
+      source: 'event',
+    });
     expect(store.outcomesOf('evt-1').get('c')?.outcome).toBe('done');
   });
 
@@ -1904,7 +1911,10 @@ describe('EventConsumer handler outcomes', () => {
           ],
         },
       ]);
-      expect(onFailed).toHaveBeenCalledWith(expect.anything(), { permanent: true });
+      expect(onFailed).toHaveBeenCalledWith(expect.anything(), {
+        permanent: true,
+        source: 'event',
+      });
     });
 
     it('keeps recorded outcomes and reports a lost claim instead of onFailed', async () => {
@@ -2010,3 +2020,461 @@ function _keyOptionTypes(consumer: EventConsumer, sub: EventSubscription) {
   return [keyed, scopedSub];
 }
 void _keyOptionTypes;
+
+describe('EventConsumer isolation', () => {
+  let bus: FakeEventBusConsumer;
+  let deliveries: FakeDeliveryQueue;
+  let logger: NoopLogger;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-01T00:00:00Z'));
+    bus = new FakeEventBusConsumer();
+    deliveries = new FakeDeliveryQueue();
+    bus.deliveries = deliveries;
+    logger = new NoopLogger();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function consumer(overrides: Partial<EventConsumerOptions> = {}): EventConsumer {
+    return new EventConsumer({
+      bus,
+      consumerName: 'svc',
+      sourceService: 'svc-a',
+      logger,
+      isolation: true,
+      ...overrides,
+    });
+  }
+
+  async function runOnce(c: EventConsumer): Promise<void> {
+    c.start();
+    await vi.advanceTimersByTimeAsync(1000);
+    await c.dispose();
+  }
+
+  describe('configuration', () => {
+    it('needs a bus with deliveries', () => {
+      bus = new FakeEventBusConsumer();
+      expect(() => consumer()).toThrow(/needs a bus with `deliveries`/);
+    });
+
+    it('excludes handlerOutcomes', () => {
+      expect(() => consumer({ handlerOutcomes: new FakeOutcomeStore() })).toThrow(/exclusive/);
+    });
+
+    it('needs a key on every handler, even a lone one', () => {
+      expect(() => consumer().on('test.happened', async () => {})).toThrow(/needs a `key`/);
+    });
+
+    it('rejects two different explicit policies for one subscriber, in any order', () => {
+      const c = consumer().on('a.happened', async () => {}, { key: 'mail' });
+      c.on('b.happened', async () => {}, { key: 'mail', retry: { maxAttempts: 3 } });
+      expect(() =>
+        c.on('c.happened', async () => {}, { key: 'mail', retry: { maxAttempts: 5 } }),
+      ).toThrow(/two different retry policies/);
+    });
+
+    it('accepts the same policy repeated, whatever its field order', () => {
+      const c = consumer().on('a.happened', async () => {}, {
+        key: 'mail',
+        retry: { maxAttempts: 3, delaysMs: [1, 2] },
+      });
+      expect(() =>
+        c.on('b.happened', async () => {}, {
+          key: 'mail',
+          retry: { delaysMs: [1, 2], maxAttempts: 3 },
+        }),
+      ).not.toThrow();
+    });
+
+    it('validates attempt budgets', () => {
+      expect(() => consumer({ maxAttempts: 0 })).toThrow(/maxAttempts/);
+      expect(() =>
+        consumer().on('a.happened', async () => {}, { key: 'k', retry: { maxAttempts: 1.5 } }),
+      ).toThrow(/retry.maxAttempts/);
+      expect(() => consumer({ maxAttempts: Number.POSITIVE_INFINITY })).not.toThrow();
+    });
+  });
+
+  describe('event path', () => {
+    it('settles a fully handled event with markDone and no deliveries', async () => {
+      const onProcessed = vi.fn();
+      const c = consumer({ onProcessed }).on('test.happened', async () => {}, { key: 'a' });
+      bus.enqueueBatch([makeBusEntry()]);
+
+      await runOnce(c);
+
+      expect(bus.marksDone).toEqual(['evt-1']);
+      expect(deliveries.settled).toEqual([]);
+      expect(onProcessed).toHaveBeenCalledWith(expect.objectContaining({ id: 'evt-1' }), {
+        source: 'event',
+      });
+    });
+
+    it('moves a failed handler to its own delivery and never re-runs the one that finished', async () => {
+      const ok = vi.fn(async () => {});
+      const onFailed = vi.fn();
+      const c = consumer({ onFailed })
+        .on('test.happened', ok, { key: 'projection' })
+        .on(
+          'test.happened',
+          async () => {
+            throw new Error('smtp down');
+          },
+          { key: 'mail' },
+        );
+      bus.enqueueBatch([makeBusEntry({ aggregateId: 'agg-1' })]);
+
+      await runOnce(c);
+
+      expect(ok).toHaveBeenCalledTimes(1);
+      expect(bus.marksDone).toEqual([]);
+      expect(bus.marksFailed).toEqual([]);
+      expect(deliveries.settled).toEqual([
+        {
+          eventId: 'evt-1',
+          consumerName: 'svc',
+          deliveries: [
+            {
+              handlerKey: 'mail',
+              status: 'PENDING',
+              retryCount: 1,
+              lastError: 'smtp down',
+              lastFailedBy: expect.any(String),
+              nextAttemptAt: new Date('2026-06-01T00:00:02Z'),
+            },
+          ],
+        },
+      ]);
+      expect(onFailed).toHaveBeenCalledWith(
+        expect.objectContaining({ handlerKey: 'mail', eventId: 'evt-1' }),
+        { permanent: false, source: 'delivery', handlerKey: 'mail' },
+      );
+    });
+
+    it('dead-letters a permanent failure, or one the policy gives a single attempt', async () => {
+      const c = consumer()
+        .on(
+          'test.happened',
+          async () => {
+            throw new SchemaValidationError('test.happened', []);
+          },
+          { key: 'strict' },
+        )
+        .on(
+          'test.happened',
+          async () => {
+            throw new Error('down');
+          },
+          { key: 'once', retry: { maxAttempts: 1 } },
+        );
+      bus.enqueueBatch([makeBusEntry()]);
+
+      await runOnce(c);
+
+      expect(deliveries.settled[0]?.deliveries.map((d) => [d.handlerKey, d.status])).toEqual([
+        ['strict', 'FAILED'],
+        ['once', 'FAILED'],
+      ]);
+    });
+
+    it('queues a handler behind its open lane without running it, and runs the others', async () => {
+      const mail = vi.fn(async () => {});
+      const projection = vi.fn(async () => {});
+      deliveries.lanes = [{ handlerKey: 'mail', aggregateId: 'agg-1' }];
+      const c = consumer()
+        .on('test.happened', mail, { key: 'mail' })
+        .on('test.happened', projection, { key: 'projection' });
+      bus.enqueueBatch([makeBusEntry({ aggregateId: 'agg-1' })]);
+
+      await runOnce(c);
+
+      expect(mail).not.toHaveBeenCalled();
+      expect(projection).toHaveBeenCalledTimes(1);
+      expect(deliveries.settled[0]?.deliveries).toEqual([
+        { handlerKey: 'mail', status: 'PENDING', retryCount: 0 },
+      ]);
+    });
+
+    it("queues the aggregate's later events behind a failure in the same batch, and keeps going", async () => {
+      const calls: string[] = [];
+      const c = consumer()
+        .on(
+          'test.happened',
+          async (e) => {
+            calls.push(`mail:${e.id}`);
+            if (e.id === 'e1') throw new Error('down');
+          },
+          { key: 'mail' },
+        )
+        .on(
+          'test.happened',
+          async (e) => {
+            calls.push(`projection:${e.id}`);
+          },
+          { key: 'projection' },
+        );
+      bus.enqueueBatch([
+        makeBusEntry({ id: 'e1', aggregateId: 'agg-1' }),
+        makeBusEntry({ id: 'e2', aggregateId: 'agg-1' }),
+      ]);
+
+      await runOnce(c);
+
+      expect(calls).toEqual(['mail:e1', 'projection:e1', 'projection:e2']);
+      expect(deliveries.settled.map((s) => [s.eventId, s.deliveries[0]?.retryCount])).toEqual([
+        ['e1', 1],
+        ['e2', 0],
+      ]);
+    });
+
+    it('runs an event without an aggregate straight away: it has no lane', async () => {
+      const handler = vi.fn(async () => {});
+      deliveries.lanes = [{ handlerKey: 'a', aggregateId: 'agg-1' }];
+      const c = consumer().on('test.happened', handler, { key: 'a' });
+      bus.enqueueBatch([makeBusEntry()]);
+
+      await runOnce(c);
+
+      expect(handler).toHaveBeenCalledTimes(1);
+      expect(bus.marksDone).toEqual(['evt-1']);
+    });
+
+    it('runs nothing when the open lanes cannot be read', async () => {
+      const handler = vi.fn(async () => {});
+      deliveries.lanesError = new Error('db down');
+      const c = consumer().on('test.happened', handler, { key: 'a' });
+      bus.enqueueBatch([makeBusEntry({ aggregateId: 'agg-1' })]);
+
+      await runOnce(c);
+
+      expect(handler).not.toHaveBeenCalled();
+      expect(bus.marksDone).toEqual([]);
+      expect(deliveries.settled).toEqual([]);
+    });
+
+    it('reports nothing as failed when the claim was lost while settling', async () => {
+      const onFailed = vi.fn();
+      const onLeaseLost = vi.fn();
+      deliveries.claimLost.add('evt-1');
+      const c = consumer({ onFailed, onLeaseLost }).on(
+        'test.happened',
+        async () => {
+          throw new Error('down');
+        },
+        { key: 'a' },
+      );
+      bus.enqueueBatch([makeBusEntry()]);
+
+      await runOnce(c);
+
+      expect(onFailed).not.toHaveBeenCalled();
+      expect(onLeaseLost).toHaveBeenCalledWith(expect.objectContaining({ id: 'evt-1' }));
+    });
+  });
+
+  describe('delivery path', () => {
+    it("claims the registered (key, type) pairs and runs only that subscriber, with the event's id", async () => {
+      const mail = vi.fn(async (_e: HandlerEntry) => {});
+      const projection = vi.fn(async () => {});
+      const onProcessed = vi.fn();
+      const c = consumer({ onProcessed, deliveryBatchSize: 5 })
+        .on('test.happened', mail, { key: 'mail' })
+        .on('test.happened', projection, { key: 'projection' })
+        .on('other.happened', mail, { key: 'mail' });
+      const delivery = makeDelivery({ id: 'd-1', eventId: 'evt-9', handlerKey: 'mail' });
+      deliveries.enqueueBatch([delivery]);
+
+      await runOnce(c);
+
+      expect(deliveries.claims[0]).toEqual({
+        batchSize: 5,
+        consumerName: 'svc',
+        pairs: [
+          { key: 'mail', eventType: 'test.happened' },
+          { key: 'projection', eventType: 'test.happened' },
+          { key: 'mail', eventType: 'other.happened' },
+        ],
+      });
+      expect(mail).toHaveBeenCalledTimes(1);
+      expect(mail.mock.calls[0]?.[0].id).toBe('evt-9');
+      expect(projection).not.toHaveBeenCalled();
+      expect(deliveries.marksDone).toEqual(['d-1']);
+      expect(onProcessed).toHaveBeenCalledWith(delivery, {
+        source: 'delivery',
+        handlerKey: 'mail',
+      });
+    });
+
+    function failing(c: EventConsumer, retry?: RetryPolicy): EventConsumer {
+      return c.on(
+        'test.happened',
+        async () => {
+          throw new Error('down');
+        },
+        { key: 'mail', ...(retry ? { retry } : {}) },
+      );
+    }
+
+    it("schedules the retry by the subscriber's policy", async () => {
+      const c = failing(consumer({ retryDelaysMs: [1, 2] }), {
+        delaysMs: [5_000, 60_000],
+        maxAttempts: Number.POSITIVE_INFINITY,
+      });
+      deliveries.enqueueBatch([makeDelivery({ id: 'd-1', handlerKey: 'mail', retryCount: 3 })]);
+
+      await runOnce(c);
+
+      expect(deliveries.marksFailed).toEqual([
+        { id: 'd-1', reason: 'down', options: { retryAfterMs: 60_000 } },
+      ]);
+    });
+
+    it('moves the retry up to the deadline, and dead-letters once it has passed', async () => {
+      const c = failing(consumer(), {
+        delaysMs: [60_000],
+        maxAttempts: Number.POSITIVE_INFINITY,
+        maxAgeMs: 30_000,
+      });
+      const queuedAt = new Date('2026-06-01T00:00:00Z');
+      deliveries.enqueueBatch([
+        makeDelivery({ id: 'young', handlerKey: 'mail', aggregateId: 'a', queuedAt }),
+        makeDelivery({ id: 'old', handlerKey: 'mail', aggregateId: 'b', queuedAt: new Date(0) }),
+      ]);
+
+      await runOnce(c);
+
+      expect(deliveries.marksFailed).toEqual([
+        { id: 'young', reason: 'down', options: { retryAfterMs: 29_000 } },
+      ]);
+      expect(deliveries.marksFailedPermanently.map((m) => m.id)).toEqual(['old']);
+    });
+
+    it('defaults the budget from the consumer', async () => {
+      const c = failing(consumer({ retryDelaysMs: [10, 20], maxAttempts: 7 }));
+      deliveries.enqueueBatch([
+        makeDelivery({ id: 'fresh', handlerKey: 'mail', aggregateId: 'a', retryCount: 0 }),
+        makeDelivery({ id: 'spent', handlerKey: 'mail', aggregateId: 'b', retryCount: 6 }),
+      ]);
+
+      await runOnce(c);
+
+      expect(deliveries.marksFailed).toEqual([
+        { id: 'fresh', reason: 'down', options: { retryAfterMs: 10 } },
+      ]);
+      expect(deliveries.marksFailedPermanently.map((m) => m.id)).toEqual(['spent']);
+    });
+
+    it('runs one delivery per lane per batch once one fails', async () => {
+      const handler = vi.fn(async () => {
+        throw new Error('down');
+      });
+      const c = consumer().on('test.happened', handler, { key: 'mail' });
+      deliveries.enqueueBatch([
+        makeDelivery({ id: 'd-1', handlerKey: 'mail', aggregateId: 'agg-1' }),
+        makeDelivery({ id: 'd-2', handlerKey: 'mail', aggregateId: 'agg-1' }),
+      ]);
+
+      await runOnce(c);
+
+      expect(handler).toHaveBeenCalledTimes(1);
+    });
+
+    it('moves renamed subscribers before dispatching, and warns about orphans', async () => {
+      const warn = vi.spyOn(logger, 'warn');
+      deliveries.orphans = 2;
+      const c = consumer().on('test.happened', async () => {}, {
+        key: 'iam.users.mail',
+        previousKeys: ['MailHandler'],
+      });
+
+      await runOnce(c);
+
+      expect(deliveries.rekeys).toEqual([
+        { consumerName: 'svc', from: ['MailHandler'], to: 'iam.users.mail' },
+      ]);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('previousKeys'), expect.anything());
+    });
+
+    it('dead-letters a permanent failure at once, and tells it apart from a spent budget', async () => {
+      const onFailed = vi.fn();
+      const c = consumer({ onFailed, maxAttempts: 2 }).on(
+        'test.happened',
+        async (e) => {
+          if (e.payload === 'bad') throw new SchemaValidationError('test.happened', []);
+          throw new Error('down');
+        },
+        { key: 'mail' },
+      );
+      deliveries.enqueueBatch([
+        makeDelivery({ id: 'bad', handlerKey: 'mail', aggregateId: 'a', payload: 'bad' }),
+        makeDelivery({ id: 'spent', handlerKey: 'mail', aggregateId: 'b', retryCount: 1 }),
+      ]);
+
+      await runOnce(c);
+
+      expect(deliveries.marksFailed).toEqual([]);
+      expect(deliveries.marksFailedPermanently.map((m) => m.id)).toEqual(['bad', 'spent']);
+      expect(onFailed.mock.calls.map(([entry, info]) => [entry.id, info])).toEqual([
+        ['bad', { permanent: true, source: 'delivery', handlerKey: 'mail' }],
+        ['spent', { permanent: false, source: 'delivery', handlerKey: 'mail' }],
+      ]);
+    });
+
+    it('dispatches nothing until renamed subscribers are moved, retrying after an error', async () => {
+      deliveries.rekeyErrors = 1;
+      const handler = vi.fn(async () => {});
+      const c = consumer().on('test.happened', handler, { key: 'new', previousKeys: ['old'] });
+      bus.enqueueBatch([makeBusEntry({ id: 'e1' })]);
+      bus.enqueueBatch([makeBusEntry({ id: 'e2' })]);
+
+      c.start();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(handler).not.toHaveBeenCalled();
+      expect(bus.claimed).toEqual([]);
+      await vi.advanceTimersByTimeAsync(1000);
+      await c.dispose();
+
+      expect(deliveries.rekeys).toHaveLength(2);
+      expect(handler).toHaveBeenCalledTimes(1);
+    });
+
+    it('drains deliveries without isolation, so turning it off strands nothing', async () => {
+      const handler = vi.fn(async () => {});
+      const c = consumer({ isolation: false }).on('test.happened', handler, { key: 'mail' });
+      deliveries.enqueueBatch([makeDelivery({ id: 'd-1', handlerKey: 'mail' })]);
+      bus.enqueueBatch([makeBusEntry()]);
+
+      await runOnce(c);
+
+      expect(handler).toHaveBeenCalledTimes(2);
+      expect(deliveries.marksDone).toEqual(['d-1']);
+      expect(bus.marksDone).toEqual(['evt-1']);
+    });
+
+    it('keeps claiming events while a delivery is stuck', async () => {
+      let release: () => void = () => {};
+      const stuck = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const events = vi.fn(async () => {});
+      const c = consumer()
+        .on('test.happened', async () => stuck, { key: 'slow' })
+        .on('other.happened', events, { key: 'fast' });
+      deliveries.enqueueBatch([makeDelivery({ id: 'd-1', handlerKey: 'slow' })]);
+      bus.enqueueBatch([makeBusEntry({ id: 'e1', eventType: 'other.happened' })]);
+      bus.enqueueBatch([makeBusEntry({ id: 'e2', eventType: 'other.happened' })]);
+
+      c.start();
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(events).toHaveBeenCalledTimes(2);
+      release();
+      await c.dispose();
+      expect(deliveries.marksDone).toEqual(['d-1']);
+    });
+  });
+});

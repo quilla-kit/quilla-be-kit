@@ -3,6 +3,8 @@ export type PostgresSchemaOptions = {
   readonly eventsTable?: string;
   /** Emits the table `PgHandlerOutcomeStore` writes (default name `event_handler_outcomes`). */
   readonly handlerOutcomes?: boolean | { readonly table?: string };
+  /** Emits the table `PgEventBus({ deliveries: true })` uses (default name `event_deliveries`). */
+  readonly deliveries?: boolean | { readonly table?: string };
 };
 
 // Every upgrade step checks the catalog first: ALTER TABLE and CREATE INDEX take table locks
@@ -63,6 +65,54 @@ function claimSupport(table: string): string[] {
       `${table}_retrying_idx`,
       `${table} (aggregate_id, seq) WHERE status = 'PENDING' AND next_attempt_at IS NOT NULL`,
     ),
+  ];
+}
+
+// A new table, so its sequence default can be part of CREATE TABLE.
+function deliveriesTable(table: string): string[] {
+  return [
+    `CREATE SEQUENCE IF NOT EXISTS ${table}_seq;`,
+    `CREATE TABLE IF NOT EXISTS ${table} (
+  id UUID PRIMARY KEY,
+  event_id UUID NOT NULL,
+  consumer_name TEXT NOT NULL,
+  handler_key TEXT NOT NULL,
+  queued_at TIMESTAMPTZ NOT NULL,
+  event_type TEXT NOT NULL,
+  event_version INTEGER NOT NULL,
+  event_kind TEXT NOT NULL,
+  payload JSONB NOT NULL,
+  source_service TEXT NOT NULL,
+  aggregate_id TEXT,
+  correlation_id TEXT,
+  occurred_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL,
+  published_at TIMESTAMPTZ NOT NULL,
+  status TEXT NOT NULL,
+  claimed_by TEXT,
+  claimed_at TIMESTAMPTZ,
+  lease_expires_at TIMESTAMPTZ,
+  retry_count INTEGER NOT NULL,
+  last_error TEXT,
+  failed_at TIMESTAMPTZ,
+  last_failed_by TEXT,
+  next_attempt_at TIMESTAMPTZ,
+  seq BIGINT NOT NULL DEFAULT nextval('${table}_seq')
+);`,
+    `ALTER SEQUENCE ${table}_seq OWNED BY ${table}.seq;`,
+    createIndex(
+      `${table}_event_subscriber_uq`,
+      `${table} (event_id, consumer_name, handler_key)`,
+      true,
+    ),
+    createIndex(`${table}_claim_idx`, `${table} (consumer_name, seq) WHERE status = 'PENDING'`),
+    createIndex(
+      `${table}_lane_idx`,
+      `${table} (consumer_name, aggregate_id, handler_key, seq)
+        WHERE aggregate_id IS NOT NULL AND status IN ('PENDING', 'CLAIMED')`,
+    ),
+    createIndex(`${table}_claimed_at_idx`, `${table} (claimed_at) WHERE status = 'CLAIMED'`),
+    createIndex(`${table}_failed_at_idx`, `${table} (failed_at) WHERE status = 'FAILED'`),
   ];
 }
 
@@ -131,6 +181,13 @@ export function getPostgresSchema(options?: PostgresSchemaOptions): string {
       true,
     ),
   ];
+
+  const deliveries = options?.deliveries;
+  if (deliveries) {
+    const table =
+      (typeof deliveries === 'object' ? deliveries.table : undefined) ?? 'event_deliveries';
+    statements.push(...deliveriesTable(table));
+  }
 
   const outcomes = options?.handlerOutcomes;
   if (outcomes) {

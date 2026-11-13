@@ -8,12 +8,14 @@ type ClaimedEntry = {
   readonly aggregateId?: string | undefined;
 };
 
-export type ClaimLeaseManagerOptions = {
+export type ClaimLeaseManagerOptions<E extends ClaimedEntry = ClaimedEntry> = {
   readonly lease: ClaimLease | undefined;
   readonly instanceId: string;
   readonly renewIntervalMs: number | undefined;
   readonly logger: Logger;
   readonly onLeaseLost: ((info: LeaseLostInfo) => void) | undefined;
+  /** What must run in order; entries sharing it are blocked together. Default: the aggregate. */
+  readonly orderKey?: (entry: E) => string | undefined;
 };
 
 function resolveRenewInterval(
@@ -38,7 +40,7 @@ function resolveRenewInterval(
 // entries of that aggregate in the batch are refused. So any entry that fails, loses its claim
 // or is otherwise left unsettled holds back the rest of its aggregate: those entries are handed
 // back together and come back in seq order behind it.
-export class ClaimLeaseManager {
+export class ClaimLeaseManager<E extends ClaimedEntry = ClaimedEntry> {
   readonly leaseMs: number | undefined;
   readonly renewIntervalMs: number;
   private readonly lease: ClaimLease | null;
@@ -46,17 +48,18 @@ export class ClaimLeaseManager {
   private readonly instanceId: string;
   private readonly logger: Logger;
   private readonly onLeaseLost: ((info: LeaseLostInfo) => void) | undefined;
+  private readonly orderKey: (entry: E) => string | undefined;
   private readonly confirmedAt = new Map<string, number>();
   private readonly reported = new Set<string>();
   private readonly openAggregates = new Set<string>();
   // Started here or handed back; acquire sees each entry once, so either way it's not dispatched.
   private readonly taken = new Set<string>();
-  private batch: readonly ClaimedEntry[] = [];
+  private batch: readonly E[] = [];
   private timer: ReturnType<typeof setInterval> | null = null;
-  private held: ClaimedEntry | null = null;
+  private held: E | null = null;
   private renewing = false;
 
-  constructor(options: ClaimLeaseManagerOptions) {
+  constructor(options: ClaimLeaseManagerOptions<E>) {
     this.leaseMs = options.lease?.durationMs;
     this.renewIntervalMs = resolveRenewInterval(options.lease, options.renewIntervalMs);
     this.lease = options.lease ?? null;
@@ -64,6 +67,7 @@ export class ClaimLeaseManager {
     this.instanceId = options.instanceId;
     this.logger = options.logger;
     this.onLeaseLost = options.onLeaseLost;
+    this.orderKey = options.orderKey ?? ((entry) => entry.aggregateId);
   }
 
   warnIfDisabled(): void {
@@ -73,7 +77,7 @@ export class ClaimLeaseManager {
     });
   }
 
-  begin(entries: readonly ClaimedEntry[]): void {
+  begin(entries: readonly E[]): void {
     this.reset();
     if (entries.length === 0) return;
     this.batch = entries;
@@ -94,11 +98,12 @@ export class ClaimLeaseManager {
 
   // Everything before the first await is synchronous, so a timer tick can't hand back an entry
   // between the check and `taken.add`.
-  async acquire(entry: ClaimedEntry): Promise<boolean> {
+  async acquire(entry: E): Promise<boolean> {
     if (this.taken.has(entry.id)) return false;
-    if (entry.aggregateId !== undefined) {
-      if (this.openAggregates.has(entry.aggregateId)) return false;
-      this.openAggregates.add(entry.aggregateId);
+    const order = this.orderKey(entry);
+    if (order !== undefined) {
+      if (this.openAggregates.has(order)) return false;
+      this.openAggregates.add(order);
     }
     this.taken.add(entry.id);
     if (!this.renewLease) return true;
@@ -115,14 +120,14 @@ export class ClaimLeaseManager {
     return true;
   }
 
-  hold(entry: ClaimedEntry): void {
+  hold(entry: E): void {
     this.held = entry;
   }
 
   // Releases before writing so an in-flight renew can't report the completed entry as lost.
   // Resolves to the write's result, or undefined when the claim was lost.
   async settle<T>(
-    entry: ClaimedEntry,
+    entry: E,
     stage: LeaseLostStage,
     write: () => Promise<T>,
   ): Promise<T | undefined> {
@@ -136,13 +141,14 @@ export class ClaimLeaseManager {
       return undefined;
     }
     // An entry reported lost keeps its aggregate open: later entries may have been reset too.
-    if (stage === 'done' && entry.aggregateId !== undefined && !this.reported.has(entry.id)) {
-      this.openAggregates.delete(entry.aggregateId);
+    const order = this.orderKey(entry);
+    if (stage === 'done' && order !== undefined && !this.reported.has(entry.id)) {
+      this.openAggregates.delete(order);
     }
     return result;
   }
 
-  reportLost(entry: ClaimedEntry, stage: LeaseLostStage): void {
+  reportLost(entry: E, stage: LeaseLostStage): void {
     if (this.reported.has(entry.id)) return;
     this.reported.add(entry.id);
     this.logger.warn('claim lease lost; event may run more than once', {

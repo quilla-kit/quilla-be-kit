@@ -4,7 +4,11 @@ import { getPostgresSchema } from '../../src/postgres/get-postgres-schema.js';
 
 export const PG_URL = process.env.MESSAGING_PG_URL;
 
-export type TestTables = { readonly eventsTable: string; readonly outboxTable: string };
+export type TestTables = {
+  readonly eventsTable: string;
+  readonly outboxTable: string;
+  readonly deliveriesTable: string;
+};
 
 export function createPool(): pg.Pool {
   return new pg.Pool({ connectionString: PG_URL, max: 20 });
@@ -12,13 +16,19 @@ export function createPool(): pg.Pool {
 
 export async function createTables(pool: pg.Pool): Promise<TestTables> {
   const suffix = randomUUID().replaceAll('-', '').slice(0, 10);
-  const tables = { eventsTable: `events_${suffix}`, outboxTable: `outbox_${suffix}` };
-  await pool.query(getPostgresSchema(tables));
+  const tables = {
+    eventsTable: `events_${suffix}`,
+    outboxTable: `outbox_${suffix}`,
+    deliveriesTable: `deliveries_${suffix}`,
+  };
+  await pool.query(getPostgresSchema({ ...tables, deliveries: { table: tables.deliveriesTable } }));
   return tables;
 }
 
 export async function dropTables(pool: pg.Pool, tables: TestTables): Promise<void> {
-  await pool.query(`DROP TABLE IF EXISTS ${tables.eventsTable}, ${tables.outboxTable} CASCADE`);
+  await pool.query(
+    `DROP TABLE IF EXISTS ${tables.eventsTable}, ${tables.outboxTable}, ${tables.deliveriesTable} CASCADE`,
+  );
 }
 
 export function sleep(ms: number): Promise<void> {

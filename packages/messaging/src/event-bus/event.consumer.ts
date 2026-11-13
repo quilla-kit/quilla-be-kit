@@ -19,12 +19,15 @@ import type { LeaseLostInfo } from './claim-lease.type.js';
 import type { ClaimOptions } from './claim-options.type.js';
 import {
   DEFAULT_BATCH_SIZE,
+  DEFAULT_DELIVERY_BATCH_SIZE,
   DEFAULT_FAILOVER_WINDOW_POLLS,
   DEFAULT_POLL_INTERVAL_MS,
   DEFAULT_RETRY_DELAYS_MS,
   DEFAULT_STALE_CLAIM_MS,
   retryDelayFor,
 } from './defaults.js';
+import type { DeliveryEntry, DeliveryPair, NewDelivery } from './delivery-entry.type.js';
+import type { DeliveryQueue } from './delivery-queue.interface.js';
 import type { EventBusConsumer } from './event-bus-consumer.interface.js';
 import type { EventBusEntry } from './event-bus-entry.type.js';
 import type { EventSubscription } from './event-subscription.interface.js';
@@ -36,6 +39,7 @@ import type {
   SessionHandlerEntry,
 } from './handler-entry.type.js';
 import type { HandlerOutcome, HandlerOutcomeStore } from './handler-outcome-store.interface.js';
+import { type RetryPolicy, type RetrySchedule, nextAttemptAt } from './retry.policy.js';
 import type { StandardSchemaV1 } from './standard-schema.type.js';
 
 export type EventHandler<TPayload = unknown> = (entry: HandlerEntry<TPayload>) => Promise<void>;
@@ -52,14 +56,32 @@ type Registration = {
   readonly key: string | undefined;
 };
 
-type KeyOption = { readonly key?: string | undefined };
+type KeyOption = Pick<EventSubscription<unknown>, 'key' | 'retry' | 'previousKeys'>;
+
+type RegisterOptions = KeyOption & { readonly requires?: ContextRequirement | undefined };
+
+type DeliveryWork = {
+  readonly queue: DeliveryQueue;
+  readonly leases: ClaimLeaseManager<DeliveryEntry>;
+};
+
+type PollLoop = { readonly timer: ReturnType<typeof setInterval>; inflight: Promise<void> | null };
 
 const NO_OUTCOMES: ReadonlyMap<string, readonly HandlerOutcome[]> = new Map();
 
 type HandlerFailure = { readonly message: string; readonly permanent: boolean };
 
+/**
+ * `source` says what `entry` is: the bus event, or (under isolation) one subscriber's delivery,
+ * which `bus.deliveries.replay` takes.
+ */
+export type EventProcessedInfo = {
+  readonly source: 'event' | 'delivery';
+  readonly handlerKey?: string | undefined;
+};
+
 /** Passed to `onFailed`: `permanent` failures are dead-lettered on the first attempt. */
-export type EventFailureInfo = { readonly permanent: boolean };
+export type EventFailureInfo = EventProcessedInfo & { readonly permanent: boolean };
 
 export type EventConsumerOptions = {
   readonly bus: EventBusConsumer;
@@ -82,12 +104,23 @@ export type EventConsumerOptions = {
    * Default: twice `pollIntervalMs`. `0` turns it off.
    */
   readonly failoverWindowMs?: number;
+  /**
+   * Isolates subscribers: a handler that fails moves to its own delivery, retried by its `retry`
+   * policy, while the event's other handlers and the aggregate's later events go on. Needs a bus
+   * with `deliveries`, a `key` on every handler, and no `handlerOutcomes`.
+   */
+  readonly isolation?: boolean;
+  /** Default attempt budget of a delivery (default `retryDelaysMs.length + 1`; `Infinity`: none). */
+  readonly maxAttempts?: number;
+  /** Deliveries claimed per poll. Default 10. */
+  readonly deliveryBatchSize?: number;
   readonly executionContext?: {
     readonly provider: ExecutionContextProvider;
   };
-  readonly onProcessed?: (entry: EventBusEntry) => void;
+  readonly onProcessed?: (entry: EventBusEntry, info: EventProcessedInfo) => void;
   // After each failed attempt is recorded; `entry.status === 'FAILED'` means dead-lettered.
-  // Not called when the claim was lost (onLeaseLost reports it).
+  // Not called when the claim was lost (onLeaseLost reports it). Under isolation, failures are
+  // reported on the deliveries they created.
   readonly onFailed?: (entry: EventBusEntry, info: EventFailureInfo) => void;
   /**
    * Classifies a handler error a retry cannot fix; the event is then dead-lettered on the
@@ -166,9 +199,18 @@ export class EventConsumer implements Disposable {
   private readonly leases: ClaimLeaseManager;
   private readonly handlers = new Map<string, readonly Registration[]>();
   private topicKeys: readonly string[] = [];
+  // Deliveries drain whenever the bus offers them; `isolated` is the same work, set only with
+  // `isolation`, when failures split into deliveries.
+  private readonly delivery: DeliveryWork | undefined;
+  private readonly isolated: DeliveryWork | undefined;
+  private readonly maxAttempts: number | undefined;
+  private readonly deliveryBatchSize: number;
+  private readonly policies = new Map<string, RetryPolicy>();
+  private readonly previousKeys = new Map<string, Set<string>>();
+  private deliveryPairs: readonly DeliveryPair[] = [];
+  private ready: Promise<boolean> | undefined;
 
-  private intervalHandle: ReturnType<typeof setInterval> | null = null;
-  private inflightTick: Promise<void> | null = null;
+  private loops: PollLoop[] = [];
   private stopping = false;
 
   constructor(options: EventConsumerOptions) {
@@ -198,6 +240,33 @@ export class EventConsumer implements Disposable {
       logger: this.logger,
       onLeaseLost: options.onLeaseLost,
     });
+    const queue = options.bus.deliveries;
+    if (options.isolation && !queue) {
+      throw new Error(
+        'EventConsumer: `isolation` needs a bus with `deliveries` (e.g. `new PgEventBus({ deliveries: true })`)',
+      );
+    }
+    if (options.isolation && this.handlerOutcomes) {
+      throw new Error(
+        'EventConsumer: `isolation` and `handlerOutcomes` are exclusive; isolation already keeps a finished handler from re-running when a sibling fails',
+      );
+    }
+    if (options.maxAttempts !== undefined) assertMaxAttempts(options.maxAttempts, 'maxAttempts');
+    this.maxAttempts = options.maxAttempts;
+    this.deliveryBatchSize = options.deliveryBatchSize ?? DEFAULT_DELIVERY_BATCH_SIZE;
+    this.delivery = queue && {
+      queue,
+      leases: new ClaimLeaseManager<DeliveryEntry>({
+        lease: queue.lease,
+        instanceId: this.instanceId,
+        renewIntervalMs: options.renewIntervalMs,
+        logger: this.logger,
+        onLeaseLost: options.onLeaseLost,
+        orderKey: (d) =>
+          d.aggregateId === undefined ? undefined : laneKey(d.handlerKey, d.aggregateId),
+      }),
+    };
+    this.isolated = options.isolation ? this.delivery : undefined;
     if (options.subscriptions) {
       this.subscribe(options.subscriptions);
     }
@@ -243,18 +312,13 @@ export class EventConsumer implements Disposable {
     options?: { readonly requires?: ContextRequirement | undefined } & KeyOption,
   ): this {
     // The overloads pair each narrowed handler with the requirement checked before it runs.
-    return this.register(
-      eventTypeOrDescriptor,
-      handler as EventHandler,
-      options?.requires,
-      options?.key,
-    );
+    return this.register(eventTypeOrDescriptor, handler as EventHandler, options ?? {});
   }
 
   subscribe(subscriptions: ReadonlyArray<EventSubscription<unknown>>): this {
     for (const sub of subscriptions) {
       // Arrow preserves `this` for class-based subscriptions — a bare method ref detaches.
-      this.register(sub.descriptor, (entry) => sub.handle(entry), sub.requires, sub.key);
+      this.register(sub.descriptor, (entry) => sub.handle(entry), sub);
     }
     return this;
   }
@@ -262,8 +326,7 @@ export class EventConsumer implements Disposable {
   private register(
     eventTypeOrDescriptor: string | EventDescriptor<unknown>,
     handler: EventHandler,
-    requires: ContextRequirement | undefined,
-    key: string | undefined,
+    { requires, key, retry, previousKeys }: RegisterOptions,
   ): this {
     const eventType =
       typeof eventTypeOrDescriptor === 'string'
@@ -284,13 +347,45 @@ export class EventConsumer implements Disposable {
       { handler: wrapped, requires, key },
     ];
     this.assertKeys(eventType, registrations);
+    if (key !== undefined) this.registerSubscriber(eventType, key, retry, previousKeys);
     this.handlers.set(eventType, registrations);
     if (isNewType) this.topicKeys = [...this.handlers.keys()];
+    if (key !== undefined) {
+      this.deliveryPairs = [...this.handlers].flatMap(([type, regs]) =>
+        regs.flatMap((r) => (r.key === undefined ? [] : [{ key: r.key, eventType: type }])),
+      );
+    }
     return this;
   }
 
+  // One policy per subscriber: a policy given on one of its event types covers all of them.
+  private registerSubscriber(
+    eventType: string,
+    key: string,
+    retry: RetryPolicy | undefined,
+    previousKeys: readonly string[] | undefined,
+  ): void {
+    if (retry) {
+      if (retry.maxAttempts !== undefined) {
+        assertMaxAttempts(retry.maxAttempts, `retry.maxAttempts of "${key}"`);
+      }
+      const existing = this.policies.get(key);
+      if (existing && !samePolicy(existing, retry)) {
+        throw new Error(
+          `EventConsumer: subscriber "${key}" has two different retry policies (on "${eventType}"); give it one`,
+        );
+      }
+      this.policies.set(key, retry);
+    }
+    if (previousKeys && previousKeys.length > 0) {
+      const known = this.previousKeys.get(key) ?? new Set<string>();
+      for (const previous of previousKeys) known.add(previous);
+      this.previousKeys.set(key, known);
+    }
+  }
+
   start(): void {
-    if (this.intervalHandle) return;
+    if (this.loops.length > 0) return;
     this.stopping = false;
     this.logger.info('starting', {
       meta: {
@@ -299,6 +394,7 @@ export class EventConsumer implements Disposable {
         registeredTypeCount: this.handlers.size,
         instanceId: this.instanceId,
         failoverWindowMs: this.claimOptions.failoverWindowMs,
+        isolation: this.isolated !== undefined,
         leaseMs: this.leases.leaseMs,
         renewIntervalMs: this.leases.renewIntervalMs,
       },
@@ -307,30 +403,40 @@ export class EventConsumer implements Disposable {
     this.logger.debug('registered event types', {
       meta: { registeredTypes: this.registeredEventTypes },
     });
-    this.intervalHandle = setInterval(() => {
-      if (this.stopping || this.inflightTick) return;
-      this.inflightTick = this.tick().finally(() => {
-        this.inflightTick = null;
-      });
-    }, this.pollIntervalMs);
+    this.poll(() => this.tick());
+    // Its own loop, so a slow subscriber's retries never hold up the event path.
+    const delivery = this.delivery;
+    if (delivery) this.poll(() => this.deliveryTick(delivery));
+  }
+
+  private poll(run: () => Promise<void>): void {
+    const loop: PollLoop = {
+      timer: setInterval(() => {
+        if (this.stopping || loop.inflight) return;
+        loop.inflight = run().finally(() => {
+          loop.inflight = null;
+        });
+      }, this.pollIntervalMs),
+      inflight: null,
+    };
+    this.loops.push(loop);
   }
 
   async dispose(): Promise<void> {
     this.stopping = true;
-    if (this.intervalHandle) {
-      clearInterval(this.intervalHandle);
-      this.intervalHandle = null;
-    }
-    if (this.inflightTick) {
-      await this.inflightTick.catch(() => {});
-    }
+    const loops = this.loops;
+    this.loops = [];
+    for (const loop of loops) clearInterval(loop.timer);
+    await Promise.all(loops.map((loop) => loop.inflight?.catch(() => {})));
     this.logger.info('stopped');
   }
 
   private async tick(): Promise<void> {
     try {
-      await this.sweepStale();
+      await this.sweepStale(this.bus);
       if (this.topicKeys.length === 0) return;
+      const isolated = this.isolated;
+      if (isolated && !(await this.prepare(isolated.queue))) return;
       const events = await this.bus.claim(
         this.instanceId,
         this.batchSize,
@@ -338,6 +444,8 @@ export class EventConsumer implements Disposable {
         this.claimOptions,
       );
       this.leases.begin(events);
+      // Throws to the catch below, which hands the batch back: never run on unknown lanes.
+      const lanes = isolated && (await this.loadLanes(isolated.queue, events));
       const outcomes = await this.loadOutcomes(events);
 
       for (const event of events) {
@@ -364,12 +472,199 @@ export class EventConsumer implements Disposable {
         }
 
         this.leases.hold(event);
-        await this.dispatch(event, handlers, outcomes.get(event.id));
+        if (isolated && lanes) await this.dispatchIsolated(isolated.queue, event, handlers, lanes);
+        else await this.dispatch(event, handlers, outcomes.get(event.id));
       }
     } catch (err) {
       this.logger.error('tick error', err);
     } finally {
       await this.leases.finish();
+    }
+  }
+
+  private async loadLanes(
+    queue: DeliveryQueue,
+    events: readonly EventBusEntry[],
+  ): Promise<Set<string>> {
+    const aggregateIds = [
+      ...new Set(events.flatMap((e) => (e.aggregateId !== undefined ? [e.aggregateId] : []))),
+    ];
+    const open = await queue.openLanes(this.consumerName, aggregateIds);
+    return new Set(open.map((lane) => laneKey(lane.handlerKey, lane.aggregateId)));
+  }
+
+  // Each handler runs once; one that fails, or whose lane already holds earlier work, gets a
+  // delivery of its own. The event row is settled either way, freeing the aggregate.
+  private async dispatchIsolated(
+    queue: DeliveryQueue,
+    event: EventBusEntry,
+    registrations: readonly Registration[],
+    lanes: Set<string>,
+  ): Promise<void> {
+    const fields = this.entryFields(event);
+    const queued: NewDelivery[] = [];
+    const permanent = new Set<string>();
+    for (const registration of registrations) {
+      const key = registration.key ?? '';
+      const lane = event.aggregateId !== undefined ? laneKey(key, event.aggregateId) : undefined;
+      if (lane !== undefined && lanes.has(lane)) {
+        queued.push({ handlerKey: key, status: 'PENDING', retryCount: 0 });
+        continue;
+      }
+      const failure = await this.execute(event, fields, registration);
+      if (!failure) continue;
+      if (failure.permanent) permanent.add(key);
+      queued.push(this.firstFailure(key, failure));
+    }
+
+    if (queued.length === 0) {
+      this.callHook('onProcessed', event.id, () => this.onProcessed?.(event, { source: 'event' }));
+      await this.leases.settle(event, 'done', () => this.bus.markDone(event.id, this.instanceId));
+      return;
+    }
+    const created = await this.leases.settle(event, 'done', () =>
+      queue.settle(event.id, this.consumerName, queued, this.instanceId),
+    );
+    if (!created) return;
+    for (const delivery of queued) {
+      if (event.aggregateId !== undefined && delivery.status === 'PENDING') {
+        lanes.add(laneKey(delivery.handlerKey, event.aggregateId));
+      }
+    }
+    for (const delivery of created) {
+      if (delivery.retryCount === 0) continue;
+      const info = {
+        permanent: permanent.has(delivery.handlerKey),
+        source: 'delivery',
+        handlerKey: delivery.handlerKey,
+      } as const;
+      this.callHook('onFailed', delivery.id, () => this.onFailed?.(delivery, info));
+    }
+  }
+
+  private firstFailure(key: string, failure: HandlerFailure): NewDelivery {
+    const base = {
+      handlerKey: key,
+      retryCount: 1,
+      lastError: failure.message,
+      lastFailedBy: this.instanceId,
+    };
+    const now = new Date();
+    const next = failure.permanent ? undefined : nextAttemptAt(this.scheduleFor(key), 0, now, now);
+    return next
+      ? { ...base, status: 'PENDING', nextAttemptAt: next }
+      : { ...base, status: 'FAILED' };
+  }
+
+  private async deliveryTick({ queue, leases }: DeliveryWork): Promise<void> {
+    try {
+      await this.sweepStale(queue);
+      if (this.deliveryPairs.length === 0 || !(await this.prepare(queue))) return;
+      const batch = await queue.claim(
+        this.instanceId,
+        this.deliveryBatchSize,
+        this.consumerName,
+        this.deliveryPairs,
+        this.claimOptions,
+      );
+      leases.begin(batch);
+      for (const delivery of batch) {
+        if (this.stopping) break;
+        if (!(await leases.acquire(delivery))) continue;
+        const registration = this.handlers
+          .get(delivery.eventType)
+          ?.find((r) => r.key === delivery.handlerKey);
+        if (!registration) {
+          // Claims filter on registered pairs, so this is a broker contract violation.
+          this.logger.error('delivery claimed for an unregistered subscriber', undefined, {
+            meta: { deliveryId: delivery.id, handlerKey: delivery.handlerKey },
+          });
+          continue;
+        }
+        leases.hold(delivery);
+        await this.runDelivery(queue, leases, delivery, registration);
+      }
+    } catch (err) {
+      this.logger.error('delivery tick error', err);
+    } finally {
+      await leases.finish();
+    }
+  }
+
+  private async runDelivery(
+    queue: DeliveryQueue,
+    leases: ClaimLeaseManager<DeliveryEntry>,
+    delivery: DeliveryEntry,
+    registration: Registration,
+  ): Promise<void> {
+    const key = delivery.handlerKey;
+    // Handlers see the event's id on every attempt, so idempotency keys stay stable.
+    const fields = { ...this.entryFields(delivery), id: delivery.eventId };
+    const failure = await this.execute(delivery, fields, registration);
+    if (!failure) {
+      this.callHook('onProcessed', delivery.id, () =>
+        this.onProcessed?.(delivery, { source: 'delivery', handlerKey: key }),
+      );
+      await leases.settle(delivery, 'done', () => queue.markDone(delivery.id, this.instanceId));
+      return;
+    }
+    const now = new Date();
+    const next = failure.permanent
+      ? undefined
+      : nextAttemptAt(this.scheduleFor(key), delivery.retryCount, delivery.queuedAt, now);
+    const failed = await leases.settle(delivery, 'failed', () =>
+      next
+        ? queue.markFailed(delivery.id, failure.message, this.instanceId, {
+            retryAfterMs: next.getTime() - now.getTime(),
+          })
+        : queue.markFailedPermanently(delivery.id, failure.message, this.instanceId),
+    );
+    const info = { permanent: failure.permanent, source: 'delivery', handlerKey: key } as const;
+    if (failed) this.callHook('onFailed', delivery.id, () => this.onFailed?.(failed, info));
+  }
+
+  private scheduleFor(key: string): RetrySchedule {
+    const policy = this.policies.get(key);
+    const delaysMs = policy?.delaysMs ?? this.retryDelaysMs;
+    return {
+      delaysMs,
+      maxAttempts: policy?.maxAttempts ?? this.maxAttempts ?? delaysMs.length + 1,
+      maxAgeMs: policy?.maxAgeMs,
+    };
+  }
+
+  // Once per process, before any dispatch: moves renamed subscribers' work to their key (so a
+  // lane never spans two keys) and warns about work no handler here claims. Retried until it
+  // succeeds; concurrent callers share one run.
+  private prepare(queue: DeliveryQueue): Promise<boolean> {
+    this.ready ??= this.runPrepare(queue).then((ok) => {
+      if (!ok) this.ready = undefined;
+      return ok;
+    });
+    return this.ready;
+  }
+
+  private async runPrepare(deliveries: DeliveryQueue): Promise<boolean> {
+    try {
+      for (const [key, previous] of this.previousKeys) {
+        const moved = await deliveries.rekey(this.consumerName, [...previous], key);
+        if (moved > 0) {
+          this.logger.info(`moved ${moved} queued deliveries to renamed subscriber`, {
+            meta: { handlerKey: key, previousKeys: [...previous] },
+          });
+        }
+      }
+      const orphans = await deliveries.countOrphans(this.consumerName, this.deliveryPairs);
+      if (orphans > 0) {
+        this.logger.warn(
+          `${orphans} queued deliveries belong to subscribers this consumer doesn't register; a renamed key needs \`previousKeys\``,
+          { meta: { orphans } },
+        );
+      }
+      return true;
+    } catch (err) {
+      this.logger.error('preparing deliveries failed; will retry', err);
+      return false;
     }
   }
 
@@ -406,7 +701,7 @@ export class EventConsumer implements Disposable {
     }
 
     if (failures.length === 0 && !skippedDead) {
-      this.callHook('onProcessed', event.id, () => this.onProcessed?.(event));
+      this.callHook('onProcessed', event.id, () => this.onProcessed?.(event, { source: 'event' }));
       await this.leases.settle(event, 'done', () => this.bus.markDone(event.id, this.instanceId));
       return;
     }
@@ -430,7 +725,11 @@ export class EventConsumer implements Disposable {
             retryAfterMs: retryDelayFor(this.retryDelaysMs, event.retryCount),
           }),
     );
-    if (failed) this.callHook('onFailed', event.id, () => this.onFailed?.(failed, { permanent }));
+    if (failed) {
+      this.callHook('onFailed', event.id, () =>
+        this.onFailed?.(failed, { permanent, source: 'event' }),
+      );
+    }
   }
 
   private async loadOutcomes(
@@ -469,9 +768,14 @@ export class EventConsumer implements Disposable {
   }
 
   private assertKeys(eventType: string, registrations: readonly Registration[]): void {
-    if (!this.tracks(registrations)) return;
+    if (!this.isolated && !this.tracks(registrations)) return;
     const seen = new Set<string>();
     for (const { key } of registrations) {
+      if (!key && this.isolated) {
+        throw new Error(
+          `EventConsumer: under \`isolation\` every handler needs a \`key\` naming its subscriber ("${eventType}")`,
+        );
+      }
       if (!key) {
         throw new Error(
           `EventConsumer: "${eventType}" has ${registrations.length} handlers and \`handlerOutcomes\` is wired, so each handler needs a \`key\``,
@@ -492,10 +796,10 @@ export class EventConsumer implements Disposable {
     }
   }
 
-  private async sweepStale(): Promise<void> {
+  private async sweepStale(target: Pick<EventBusConsumer, 'resetStale'>): Promise<void> {
     try {
       const cutoff = new Date(Date.now() - this.staleClaimAfterMs);
-      const reset = await this.bus.resetStale(cutoff);
+      const reset = await target.resetStale(cutoff);
       if (reset > 0) {
         this.logger.warn(`reset ${reset} stale CLAIMED row(s)`, {
           meta: { cutoff: cutoff.toISOString() },
@@ -622,6 +926,24 @@ export class EventConsumer implements Disposable {
     }
     return factory.createSystemContext('system');
   }
+}
+
+function laneKey(handlerKey: string, aggregateId: string): string {
+  return `${handlerKey}\0${aggregateId}`;
+}
+
+function samePolicy(a: RetryPolicy, b: RetryPolicy): boolean {
+  return (
+    a.maxAttempts === b.maxAttempts &&
+    a.maxAgeMs === b.maxAgeMs &&
+    (a.delaysMs === undefined) === (b.delaysMs === undefined) &&
+    (a.delaysMs ?? []).join() === (b.delaysMs ?? []).join()
+  );
+}
+
+function assertMaxAttempts(value: number, name: string): void {
+  if (value === Number.POSITIVE_INFINITY || (Number.isInteger(value) && value >= 1)) return;
+  throw new Error(`EventConsumer: ${name} must be an integer of at least 1, or Infinity`);
 }
 
 function errorMessage(err: unknown): string {
