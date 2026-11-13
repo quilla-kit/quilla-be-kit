@@ -568,7 +568,7 @@ serialize: (event) => {
   const metadata = EventMetadata.create({ kind: EventKind.DOMAIN, ...source });
   return {
     // ...
-    payload: { payload: event.toJSON(), metadata: metadata.toJSON() },
+    payload: { payload: event.payload, metadata: metadata.toJSON() },
   };
 },
 ```
