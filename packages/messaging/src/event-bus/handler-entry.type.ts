@@ -13,6 +13,12 @@ export type HandlerEntry<TPayload = unknown> = {
   readonly aggregateId?: string | undefined;
   readonly correlationId?: string | undefined;
   /**
+   * The event's bus sequence, the same on every attempt, delivery and replay: a decimal string
+   * (compare with `BigInt()`) that increases in publish order within one bus. Absent when the
+   * broker has none.
+   */
+  readonly sequence?: string | undefined;
+  /**
    * The current execution context, read live on every call. Throws when the
    * consumer has no `executionContext` wired, when called outside this
    * handler's dispatch, or when the context no longer meets `requires`.

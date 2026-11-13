@@ -68,7 +68,14 @@ function claimSupport(table: string): string[] {
   ];
 }
 
-// A new table, so its sequence default can be part of CREATE TABLE.
+function dropIndex(name: string): string {
+  return doIf(`to_regclass('${name}') IS NOT NULL`, `DROP INDEX ${name}`);
+}
+
+// A new table, so its sequence default can be part of CREATE TABLE. The steps after it bring a
+// 0.15.0 table up to date: members (backfilled with the event type, the default member name),
+// the event's sequence, held lanes, then the unique and lane indexes that know about them. The
+// new indexes are built before the old ones go, and the whole script runs as one statement.
 function deliveriesTable(table: string): string[] {
   return [
     `CREATE SEQUENCE IF NOT EXISTS ${table}_seq;`,
@@ -77,6 +84,7 @@ function deliveriesTable(table: string): string[] {
   event_id UUID NOT NULL,
   consumer_name TEXT NOT NULL,
   handler_key TEXT NOT NULL,
+  member TEXT NOT NULL,
   queued_at TIMESTAMPTZ NOT NULL,
   event_type TEXT NOT NULL,
   event_version INTEGER NOT NULL,
@@ -88,6 +96,7 @@ function deliveriesTable(table: string): string[] {
   occurred_at TIMESTAMPTZ NOT NULL,
   created_at TIMESTAMPTZ NOT NULL,
   published_at TIMESTAMPTZ NOT NULL,
+  event_seq BIGINT,
   status TEXT NOT NULL,
   claimed_by TEXT,
   claimed_at TIMESTAMPTZ,
@@ -97,20 +106,32 @@ function deliveriesTable(table: string): string[] {
   failed_at TIMESTAMPTZ,
   last_failed_by TEXT,
   next_attempt_at TIMESTAMPTZ,
+  holds_lane BOOLEAN,
   seq BIGINT NOT NULL DEFAULT nextval('${table}_seq')
 );`,
     `ALTER SEQUENCE ${table}_seq OWNED BY ${table}.seq;`,
+    addColumn(table, 'member', 'TEXT'),
+    addColumn(table, 'event_seq', 'BIGINT'),
+    addColumn(table, 'holds_lane', 'BOOLEAN'),
+    doIf(
+      `EXISTS (SELECT 1 FROM pg_attribute
+      WHERE attrelid = '${table}'::regclass AND attname = 'member' AND NOT attnotnull)`,
+      `UPDATE ${table} SET member = event_type WHERE member IS NULL;
+    ALTER TABLE ${table} ALTER COLUMN member SET NOT NULL`,
+    ),
     createIndex(
-      `${table}_event_subscriber_uq`,
-      `${table} (event_id, consumer_name, handler_key)`,
+      `${table}_event_member_uq`,
+      `${table} (event_id, consumer_name, handler_key, member)`,
       true,
     ),
+    dropIndex(`${table}_event_subscriber_uq`),
     createIndex(`${table}_claim_idx`, `${table} (consumer_name, seq) WHERE status = 'PENDING'`),
     createIndex(
-      `${table}_lane_idx`,
+      `${table}_lane_v2_idx`,
       `${table} (consumer_name, aggregate_id, handler_key, seq)
-        WHERE aggregate_id IS NOT NULL AND status IN ('PENDING', 'CLAIMED')`,
+        WHERE aggregate_id IS NOT NULL AND (status IN ('PENDING', 'CLAIMED') OR holds_lane IS TRUE)`,
     ),
+    dropIndex(`${table}_lane_idx`),
     createIndex(`${table}_claimed_at_idx`, `${table} (claimed_at) WHERE status = 'CLAIMED'`),
     createIndex(`${table}_failed_at_idx`, `${table} (failed_at) WHERE status = 'FAILED'`),
   ];

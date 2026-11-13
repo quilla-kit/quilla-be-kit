@@ -62,10 +62,83 @@ broker:
 | Multi-subscriber fan-out (same topic, two services) | Apache Kafka (consumer groups) |
 | Topic subscriptions, exchanges | RabbitMQ |
 | AWS-native fan-out | SNS → SQS |
-| Single-deployment durable queue with topic partitioning | This package |
+| Single-deployment domain events: per-aggregate order, per-subscriber retries and lanes | This package |
 
 `EventPublisher` / `EventBusConsumer` are broker-agnostic interfaces — you
 can implement them against any of the above.
+
+## Why not a Postgres queue?
+
+General-purpose Postgres queues (pgmq, PgQ, pg-boss, Graphile Worker) cover
+the basics well: transactional enqueue, visibility timeouts, retries,
+archiving, and with FIFO groups, ordering per key with parallelism across
+keys. This bus goes further, because its unit of work is an **event handled
+by subscribers**, not a message acknowledged once:
+
+| Need | This bus | A message queue |
+|---|---|---|
+| One event, several handlers, each retried on its own | [Subscriber isolation](#subscriber-isolation): a failing handler gets its own delivery; handlers that finished never re-run | One message, one ack; you copy it into a queue per handler yourself |
+| Several handlers sharing one ordered lane per aggregate | Subscribers with members: one key, one policy, one lane | Groups order messages, not a set of handlers |
+| Order kept across a dead letter | `deadLetter: 'hold'` keeps the lane blocked until the delivery is replayed in place or released | A failed message is archived or redelivered; later messages go on |
+| Renaming handlers while work is queued | `previousKeys` moves queued work once, under a lock, across replicas | Nothing comparable |
+| Operating stuck work | `list`, `replay`, `releaseHold`, `discard`, with lane context (`waiting`) | Generic queue inspection |
+| Ordering per aggregate across services | Bus-wide, whichever service owns each topic | Per queue |
+
+It also needs nothing installed in the database: plain tables and indexes
+from `getPostgresSchema`, so it runs on any managed Postgres. Extensions
+depend on the provider's allowlist.
+
+## When this package fits
+
+A plain queue is enough when each message has **one** handler (run by any
+number of instances, each message processed by one of them), and a failed
+message may be skipped or retried out of order: emails, thumbnails,
+scheduled jobs, webhooks to systems that don't care about order. Use one of
+the queues above, or [`@quilla-be-kit/jobs`](../jobs/README.md) for scheduled work.
+
+This package earns its place when **domain events drive several handlers
+whose correctness depends on order**, in situations like these:
+
+- **Integration bridges.** A handler relays `run.started`, then
+  `run.completed`, to another service. The events are ordered at the source,
+  but if relaying `run.started` dead-letters, a queue moves on and relays
+  `run.completed`: the other service sees a run complete that never started,
+  and replaying `run.started` later delivers it after `run.completed`. With
+  `deadLetter: 'hold'`, `run.completed` waits behind the dead letter until
+  it's [replayed in place](#subscriber-isolation), so the other service
+  always sees them in order. Brokers leave this to the application: SQS
+  FIFO, RabbitMQ and Azure Service Bus keep order while a message is
+  retried, then move on once it's dead-lettered; Kafka's blocking retry
+  stops a whole partition, and keeping order through a dead-letter topic
+  means tracking the affected keys yourself (Confluent's
+  [maintain order of redirected events](https://www.confluent.io/blog/error-handling-patterns-in-kafka/)
+  pattern). A held lane blocks one subscriber on one aggregate; every other
+  aggregate and subscriber goes on.
+- **Read models folded from several event types.** One handler per event
+  type updates the same projection of an aggregate. They form one
+  [subscriber](#subscriber-isolation): one lane, so they apply in order, and a
+  failing one blocks only that aggregate's later events, not other
+  aggregates'.
+- **Independent side effects of one event.** A notification, an audit entry
+  and a search index update all react to `user.disabled`. When the index is
+  down, only its handler retries, for as long as its own policy allows; the
+  notification never goes out twice, and other subscribers never wait.
+- **A codebase that keeps changing.** Handlers get renamed, split or
+  merged while work is queued for them. `previousKeys` moves that work, and
+  work left for a removed handler blocks its lanes loudly instead of being
+  silently skipped.
+- **Operations that need answers.** A deploy can fail on lanes blocked by a
+  removed handler (`consumer.prepare()`), an alert can poll held lanes and
+  the work waiting behind them (`list`), and an operator can `replay`,
+  `releaseHold` or `discard` with that context.
+
+Built on a plain queue, each of these becomes code in your application: a
+queue per handler, fan-out, a ledger of finished handlers, a "don't move on"
+rule, a rename script. This package keeps that layer in one place, built on
+three ideas: a **subscriber** (a durable key and its handlers), its
+**policy** (retries, dead-letter behavior, failure classification), and its
+**lanes** (one per aggregate, blocked while work is pending, running or
+held).
 
 ---
 
@@ -874,20 +947,24 @@ row retries, and until it settles it holds back the aggregate's later
 events, for **every** handler of the consumer. A provider outage behind
 one handler then stalls everything else on those aggregates.
 
-With `isolation: true`, each handler is a **subscriber** with its own
-delivery and retry schedule:
+With `isolation: true`, handlers belong to **subscribers**:
 
-- An event runs every handler once. A handler that fails gets a
-  **delivery**: a copy of the event in `event_deliveries`, for that
-  subscriber only. The event row is settled straight away, so the
-  aggregate moves on.
-- A subscriber's deliveries form a **lane** per aggregate
-  (`consumerName`, `aggregateId`, `key`). A lane runs one delivery at a
-  time, in order. When a later event of the aggregate arrives while the
-  subscriber's lane holds work, that subscriber's part is queued behind it
-  instead of running. The event's other handlers run as usual.
+- A **subscriber** is a durable `key`. It has one **lane** per aggregate,
+  one **policy**, and one or more **members** (its handlers). A member is
+  named after its event type unless you give it a `member` name, which you
+  must when a subscriber has two handlers for one type.
+- An event runs every handler once. A member that fails gets a
+  **delivery**: a copy of the event in `event_deliveries`, for that member
+  only. The event row is settled straight away, so the aggregate moves on.
+  Members that finished never run again.
+- **A lane is blocked** while it holds a PENDING or CLAIMED delivery, or a
+  dead one that **holds** it (see `deadLetter` below). While it's blocked,
+  the subscriber's later work on that aggregate, for every member, queues
+  behind it, and deliveries run one at a time in queue order. Members of
+  the *same* event never wait for each other. Work without an aggregate has
+  no lane.
 - Retries, [failover](#retries-and-failover) and dead-lettering happen per
-  delivery. A dead delivery is that subscriber's dead letter only.
+  delivery, under the subscriber's policy.
 
 ```
 handlers mail (provider down), projection          ✓ success  ✗ failure  ⇢ queued
@@ -906,89 +983,188 @@ await pool.query(getPostgresSchema({ deliveries: true })); // adds event_deliver
 
 const bus = new PgEventBus({ pool, deliveries: true });
 
-new EventConsumer({
+const consumer = new EventConsumer({
   bus,
   consumerName: 'iam', // part of every subscriber's identity: unique and stable
   sourceService: 'iam',
   logger,
   isolation: true,
-})
-  .on(UserDisabled, sendAccountEmail, {
-    key: 'iam.users.send-account-email',
-    // Ride out a provider outage of up to a day before dead-lettering.
-    retry: {
-      delaysMs: [5_000, 30_000, 120_000, 600_000, 1_800_000, 3_600_000],
-      maxAttempts: Infinity,
-      maxAgeMs: 24 * 60 * 60 * 1000,
-    },
+});
+
+// A group that must stay in step: one key, one lane per run, one policy.
+consumer
+  .subscriber('iam.runs.bridge', {
+    retry: { delaysMs: [1_000, 5_000, 30_000], maxAttempts: Infinity },
+    deadLetter: 'hold',     // a dead letter blocks the run's lane until it is handled
+    stuckAfterAttempts: 3,  // onFailed reports `stuck` from the 3rd attempt on
   })
-  .on(UserDisabled, projectUser, { key: 'iam.users.project' })
-  // Same key, same subscriber: one lane per user across both event types.
-  .on(UserReenabled, sendAccountEmail, { key: 'iam.users.send-account-email' });
+  .on(RunStarted, publishRunStarted)
+  .on(RunCompleted, publishRunCompleted)
+  .on(RunCompleted, auditRunCompleted, { member: 'audit' }); // 2nd handler of one type
+
+// An independent subscriber: its own lane, retried for up to a day.
+consumer.subscriber('iam.users.send-account-email', {
+  retry: {
+    delaysMs: [5_000, 30_000, 120_000, 600_000, 1_800_000, 3_600_000],
+    maxAttempts: Infinity,
+    maxAgeMs: 24 * 60 * 60 * 1000,
+  },
+  // 4xx (except 429) can't be fixed by retrying.
+  isPermanentFailure: (error) => isClientError(error) && !isRateLimited(error),
+})
+  .on(UserDisabled, sendAccountEmail)
+  .on(UserReenabled, sendAccountEmail);
 ```
 
-**Keys are durable identity.** Under isolation every handler needs a
-`key`, and the same key on several event types is one subscriber, with
-one lane per aggregate across those types. Deliveries store
-`consumerName` and `key`, so both must be unique in the deployment and
-stable: use explicit strings, not class names. To rename a key, add the
-old one to `previousKeys: ['OldKey']` on the registration. At start, the
-consumer moves the old key's queued deliveries to the new key before it
-dispatches anything, so order holds. Drop `previousKeys` once nothing is
-left under the old key. The consumer also warns at start when deliveries
-exist for `(key, event type)` pairs it doesn't register.
+`consumer.on(type, handler, { key })` is shorthand for a subscriber with one
+member per event type, so `.on(UserDisabled, h, { key: 'k', retry })` and
+`.subscriber('k', { retry }).on(UserDisabled, h)` register the same thing.
+`EventSubscription`s join a subscriber with `consumer.subscriber(key).subscribe(subs)`;
+one that names a different `key` is rejected, and a class-based subscription
+gets `deadLetter` and `isPermanentFailure` only from the builder.
+`consumer.subscribers` lists every subscriber with its policy and members,
+for fence tests.
 
-**Retry policy.** `retry: { delaysMs, maxAttempts, maxAgeMs }` on the
-registration, or on an `EventSubscription`. One policy per subscriber:
-give it on any one of its event types, and registering two different
-policies for one key throws. What isn't set falls back to the consumer:
-`retryDelaysMs`, then `maxAttempts` (default `delaysMs.length + 1`). The
-last delay repeats. Whichever budget runs out first dead-letters the
-delivery:
+**Policy.** One per subscriber, given on `consumer.subscriber(key, policy)`
+(or `retry` on any of its registrations). Two explicit, different values
+for one key throw at registration, whatever the order.
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `retry` | consumer `retryDelaysMs` / `maxAttempts` | `{ delaysMs, maxAttempts, maxAgeMs }`, see below. |
+| `deadLetter` | `'release'` | `'hold'`: a dead delivery keeps its lane blocked until it is replayed or its hold released. Needs `isolation`. |
+| `isPermanentFailure` | the consumer's | Classifies this subscriber's errors, with or without isolation. Given once per key. |
+| `stuckAfterAttempts` | the consumer's (none) | From this many attempts on, `onFailed` reports `stuck: true`. |
+| `previousKeys` | — | Earlier keys of the subscriber, see *Keys and renames*. |
+
+**Retry budgets.** The n-th retry waits `delaysMs[n - 1]`; the last value
+repeats. Whichever budget runs out first dead-letters the delivery:
 
 - `maxAttempts` counts every attempt, the first one included.
-  `Infinity` means no cap.
+  `Infinity` means no cap. Default: `delaysMs.length + 1`, or the consumer's
+  `maxAttempts`.
 - `maxAgeMs` counts from when the delivery was queued. The next retry is
   moved up to the deadline, so one attempt always runs at it, and an
-  attempt at or past it that fails dead-letters. In the example above the
+  attempt at or past it that fails dead-letters. In the email example the
   delays reach an hour after about 43 minutes, then run hourly: 30
   attempts in all, the first on the event and the last 24 hours after the
-  delivery was queued. A delivery queued behind another counts from its
-  own queueing.
+  delivery was queued. A member waiting behind a sibling counts that wait
+  against its own `maxAgeMs`.
 
 `PgEventBus({ maxRetries })` doesn't apply to deliveries. Under isolation an
 event row is never retried: it's settled after one attempt.
 
-**What a handler sees.** `entry.id` is the **event's** id on every
-attempt, so idempotency keys stay stable (see
+**Holding lanes.** With `deadLetter: 'hold'`, order holds through dead
+letters too, which matters for work nothing downstream can reorder (a
+bridge publishing public events, say):
+
+- Replaying a held delivery keeps its place, so it runs first; the work
+  queued behind it then drains in order.
+- Two held members in one lane: replaying one leaves the lane held by the
+  other.
+- `releaseHold(ids)` lets the queued work go on and leaves the delivery
+  dead-lettered.
+- Retention never deletes a held delivery.
+- Switching a subscriber from `hold` to `release`, or turning isolation
+  off, leaves existing holds in place; the consumer warns at start.
+
+Without a hold, a dead delivery releases its lane, and replaying it later
+runs it after the events that went ahead, as any replay does.
+
+**What a handler sees.** `entry.id` is the **event's** id on every attempt,
+so idempotency keys stay stable (see
 [At-least-once delivery](#at-least-once-delivery--handlers-must-be-idempotent)).
+`entry.sequence` is the event's bus sequence, the same on every attempt,
+delivery and replay: a decimal string (compare with `BigInt()`) that
+increases in publish order within one bus, with gaps. A projection that
+overwrites state can store the last sequence it applied per aggregate and
+ignore older events, which makes replays safe. It is not comparable across
+buses, or with the new events a bridge publishes, and absent for rows
+written before 0.9.0 and deliveries queued before 0.16.0.
 
 **Hooks.** `onProcessed` and `onFailed` get an `info.source`. With
 `'event'`, `entry` is the bus event. With `'delivery'`, `entry` is a
-`DeliveryEntry` (`id` is the delivery's, `eventId` the event's), and
-`info.handlerKey` names the subscriber. A failure on an event's first
-attempt is reported on the delivery it created.
+`DeliveryEntry` (`id` is the delivery's, `eventId` and `sequence` the
+event's), and `info.handlerKey` and `info.member` name the member. A failure
+on an event's first attempt is reported on the delivery it created.
+`onFailed` also gets `held` (this dead letter holds its lane) and `stuck`
+(the subscriber's `stuckAfterAttempts` is reached; reported on every attempt
+from then on, and a replay starts the count again). Hooks fire per recorded
+attempt: a lost claim can repeat one, and a crash can skip one.
 
-**Dead deliveries and replay.** A dead delivery stays in
-`event_deliveries` with `status = 'FAILED'`. Replay one subscriber's work
-with `bus.deliveries.replay(ids)`: it gets a fresh budget, and the handlers
-that finished don't run again. A replayed delivery runs after events of its
-aggregate that already ran, as any replay does. To find dead or orphaned
-deliveries:
+**Operating deliveries.** `bus.deliveries` is a `PgDeliveryQueue`:
 
-```sql
--- Dead deliveries of one consumer
-SELECT id, event_id, handler_key, event_type, aggregate_id, retry_count, last_error, failed_at
-FROM event_deliveries
-WHERE consumer_name = 'iam' AND status = 'FAILED'
-ORDER BY failed_at;
+```ts
+const deliveries = bus.deliveries; // set when the bus was built with `deliveries: true`
+if (!deliveries) throw new Error('this bus has no deliveries');
 
--- Queued work for a key nothing registers any more (after a rename without previousKeys)
-SELECT handler_key, event_type, count(*)
-FROM event_deliveries
-WHERE consumer_name = 'iam' AND status IN ('PENDING', 'CLAIMED')
-GROUP BY handler_key, event_type;
+// State-based alerting: dead deliveries holding their lanes, and what waits behind them.
+for (const { delivery, waiting } of await deliveries.list('iam', { state: 'held' })) {
+  alert(`${delivery.handlerKey}/${delivery.member} holds ${delivery.aggregateId} (${waiting} waiting)`);
+}
+
+await deliveries.replay(ids);      // fresh budget, hold released, keeps its place in the lane
+await deliveries.releaseHold(ids); // stays dead-lettered; the lane goes on
+await deliveries.discard(ids);     // deletes, e.g. queued work of a removed member
 ```
+
+`list(consumerName, options)` returns undrained deliveries in queue order,
+each with how many deliveries of its lane wait behind it. Every filter is
+optional:
+
+| Option | Lists |
+| --- | --- |
+| `handlerKey`, `member` | One subscriber, or one of its members. |
+| `state: 'retrying'` | Queued after a failed attempt. |
+| `state: 'held'` | Dead-lettered, holding the lane. |
+| `state: 'dead'` | Dead-lettered, holding nothing (released, or without an aggregate). |
+| `minAttempts` | At least this many failed attempts, e.g. the subscriber's `stuckAfterAttempts`. |
+| `limit` | At most this many (default 100). |
+
+Each call above resolves to the `DeliveryEntry`s it acted on (key, member,
+event, aggregate, `lastError`), so a tool can show what it is about to run.
+
+**Keys and renames.** `consumerName`, `key` and `member` are durable
+identity: unique in the deployment, stable, explicit strings rather than
+class names. To rename, list the earlier identity in `previousKeys`:
+
+- On the subscriber, an earlier **key**: its queued work moves member by
+  member (`old/m` → `new/m`), so several old keys can fold into one
+  subscriber.
+- On a member (`.on(type, handler, { previousKeys: [{ key, member }] })`),
+  an exact earlier **identity**, which also renames a member.
+
+At start, before dispatching anything, the consumer moves that work under a
+lock, so replicas starting together move each row once. If an event already
+has work under the new identity, the extra row is dead-lettered
+(`rekey: superseded`). Naming a subscriber or member that is still
+registered is an error at `start()`. Drop `previousKeys` once nothing is
+left under the old names.
+
+Work of a member this consumer doesn't register, after a rename without
+`previousKeys` or a removed handler, is never claimed, and **keeps its lane
+blocked**: order is never silently given up. The consumer logs those lanes
+at start, at error level. Map them with `previousKeys`, or `discard` them.
+
+To act on that before serving, await the startup preparation yourself:
+
+```ts
+await runtime.run(async () => {
+  const report = await consumer.prepare(); // moves previousKeys work, then inspects the queue
+  if (report.unregistered.some((b) => b.lanes > 0)) {
+    throw new Error('deliveries of unregistered members block lanes'); // the process exits 1
+  }
+  consumer.start();
+});
+```
+
+`prepare()` runs once per process and resolves to `{ moved, superseded,
+unregistered, staleHolds }`: the work moved for `previousKeys`, the
+`DeliveryBacklog` (key, member, queued, held, lanes) of each member this
+consumer doesn't register, and holds a subscriber's policy no longer wants.
+It rejects when the queue can't be reached or a `previousKeys` entry names a
+registered subscriber. Without it, `start()` prepares on its own, retrying
+until it succeeds. Without `deliveries`, it resolves to an empty report.
 
 **Guarantee.** A handler that finished never runs again because a sibling
 failed. Delivery is still at-least-once: a crash, a lost claim or a failed
@@ -1209,8 +1385,9 @@ new EventConsumer({
   isolation: false,                  // per-subscriber deliveries; needs keys and a bus with deliveries (excludes handlerOutcomes)
   maxAttempts: 4,                    // default attempt budget of a delivery: retryDelaysMs.length + 1; Infinity for none
   deliveryBatchSize: 10,             // deliveries claimed per poll
+  stuckAfterAttempts: 5,             // default of each subscriber's: onFailed reports `stuck` from then on
   onProcessed: (entry, { source }) => bumpMetric(entry), // source: 'event' | 'delivery'
-  onFailed: (entry, { permanent, source, handlerKey }) => bumpMetric(entry), // entry.status === 'FAILED' when dead-lettered
+  onFailed: (entry, { permanent, source, handlerKey, member, held, stuck }) => bumpMetric(entry), // entry.status === 'FAILED' when dead-lettered
   onLeaseLost: ({ id, eventType, stage }) => bumpMetric({ id, eventType, stage }),
 });
 ```
@@ -1244,12 +1421,42 @@ const sql = getPostgresSchema({
 await pool.query(sql);
 ```
 
+A query against a kit table that doesn't exist (for example deliveries
+without `deliveries: true`) throws `MissingTableError`, naming the table;
+one against a table missing a kit column throws `MissingColumnError`.
+
 It is meant for **new installs**. Running it again is safe — every step
 checks the catalog first, so tables that are already up to date aren't
 locked. On an existing table that lacks a later version's indexes, it
 builds them without `CONCURRENTLY`, which scans the whole table and blocks
 writes while it runs: for production tables, apply the upgrade SQL below
 instead.
+
+### Upgrading to 0.16.0 (subscribers)
+
+Only tables with deliveries change: `event_deliveries` gains `member`,
+`event_seq` and `holds_lane`, a unique index that includes the member, and
+a lane index that knows about holds. `getPostgresSchema({ deliveries: true })`
+applies all of it in place (existing rows get `member` = their event type,
+the default member name) and is a no-op the second time. Stop every replica
+of the consumers that use deliveries, apply it with a lock timeout, then
+start 0.16:
+
+```sql
+SET lock_timeout = '5s';
+-- then run the output of getPostgresSchema({ deliveries: true })
+```
+
+A 0.15 replica left running fails loudly against the new table. Changes for
+everyone:
+
+- `onFailed` info gains `held` and `stuck`; both hooks gain `member` for
+  deliveries. Entries and handler entries gain `sequence`.
+- `DeliveryQueue` (custom adapters): pairs carry `member`; `rekey` takes
+  moves; `countOrphans` became `backlog`; `markFailedPermanently` takes
+  `{ holdLane }`. `PgDeliveryQueue.replay` resolves to entries instead of ids.
+- Under isolation, a key may appear more than once per event type, as
+  separately named members.
 
 ### Upgrading to 0.15.0 (subscriber isolation)
 
@@ -1482,12 +1689,13 @@ orphaned rows.
 - **Handler outcomes** (when emitted) — the primary key `(event_id, handler_key)`
   serves both the consumer's batch read and the cascade from `events`.
 - **Deliveries** (when emitted) — a unique index on `(event_id, consumer_name,
-  handler_key)` so an event never queues one subscriber twice; `(consumer_name,
+  handler_key, member)` so an event never queues one member twice; `(consumer_name,
   seq) WHERE status = 'PENDING'` for the claim; `(consumer_name, aggregate_id,
-  handler_key, seq) WHERE aggregate_id IS NOT NULL AND status IN ('PENDING',
-  'CLAIMED')` for the lane guards and the open-lane lookup; `(claimed_at)` and
-  `(failed_at)` partial indexes as on the other tables. The guard against a
-  busy event uses the events table's `(aggregate_id, status)` index.
+  handler_key, seq) WHERE aggregate_id IS NOT NULL AND (status IN ('PENDING',
+  'CLAIMED') OR holds_lane IS TRUE)` for the lane guards, the open-lane lookup
+  and the held-delivery list; `(claimed_at)` and `(failed_at)` partial indexes
+  as on the other tables. The guard against a busy event uses the events
+  table's `(aggregate_id, status)` index.
 
 ---
 
@@ -1530,6 +1738,8 @@ from being picked up by a second replica.
   `markDone` and by `cleanupFailed`.
 - Deliveries are deleted when they succeed. Dead ones stay, like FAILED
   rows: `await bus.deliveries?.cleanupFailed(cutoff, { limit: 1000 })`.
+  Dead deliveries that hold their lane are never cleaned up; replay them or
+  release their hold first.
 
 ### Local outbox (`outbox_events` table)
 
@@ -1575,8 +1785,8 @@ processing chatter:
 | --- | --- |
 | `info` | Lifecycle transitions: `starting`, `stopped`. One-shot per component per replica. |
 | `debug` | Per-tick / per-batch processing: `forwarding N event(s)`, `registered event types`, `handed back N unstarted claim(s)`, `claim expired before dispatch; skipping`, `skipping handler; outcome already recorded`. High frequency. |
-| `warn` | Recoverable anomalies: handler retry, stale-claim sweep hits, lost claim leases, renewal disabled at start, transient handler failures, dead-lettering without running a handler (per-handler outcomes), queued deliveries no registration claims. |
-| `error` | Terminal failures: handler exhausted retries, schema validation failed, tick or delivery tick crashed, a hook threw, a hand-back failed, loading or recording handler outcomes failed, preparing deliveries failed. |
+| `warn` | Recoverable anomalies: handler retry, stale-claim sweep hits, lost claim leases, renewal disabled at start, transient handler failures, dead-lettering without running a handler (per-handler outcomes), queued deliveries of an unregistered member that block no lane, holds a subscriber no longer wants. |
+| `error` | Terminal failures: handler exhausted retries, schema validation failed, tick or delivery tick crashed, a hook threw, a hand-back failed, loading or recording handler outcomes failed, preparing deliveries failed, lanes blocked by an unregistered member, a delivery claimed for a member that doesn't handle its event type. |
 
 `info` also reports deliveries moved to a renamed subscriber (`previousKeys`).
 
@@ -1651,12 +1861,15 @@ const forwarder = new OutboxForwarder({
   rules in its JSDoc: `settle` removes the claimed event and queues its
   deliveries in one step, owner-checked; a lane runs one delivery at a
   time, in queue order, never while an event of that aggregate the
-  subscriber handles is claimed; claims filter by `(handlerKey, eventType)`
-  pairs. The consumer applies each subscriber's retry budget itself:
-  `markFailed` only schedules the retry `retryAfterMs` from now, and
-  `markFailedPermanently` dead-letters. `rekey` and `countOrphans` back
-  `previousKeys` and the startup warning. `PgDeliveryQueue` is the
-  reference.
+  subscriber handles is claimed; deliveries of one event never wait for
+  each other; a dead delivery with `holdLane` keeps blocking its lane;
+  claims filter by `(handlerKey, member)`. The consumer applies each
+  subscriber's retry budget itself: `markFailed` only schedules the retry
+  `retryAfterMs` from now, and `markFailedPermanently` dead-letters. `rekey`
+  (atomic, safe to run concurrently) backs `previousKeys`, and `backlog`
+  the startup report. Operator calls (`replay`, `releaseHold`, `list`,
+  `discard`, `cleanupFailed`) aren't part of the port. `PgDeliveryQueue` is
+  the reference.
 - [Per-handler outcomes](#per-handler-outcomes) don't involve the adapter:
   `HandlerOutcomeStore` is a separate port, so a Kafka or SQS consumer can
   keep its outcomes in any database. Clear an event's outcomes when the

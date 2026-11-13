@@ -154,9 +154,28 @@ describe('getPostgresSchema', () => {
     expect(sql).toContain("seq BIGINT NOT NULL DEFAULT nextval('event_deliveries_seq')");
     expect(sql).toContain('ALTER SEQUENCE event_deliveries_seq OWNED BY event_deliveries.seq;');
     expect(sql).toContain(
-      'CREATE UNIQUE INDEX event_deliveries_event_subscriber_uq ON event_deliveries (event_id, consumer_name, handler_key);',
+      'CREATE UNIQUE INDEX event_deliveries_event_member_uq ON event_deliveries (event_id, consumer_name, handler_key, member);',
     );
-    expect(sql).toContain('event_deliveries (consumer_name, aggregate_id, handler_key, seq)');
+    expect(sql).toContain("(status IN ('PENDING', 'CLAIMED') OR holds_lane IS TRUE)");
+    expect(sql).not.toContain('CREATE UNIQUE INDEX event_deliveries_event_subscriber_uq');
+  });
+
+  it('upgrades a 0.15.0 deliveries table: members, sequence, holds, then the new indexes', () => {
+    const sql = getPostgresSchema({ deliveries: true });
+    const steps = [
+      'ALTER TABLE event_deliveries ADD COLUMN member TEXT;',
+      'ALTER TABLE event_deliveries ADD COLUMN event_seq BIGINT;',
+      'ALTER TABLE event_deliveries ADD COLUMN holds_lane BOOLEAN;',
+      'UPDATE event_deliveries SET member = event_type WHERE member IS NULL;',
+      'ALTER TABLE event_deliveries ALTER COLUMN member SET NOT NULL;',
+      'CREATE UNIQUE INDEX event_deliveries_event_member_uq',
+      'DROP INDEX event_deliveries_event_subscriber_uq;',
+      'INDEX event_deliveries_lane_v2_idx',
+      'DROP INDEX event_deliveries_lane_idx;',
+    ];
+    const positions = steps.map((step) => sql.indexOf(step));
+    expect(positions.every((p) => p >= 0)).toBe(true);
+    expect([...positions].sort((x, y) => x - y)).toEqual(positions);
   });
 
   it('names the deliveries table from the options', () => {

@@ -6,11 +6,25 @@ export type { ClaimOptions } from './claim-options.type.js';
 export type { MarkFailedOptions } from './mark-failed-options.type.js';
 export type { DeliveryQueue } from './delivery-queue.interface.js';
 export type {
+  DeliveryBacklog,
   DeliveryEntry,
   DeliveryLane,
+  DeliveryMove,
   DeliveryPair,
   NewDelivery,
+  RekeyResult,
 } from './delivery-entry.type.js';
+export type {
+  PermanentFailurePredicate,
+  SubscriberIdentity,
+  SubscriberPolicy,
+} from './subscriber.policy.js';
+export {
+  SubscriberBuilder,
+  type MemberOptions,
+  type OnHandler,
+} from './subscriber.builder.js';
+export type { PrepareResult } from './prepare.result.js';
 export type { RetryPolicy } from './retry.policy.js';
 export { ClaimLostError } from './claim-lost.error.js';
 export {
@@ -19,6 +33,8 @@ export {
   type EventConsumerOptions,
   type EventFailureInfo,
   type EventProcessedInfo,
+  type HandlerOptions,
+  type SubscriberInfo,
   type EventHandler,
   type ScopedEventHandler,
   type SessionEventHandler,

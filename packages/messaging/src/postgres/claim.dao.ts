@@ -197,8 +197,9 @@ export class ClaimDao implements ClaimLease {
   }
 
   // Rows with no failed_at (failed before 0.9.0) have an unknown age and are kept.
-  cleanupFailed(olderThan: Date, limit: number | undefined): Promise<number> {
-    return this.deleteOlderThan('FAILED', 'failed_at', olderThan, limit);
+  // `keep` is an extra predicate for rows to spare (e.g. dead deliveries holding a lane).
+  cleanupFailed(olderThan: Date, limit: number | undefined, keep?: string): Promise<number> {
+    return this.deleteOlderThan('FAILED', 'failed_at', olderThan, limit, keep);
   }
 
   async deleteOlderThan(
@@ -206,12 +207,14 @@ export class ClaimDao implements ClaimLease {
     column: 'failed_at' | 'published_at',
     olderThan: Date,
     limit: number | undefined,
+    keep?: string,
   ): Promise<number> {
+    const spare = keep ? ` AND NOT (${keep})` : '';
     const result = limit
       ? await this.query(
           `WITH cte AS (
              SELECT id FROM ${this.table}
-             WHERE status = '${status}' AND ${column} < $1
+             WHERE status = '${status}' AND ${column} < $1${spare}
              ORDER BY ${column} ASC
              LIMIT $2
            )
@@ -221,7 +224,7 @@ export class ClaimDao implements ClaimLease {
           [olderThan, limit],
         )
       : await this.query(
-          `DELETE FROM ${this.table} WHERE status = '${status}' AND ${column} < $1`,
+          `DELETE FROM ${this.table} WHERE status = '${status}' AND ${column} < $1${spare}`,
           [olderThan],
         );
     return result.rowCount ?? 0;
