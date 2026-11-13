@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ClaimLostError } from '../../src/event-bus/claim-lost.error.js';
 import { CLEAR_FAILURE, RELEASE_CLAIM } from '../../src/postgres/claim.dao.js';
-import { MissingColumnError } from '../../src/postgres/missing-column.error.js';
+import { MissingColumnError, MissingTableError } from '../../src/postgres/missing-column.error.js';
 import { PgEventBus } from '../../src/postgres/pg-event-bus.js';
 import { InMemoryHandlerOutcomeStore } from '../../src/testing.js';
 import { FakePgPool } from '../helpers/fake-pg-pool.js';
@@ -509,6 +509,15 @@ describe('PgEventBus', () => {
         Object.assign(new Error('column "lease_expires_at" does not exist'), { code: '42703' }),
       );
       await expect(bus.claim('replica-1', 10)).rejects.toBeInstanceOf(MissingColumnError);
+    });
+
+    it('names a missing table with MissingTableError', async () => {
+      pool.failNext(
+        Object.assign(new Error('relation "event_deliveries" does not exist'), { code: '42P01' }),
+      );
+      const error = await bus.claim('replica-1', 10).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(MissingTableError);
+      expect((error as Error).message).toContain('event_deliveries does not exist');
     });
 
     it('passes other query errors through untouched', async () => {

@@ -6,6 +6,7 @@ import type {
   SessionHandlerEntry,
 } from './handler-entry.type.js';
 import type { RetryPolicy } from './retry.policy.js';
+import type { SubscriberIdentity } from './subscriber.policy.js';
 
 export interface EventSubscription<TPayload = unknown> {
   readonly descriptor: EventDescriptor<TPayload>;
@@ -17,10 +18,16 @@ export interface EventSubscription<TPayload = unknown> {
    * required, unique per event type, when an event type has several handlers.
    */
   readonly key?: string | undefined;
+  /** This handler's name within its subscriber. Default: the event type. */
+  readonly member?: string | undefined;
   /** Under `isolation`: how this subscriber's failed work is retried. */
   readonly retry?: RetryPolicy | undefined;
-  /** Under `isolation`: earlier keys of this subscriber, whose queued work moves to `key`. */
-  readonly previousKeys?: readonly string[] | undefined;
+  /**
+   * Under `isolation`: earlier identities whose queued work moves here. A string is an earlier
+   * key of the subscriber (its members' work moves member by member); `{ key, member }` is an
+   * earlier identity of this member.
+   */
+  readonly previousKeys?: readonly (string | SubscriberIdentity)[] | undefined;
   // Method syntax: bivariant in TPayload (heterogeneous arrays type-check) and
   // lets classes `implements` this with a plain `async handle(entry)` method.
   handle(entry: HandlerEntry<TPayload>): Promise<void>;

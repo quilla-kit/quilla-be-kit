@@ -36,6 +36,7 @@ export function toEventBusEntry(row: Omit<EventsRow, 'origin_event_id'>): EventB
     occurredAt: row.occurred_at,
     ...(row.aggregate_id !== null ? { aggregateId: row.aggregate_id } : {}),
     ...(row.correlation_id !== null ? { correlationId: row.correlation_id } : {}),
+    ...(row.seq !== null ? { sequence: row.seq } : {}),
     status: row.status,
     ...(row.claimed_by !== null ? { claimedBy: row.claimed_by } : {}),
     ...(row.claimed_at !== null ? { claimedAt: row.claimed_at } : {}),

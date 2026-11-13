@@ -26,7 +26,13 @@ import {
   DEFAULT_STALE_CLAIM_MS,
   retryDelayFor,
 } from './defaults.js';
-import type { DeliveryEntry, DeliveryPair, NewDelivery } from './delivery-entry.type.js';
+import type {
+  DeliveryBacklog,
+  DeliveryEntry,
+  DeliveryMove,
+  DeliveryPair,
+  NewDelivery,
+} from './delivery-entry.type.js';
 import type { DeliveryQueue } from './delivery-queue.interface.js';
 import type { EventBusConsumer } from './event-bus-consumer.interface.js';
 import type { EventBusEntry } from './event-bus-entry.type.js';
@@ -39,8 +45,19 @@ import type {
   SessionHandlerEntry,
 } from './handler-entry.type.js';
 import type { HandlerOutcome, HandlerOutcomeStore } from './handler-outcome-store.interface.js';
+import type { PrepareResult } from './prepare.result.js';
 import { type RetryPolicy, type RetrySchedule, nextAttemptAt } from './retry.policy.js';
 import type { StandardSchemaV1 } from './standard-schema.type.js';
+import {
+  type MemberRegistration,
+  type OnHandler,
+  SubscriberBuilder,
+} from './subscriber.builder.js';
+import type {
+  PermanentFailurePredicate,
+  SubscriberIdentity,
+  SubscriberPolicy,
+} from './subscriber.policy.js';
 
 export type EventHandler<TPayload = unknown> = (entry: HandlerEntry<TPayload>) => Promise<void>;
 export type ScopedEventHandler<TPayload = unknown> = (
@@ -54,11 +71,30 @@ type Registration = {
   readonly handler: EventHandler;
   readonly requires: ContextRequirement | undefined;
   readonly key: string | undefined;
+  readonly member: string;
+  readonly eventType: string;
 };
 
-type KeyOption = Pick<EventSubscription<unknown>, 'key' | 'retry' | 'previousKeys'>;
+/** Options of `consumer.on(...)`: `key` makes the handler a member of that subscriber. */
+export type HandlerOptions = Pick<
+  EventSubscription<unknown>,
+  'key' | 'member' | 'retry' | 'previousKeys'
+>;
 
-type RegisterOptions = KeyOption & { readonly requires?: ContextRequirement | undefined };
+type RegisterOptions = Omit<MemberRegistration, 'key'> & { readonly key?: string | undefined };
+
+type SubscriberState = {
+  policy: SubscriberPolicy;
+  readonly members: Registration[];
+  readonly previousKeys: Set<string>;
+};
+
+/** One subscriber as `consumer.subscribers` lists it. */
+export type SubscriberInfo = {
+  readonly key: string;
+  readonly policy: SubscriberPolicy;
+  readonly members: readonly { readonly member: string; readonly eventType: string }[];
+};
 
 type DeliveryWork = {
   readonly queue: DeliveryQueue;
@@ -78,10 +114,19 @@ type HandlerFailure = { readonly message: string; readonly permanent: boolean };
 export type EventProcessedInfo = {
   readonly source: 'event' | 'delivery';
   readonly handlerKey?: string | undefined;
+  readonly member?: string | undefined;
 };
 
-/** Passed to `onFailed`: `permanent` failures are dead-lettered on the first attempt. */
-export type EventFailureInfo = EventProcessedInfo & { readonly permanent: boolean };
+/**
+ * Passed to `onFailed`: `permanent` failures are dead-lettered on the first attempt. `held`:
+ * this dead letter keeps its lane blocked. `stuck`: the work has reached its subscriber's
+ * `stuckAfterAttempts` (reported on every attempt from then on).
+ */
+export type EventFailureInfo = EventProcessedInfo & {
+  readonly permanent: boolean;
+  readonly held: boolean;
+  readonly stuck: boolean;
+};
 
 export type EventConsumerOptions = {
   readonly bus: EventBusConsumer;
@@ -114,6 +159,8 @@ export type EventConsumerOptions = {
   readonly maxAttempts?: number;
   /** Deliveries claimed per poll. Default 10. */
   readonly deliveryBatchSize?: number;
+  /** Default of each subscriber's `stuckAfterAttempts` (see `EventFailureInfo.stuck`). */
+  readonly stuckAfterAttempts?: number;
   readonly executionContext?: {
     readonly provider: ExecutionContextProvider;
   };
@@ -126,10 +173,7 @@ export type EventConsumerOptions = {
    * Classifies a handler error a retry cannot fix; the event is then dead-lettered on the
    * first attempt. Schema, missing-context and context-rebuild errors always are.
    */
-  readonly isPermanentFailure?: (
-    error: unknown,
-    info: { readonly entry: EventBusEntry },
-  ) => boolean;
+  readonly isPermanentFailure?: PermanentFailurePredicate;
   readonly onLeaseLost?: (info: LeaseLostInfo) => void;
   /**
    * Records each handler's outcome when an attempt fails, so a redelivery runs only the
@@ -205,10 +249,13 @@ export class EventConsumer implements Disposable {
   private readonly isolated: DeliveryWork | undefined;
   private readonly maxAttempts: number | undefined;
   private readonly deliveryBatchSize: number;
-  private readonly policies = new Map<string, RetryPolicy>();
-  private readonly previousKeys = new Map<string, Set<string>>();
+  private readonly stuckAfterAttempts: number | undefined;
+  private readonly subscriberStates = new Map<string, SubscriberState>();
+  // Earlier member identities (`{ key, member }` previousKeys), by the identity they name.
+  private readonly renames = new Map<string, DeliveryMove>();
   private deliveryPairs: readonly DeliveryPair[] = [];
-  private ready: Promise<boolean> | undefined;
+  readonly on: OnHandler<this, HandlerOptions>;
+  private ready: Promise<PrepareResult> | undefined;
 
   private loops: PollLoop[] = [];
   private stopping = false;
@@ -267,6 +314,15 @@ export class EventConsumer implements Disposable {
       }),
     };
     this.isolated = options.isolation ? this.delivery : undefined;
+    if (options.stuckAfterAttempts !== undefined) {
+      assertMaxAttempts(options.stuckAfterAttempts, 'stuckAfterAttempts');
+    }
+    this.stuckAfterAttempts = options.stuckAfterAttempts;
+    this.on = ((
+      target: string | EventDescriptor<unknown>,
+      handler: EventHandler,
+      handlerOptions?: HandlerOptions & { readonly requires?: ContextRequirement | undefined },
+    ) => this.register(target, handler, handlerOptions ?? {})) as OnHandler<this, HandlerOptions>;
     if (options.subscriptions) {
       this.subscribe(options.subscriptions);
     }
@@ -280,39 +336,24 @@ export class EventConsumer implements Disposable {
     return this.topicKeys;
   }
 
-  on<TPayload>(
-    descriptor: EventDescriptor<TPayload>,
-    handler: EventHandler<TPayload>,
-    options?: KeyOption,
-  ): this;
-  on<TPayload>(
-    descriptor: EventDescriptor<TPayload>,
-    handler: ScopedEventHandler<TPayload>,
-    options: { readonly requires: 'scope' } & KeyOption,
-  ): this;
-  on<TPayload>(
-    descriptor: EventDescriptor<TPayload>,
-    handler: SessionEventHandler<TPayload>,
-    options: { readonly requires: 'session' } & KeyOption,
-  ): this;
-  on(eventType: string, handler: EventHandler, options?: KeyOption): this;
-  on(
-    eventType: string,
-    handler: ScopedEventHandler,
-    options: { readonly requires: 'scope' } & KeyOption,
-  ): this;
-  on(
-    eventType: string,
-    handler: SessionEventHandler,
-    options: { readonly requires: 'session' } & KeyOption,
-  ): this;
-  on(
-    eventTypeOrDescriptor: string | EventDescriptor<unknown>,
-    handler: EventHandler | ScopedEventHandler | SessionEventHandler,
-    options?: { readonly requires?: ContextRequirement | undefined } & KeyOption,
-  ): this {
-    // The overloads pair each narrowed handler with the requirement checked before it runs.
-    return this.register(eventTypeOrDescriptor, handler as EventHandler, options ?? {});
+  /** The registered subscribers, their policies and members (for fence tests). */
+  get subscribers(): readonly SubscriberInfo[] {
+    return [...this.subscriberStates].map(([key, state]) => ({
+      key,
+      policy: { ...state.policy, previousKeys: [...state.previousKeys] },
+      members: state.members.map((m) => ({ member: m.member, eventType: m.eventType })),
+    }));
+  }
+
+  /**
+   * Declares a subscriber: one key, one policy and one lane per aggregate, shared by the
+   * handlers registered on the returned builder.
+   */
+  subscriber(key: string, policy: SubscriberPolicy = {}): SubscriberBuilder {
+    this.mergePolicy(key, policy);
+    return new SubscriberBuilder(key, (target, handler, registration) => {
+      this.register(target, handler, registration);
+    });
   }
 
   subscribe(subscriptions: ReadonlyArray<EventSubscription<unknown>>): this {
@@ -326,7 +367,7 @@ export class EventConsumer implements Disposable {
   private register(
     eventTypeOrDescriptor: string | EventDescriptor<unknown>,
     handler: EventHandler,
-    { requires, key, retry, previousKeys }: RegisterOptions,
+    { requires, key, member, retry, previousKeys }: RegisterOptions,
   ): this {
     const eventType =
       typeof eventTypeOrDescriptor === 'string'
@@ -342,50 +383,109 @@ export class EventConsumer implements Disposable {
     const wrapped: EventHandler =
       schema !== undefined ? wrapWithSchema(eventType, schema, handler) : handler;
     const isNewType = !this.handlers.has(eventType);
-    const registrations = [
-      ...(this.handlers.get(eventType) ?? []),
-      { handler: wrapped, requires, key },
-    ];
+    const registration: Registration = {
+      handler: wrapped,
+      requires,
+      key,
+      member: member ?? eventType,
+      eventType,
+    };
+    const registrations = [...(this.handlers.get(eventType) ?? []), registration];
     this.assertKeys(eventType, registrations);
-    if (key !== undefined) this.registerSubscriber(eventType, key, retry, previousKeys);
+    if (key !== undefined) this.addMember(key, registration, retry, previousKeys);
     this.handlers.set(eventType, registrations);
     if (isNewType) this.topicKeys = [...this.handlers.keys()];
-    if (key !== undefined) {
-      this.deliveryPairs = [...this.handlers].flatMap(([type, regs]) =>
-        regs.flatMap((r) => (r.key === undefined ? [] : [{ key: r.key, eventType: type }])),
-      );
-    }
     return this;
   }
 
-  // One policy per subscriber: a policy given on one of its event types covers all of them.
-  private registerSubscriber(
-    eventType: string,
+  private addMember(
     key: string,
+    registration: Registration,
     retry: RetryPolicy | undefined,
-    previousKeys: readonly string[] | undefined,
+    previousKeys: readonly (string | SubscriberIdentity)[] | undefined,
   ): void {
-    if (retry) {
-      if (retry.maxAttempts !== undefined) {
-        assertMaxAttempts(retry.maxAttempts, `retry.maxAttempts of "${key}"`);
+    const oldKeys: string[] = [];
+    const identities: SubscriberIdentity[] = [];
+    for (const p of previousKeys ?? []) {
+      if (typeof p === 'string') oldKeys.push(p);
+      else identities.push(p);
+    }
+    const state = this.mergePolicy(key, { retry, previousKeys: oldKeys });
+    if (this.memberOf({ key, member: registration.member })) {
+      throw new Error(
+        `EventConsumer: subscriber "${key}" already has a member "${registration.member}"; give one of them its own \`member\` name`,
+      );
+    }
+    const to = { key, member: registration.member };
+    for (const from of identities) {
+      const id = identityKey(from);
+      if (id === identityKey(to)) {
+        throw new Error(`EventConsumer: "${key}/${to.member}" lists itself in previousKeys`);
       }
-      const existing = this.policies.get(key);
-      if (existing && !samePolicy(existing, retry)) {
+      const existing = this.renames.get(id);
+      if (existing && identityKey(existing.to) !== identityKey(to)) {
         throw new Error(
-          `EventConsumer: subscriber "${key}" has two different retry policies (on "${eventType}"); give it one`,
+          `EventConsumer: "${from.key}/${from.member}" is listed in previousKeys of two members`,
         );
       }
-      this.policies.set(key, retry);
+      this.renames.set(id, { from, to });
     }
-    if (previousKeys && previousKeys.length > 0) {
-      const known = this.previousKeys.get(key) ?? new Set<string>();
-      for (const previous of previousKeys) known.add(previous);
-      this.previousKeys.set(key, known);
+    state.members.push(registration);
+    this.deliveryPairs = [...this.deliveryPairs, { ...to, eventType: registration.eventType }];
+  }
+
+  // One policy per subscriber, whichever registration gives it.
+  private mergePolicy(key: string, incoming: SubscriberPolicy): SubscriberState {
+    let state = this.subscriberStates.get(key);
+    if (!state) {
+      state = { policy: {}, members: [], previousKeys: new Set() };
+      this.subscriberStates.set(key, state);
     }
+    const current = state.policy;
+    const conflict = (field: string) =>
+      new Error(`EventConsumer: subscriber "${key}" was given two different \`${field}\` values`);
+    const { retry, deadLetter, isPermanentFailure, stuckAfterAttempts } = incoming;
+    if (retry?.maxAttempts !== undefined) {
+      assertMaxAttempts(retry.maxAttempts, `retry.maxAttempts of "${key}"`);
+    }
+    if (retry && current.retry && !samePolicy(current.retry, retry)) throw conflict('retry');
+    if (deadLetter === 'hold' && !this.isolated) {
+      throw new Error(
+        `EventConsumer: subscriber "${key}" holds its lanes on dead-letter, which needs \`isolation\``,
+      );
+    }
+    if (deadLetter && current.deadLetter && current.deadLetter !== deadLetter) {
+      throw conflict('deadLetter');
+    }
+    // Functions can't be compared for equivalence, so a predicate is given once per key.
+    if (isPermanentFailure && current.isPermanentFailure) throw conflict('isPermanentFailure');
+    if (stuckAfterAttempts !== undefined) {
+      assertMaxAttempts(stuckAfterAttempts, `stuckAfterAttempts of "${key}"`);
+      if (
+        current.stuckAfterAttempts !== undefined &&
+        current.stuckAfterAttempts !== stuckAfterAttempts
+      ) {
+        throw conflict('stuckAfterAttempts');
+      }
+    }
+    for (const previous of incoming.previousKeys ?? []) {
+      if (previous === key) {
+        throw new Error(`EventConsumer: subscriber "${key}" lists itself in previousKeys`);
+      }
+      state.previousKeys.add(previous);
+    }
+    state.policy = {
+      retry: retry ?? current.retry,
+      deadLetter: deadLetter ?? current.deadLetter,
+      isPermanentFailure: isPermanentFailure ?? current.isPermanentFailure,
+      stuckAfterAttempts: stuckAfterAttempts ?? current.stuckAfterAttempts,
+    };
+    return state;
   }
 
   start(): void {
     if (this.loops.length > 0) return;
+    this.assertRenames();
     this.stopping = false;
     this.logger.info('starting', {
       meta: {
@@ -436,7 +536,7 @@ export class EventConsumer implements Disposable {
       await this.sweepStale(this.bus);
       if (this.topicKeys.length === 0) return;
       const isolated = this.isolated;
-      if (isolated && !(await this.prepare(isolated.queue))) return;
+      if (isolated && !(await this.prepared())) return;
       const events = await this.bus.claim(
         this.instanceId,
         this.batchSize,
@@ -508,13 +608,18 @@ export class EventConsumer implements Disposable {
       const key = registration.key ?? '';
       const lane = event.aggregateId !== undefined ? laneKey(key, event.aggregateId) : undefined;
       if (lane !== undefined && lanes.has(lane)) {
-        queued.push({ handlerKey: key, status: 'PENDING', retryCount: 0 });
+        queued.push({
+          handlerKey: key,
+          member: registration.member,
+          status: 'PENDING',
+          retryCount: 0,
+        });
         continue;
       }
       const failure = await this.execute(event, fields, registration);
       if (!failure) continue;
-      if (failure.permanent) permanent.add(key);
-      queued.push(this.firstFailure(key, failure));
+      if (failure.permanent) permanent.add(identityKey({ key, member: registration.member }));
+      queued.push(this.firstFailure(registration, failure, event));
     }
 
     if (queued.length === 0) {
@@ -527,24 +632,29 @@ export class EventConsumer implements Disposable {
     );
     if (!created) return;
     for (const delivery of queued) {
-      if (event.aggregateId !== undefined && delivery.status === 'PENDING') {
+      if (
+        event.aggregateId !== undefined &&
+        (delivery.status === 'PENDING' || delivery.holdsLane)
+      ) {
         lanes.add(laneKey(delivery.handlerKey, event.aggregateId));
       }
     }
     for (const delivery of created) {
       if (delivery.retryCount === 0) continue;
-      const info = {
-        permanent: permanent.has(delivery.handlerKey),
-        source: 'delivery',
-        handlerKey: delivery.handlerKey,
-      } as const;
-      this.callHook('onFailed', delivery.id, () => this.onFailed?.(delivery, info));
+      const id = identityKey({ key: delivery.handlerKey, member: delivery.member });
+      this.reportDeliveryFailure(delivery, permanent.has(id));
     }
   }
 
-  private firstFailure(key: string, failure: HandlerFailure): NewDelivery {
+  private firstFailure(
+    registration: Registration,
+    failure: HandlerFailure,
+    event: EventBusEntry,
+  ): NewDelivery {
+    const key = registration.key ?? '';
     const base = {
       handlerKey: key,
+      member: registration.member,
       retryCount: 1,
       lastError: failure.message,
       lastFailedBy: this.instanceId,
@@ -553,13 +663,38 @@ export class EventConsumer implements Disposable {
     const next = failure.permanent ? undefined : nextAttemptAt(this.scheduleFor(key), 0, now, now);
     return next
       ? { ...base, status: 'PENDING', nextAttemptAt: next }
-      : { ...base, status: 'FAILED' };
+      : { ...base, status: 'FAILED', holdsLane: this.holdsLane(key, event) };
+  }
+
+  // Only work with an aggregate has a lane to hold.
+  private holdsLane(key: string, entry: EventBusEntry): boolean {
+    return (
+      this.subscriberStates.get(key)?.policy.deadLetter === 'hold' &&
+      entry.aggregateId !== undefined
+    );
+  }
+
+  private stuckAfter(key: string | undefined): number {
+    const own = key === undefined ? undefined : this.subscriberStates.get(key)?.policy;
+    return own?.stuckAfterAttempts ?? this.stuckAfterAttempts ?? Number.POSITIVE_INFINITY;
+  }
+
+  private reportDeliveryFailure(delivery: DeliveryEntry, permanent: boolean): void {
+    const info = {
+      permanent,
+      source: 'delivery',
+      handlerKey: delivery.handlerKey,
+      member: delivery.member,
+      held: delivery.holdsLane,
+      stuck: delivery.retryCount >= this.stuckAfter(delivery.handlerKey),
+    } as const;
+    this.callHook('onFailed', delivery.id, () => this.onFailed?.(delivery, info));
   }
 
   private async deliveryTick({ queue, leases }: DeliveryWork): Promise<void> {
     try {
       await this.sweepStale(queue);
-      if (this.deliveryPairs.length === 0 || !(await this.prepare(queue))) return;
+      if (this.deliveryPairs.length === 0 || !(await this.prepared())) return;
       const batch = await queue.claim(
         this.instanceId,
         this.deliveryBatchSize,
@@ -571,13 +706,17 @@ export class EventConsumer implements Disposable {
       for (const delivery of batch) {
         if (this.stopping) break;
         if (!(await leases.acquire(delivery))) continue;
-        const registration = this.handlers
-          .get(delivery.eventType)
-          ?.find((r) => r.key === delivery.handlerKey);
-        if (!registration) {
-          // Claims filter on registered pairs, so this is a broker contract violation.
-          this.logger.error('delivery claimed for an unregistered subscriber', undefined, {
-            meta: { deliveryId: delivery.id, handlerKey: delivery.handlerKey },
+        const registration = this.memberOf({ key: delivery.handlerKey, member: delivery.member });
+        if (registration?.eventType !== delivery.eventType) {
+          // Claims filter on registered members; a type mismatch means a previousKeys mapping
+          // pointed this work at a member of another event type.
+          this.logger.error('delivery claimed for a member that does not handle it', undefined, {
+            meta: {
+              deliveryId: delivery.id,
+              handlerKey: delivery.handlerKey,
+              member: delivery.member,
+              eventType: delivery.eventType,
+            },
           });
           continue;
         }
@@ -603,7 +742,11 @@ export class EventConsumer implements Disposable {
     const failure = await this.execute(delivery, fields, registration);
     if (!failure) {
       this.callHook('onProcessed', delivery.id, () =>
-        this.onProcessed?.(delivery, { source: 'delivery', handlerKey: key }),
+        this.onProcessed?.(delivery, {
+          source: 'delivery',
+          handlerKey: key,
+          member: delivery.member,
+        }),
       );
       await leases.settle(delivery, 'done', () => queue.markDone(delivery.id, this.instanceId));
       return;
@@ -617,14 +760,15 @@ export class EventConsumer implements Disposable {
         ? queue.markFailed(delivery.id, failure.message, this.instanceId, {
             retryAfterMs: next.getTime() - now.getTime(),
           })
-        : queue.markFailedPermanently(delivery.id, failure.message, this.instanceId),
+        : queue.markFailedPermanently(delivery.id, failure.message, this.instanceId, {
+            holdLane: this.holdsLane(key, delivery),
+          }),
     );
-    const info = { permanent: failure.permanent, source: 'delivery', handlerKey: key } as const;
-    if (failed) this.callHook('onFailed', delivery.id, () => this.onFailed?.(failed, info));
+    if (failed) this.reportDeliveryFailure(failed, failure.permanent);
   }
 
   private scheduleFor(key: string): RetrySchedule {
-    const policy = this.policies.get(key);
+    const policy = this.subscriberStates.get(key)?.policy.retry;
     const delaysMs = policy?.delaysMs ?? this.retryDelaysMs;
     return {
       delaysMs,
@@ -633,38 +777,112 @@ export class EventConsumer implements Disposable {
     };
   }
 
-  // Once per process, before any dispatch: moves renamed subscribers' work to their key (so a
-  // lane never spans two keys) and warns about work no handler here claims. Retried until it
-  // succeeds; concurrent callers share one run.
-  private prepare(queue: DeliveryQueue): Promise<boolean> {
-    this.ready ??= this.runPrepare(queue).then((ok) => {
-      if (!ok) this.ready = undefined;
-      return ok;
+  /**
+   * Prepares the deliveries before any dispatch: moves renamed subscribers' work to their
+   * current identity (`previousKeys`), then reports work this consumer can't run. Runs once per
+   * process; `start()` runs it on its own when not awaited here. Rejects when the queue can't be
+   * reached, or when `previousKeys` names a registered subscriber.
+   */
+  async prepare(): Promise<PrepareResult> {
+    const queue = this.delivery?.queue;
+    if (!queue) {
+      this.assertRenames();
+      return { moved: 0, superseded: 0, unregistered: [], staleHolds: [] };
+    }
+    this.ready ??= this.runPrepare(queue).catch((err: unknown) => {
+      this.ready = undefined;
+      throw err;
     });
     return this.ready;
   }
 
-  private async runPrepare(deliveries: DeliveryQueue): Promise<boolean> {
+  // For the poll loops: a failed preparation is retried on the next tick.
+  private async prepared(): Promise<boolean> {
     try {
-      for (const [key, previous] of this.previousKeys) {
-        const moved = await deliveries.rekey(this.consumerName, [...previous], key);
-        if (moved > 0) {
-          this.logger.info(`moved ${moved} queued deliveries to renamed subscriber`, {
-            meta: { handlerKey: key, previousKeys: [...previous] },
-          });
-        }
-      }
-      const orphans = await deliveries.countOrphans(this.consumerName, this.deliveryPairs);
-      if (orphans > 0) {
-        this.logger.warn(
-          `${orphans} queued deliveries belong to subscribers this consumer doesn't register; a renamed key needs \`previousKeys\``,
-          { meta: { orphans } },
-        );
-      }
+      await this.prepare();
       return true;
     } catch (err) {
       this.logger.error('preparing deliveries failed; will retry', err);
       return false;
+    }
+  }
+
+  private async runPrepare(queue: DeliveryQueue): Promise<PrepareResult> {
+    this.assertRenames();
+    const moves = this.renameMoves();
+    const { moved, superseded } =
+      moves.length > 0 ? await queue.rekey(this.consumerName, moves) : { moved: 0, superseded: 0 };
+    if (moved > 0 || superseded > 0) {
+      this.logger.info(`moved ${moved} queued deliveries to renamed subscribers`, {
+        meta: { moved, superseded },
+      });
+    }
+    const unregistered: DeliveryBacklog[] = [];
+    const staleHolds: DeliveryBacklog[] = [];
+    for (const backlog of await queue.backlog(this.consumerName)) {
+      const state = this.subscriberStates.get(backlog.handlerKey);
+      if (!state || !this.memberOf({ key: backlog.handlerKey, member: backlog.member })) {
+        unregistered.push(backlog);
+        this.reportUnregistered(backlog);
+      } else if (backlog.held > 0 && (!this.isolated || state.policy.deadLetter !== 'hold')) {
+        staleHolds.push(backlog);
+        this.logger.warn(
+          `${backlog.held} dead deliveries of "${backlog.handlerKey}/${backlog.member}" still hold their lanes, though the subscriber no longer holds; release them with releaseHold`,
+          { meta: { ...backlog } },
+        );
+      }
+    }
+    return { moved, superseded, unregistered, staleHolds };
+  }
+
+  // Earlier keys move member by member; an exact earlier identity wins over its key's move.
+  private renameMoves(): DeliveryMove[] {
+    const moves = new Map<string, DeliveryMove>();
+    for (const [key, state] of this.subscriberStates) {
+      for (const previous of state.previousKeys) {
+        for (const { member } of state.members) {
+          const from = { key: previous, member };
+          moves.set(identityKey(from), { from, to: { key, member } });
+        }
+      }
+    }
+    for (const [id, move] of this.renames) moves.set(id, move);
+    return [...moves.values()];
+  }
+
+  private memberOf({ key, member }: SubscriberIdentity): Registration | undefined {
+    return this.subscriberStates.get(key)?.members.find((m) => m.member === member);
+  }
+
+  // A rename must not take work from a subscriber that is still registered.
+  private assertRenames(): void {
+    for (const [key, state] of this.subscriberStates) {
+      for (const previous of state.previousKeys) {
+        if (this.subscriberStates.has(previous)) {
+          throw new Error(
+            `EventConsumer: "${key}" lists "${previous}" in previousKeys, but "${previous}" is still a registered subscriber`,
+          );
+        }
+      }
+    }
+    for (const { from } of this.renames.values()) {
+      if (this.memberOf(from)) {
+        throw new Error(
+          `EventConsumer: previousKeys names "${from.key}/${from.member}", which is still registered`,
+        );
+      }
+    }
+  }
+
+  private reportUnregistered(backlog: DeliveryBacklog): void {
+    const { handlerKey, member, lanes } = backlog;
+    const message = `deliveries belong to "${handlerKey}/${member}", which this consumer doesn't register; map it with previousKeys or discard them`;
+    if (lanes > 0) {
+      this.logger.error(`${message} (${lanes} lane(s) stay blocked until then)`, undefined, {
+        meta: { ...backlog },
+      });
+    } else {
+      this.logger.warn(message, { meta: { ...backlog } });
     }
   }
 
@@ -678,6 +896,7 @@ export class EventConsumer implements Disposable {
     const priorByKey = tracked && prior ? new Map(prior.map((o) => [o.key, o])) : undefined;
     const fields = this.entryFields(event);
     const failures: HandlerFailure[] = [];
+    const failingKeys: (string | undefined)[] = [];
     const recorded: HandlerOutcome[] = [];
     let skippedDead: HandlerOutcome | undefined;
     let ran = 0;
@@ -694,7 +913,10 @@ export class EventConsumer implements Disposable {
       }
       ran++;
       const failure = await this.execute(event, fields, registration);
-      if (failure) failures.push(failure);
+      if (failure) {
+        failures.push(failure);
+        failingKeys.push(registration.key);
+      }
       if (key === undefined) continue;
       if (!failure) recorded.push({ key, outcome: 'done' });
       else if (failure.permanent) recorded.push({ key, outcome: 'dead', error: failure.message });
@@ -726,9 +948,14 @@ export class EventConsumer implements Disposable {
           }),
     );
     if (failed) {
-      this.callHook('onFailed', event.id, () =>
-        this.onFailed?.(failed, { permanent, source: 'event' }),
-      );
+      const stuckAfter = Math.min(...failingKeys.map((k) => this.stuckAfter(k)));
+      const info = {
+        permanent,
+        source: 'event',
+        held: false,
+        stuck: failed.retryCount >= stuckAfter,
+      } as const;
+      this.callHook('onFailed', event.id, () => this.onFailed?.(failed, info));
     }
   }
 
@@ -781,6 +1008,8 @@ export class EventConsumer implements Disposable {
           `EventConsumer: "${eventType}" has ${registrations.length} handlers and \`handlerOutcomes\` is wired, so each handler needs a \`key\``,
         );
       }
+      // Members are unique per (key, member); the outcome ledger only knows the key.
+      if (!this.tracks(registrations)) continue;
       if (seen.has(key)) {
         throw new Error(`EventConsumer: duplicate handler key "${key}" for "${eventType}"`);
       }
@@ -819,6 +1048,7 @@ export class EventConsumer implements Disposable {
       occurredAt: event.occurredAt,
       ...(event.aggregateId !== undefined ? { aggregateId: event.aggregateId } : {}),
       ...(event.correlationId !== undefined ? { correlationId: event.correlationId } : {}),
+      ...(event.sequence !== undefined ? { sequence: event.sequence } : {}),
     };
   }
 
@@ -826,9 +1056,14 @@ export class EventConsumer implements Disposable {
   private async execute(
     event: EventBusEntry,
     fields: HandlerEntryFields,
-    { handler, requires }: Registration,
+    { handler, requires, key, member }: Registration,
   ): Promise<HandlerFailure | undefined> {
-    const meta = { eventId: event.id, eventType: event.eventType, attempt: event.retryCount + 1 };
+    const meta = {
+      eventId: event.id,
+      eventType: event.eventType,
+      attempt: event.retryCount + 1,
+      ...(key !== undefined ? { handlerKey: key, member } : {}),
+    };
     let ctx: ExecutionContext | undefined;
     try {
       ctx = this.buildExecutionContext(event);
@@ -848,7 +1083,7 @@ export class EventConsumer implements Disposable {
       }
       return undefined;
     } catch (err) {
-      if (this.isPermanent(err, event, meta)) {
+      if (this.isPermanent(err, event, meta, key)) {
         this.logger.error('permanent handler failure; skipping retries', err, {
           meta: err instanceof SchemaValidationError ? { ...meta, issues: err.issues } : meta,
         });
@@ -863,6 +1098,7 @@ export class EventConsumer implements Disposable {
     err: unknown,
     entry: EventBusEntry,
     meta: Readonly<Record<string, unknown>>,
+    key: string | undefined,
   ): boolean {
     if (
       err instanceof SchemaValidationError ||
@@ -871,9 +1107,12 @@ export class EventConsumer implements Disposable {
     ) {
       return true;
     }
-    if (!this.isPermanentFailure) return false;
+    const classify =
+      (key !== undefined ? this.subscriberStates.get(key)?.policy.isPermanentFailure : undefined) ??
+      this.isPermanentFailure;
+    if (!classify) return false;
     try {
-      return this.isPermanentFailure(err, { entry });
+      return classify(err, { entry });
     } catch (predicateError) {
       // A broken classifier must never leave the event unsettled: treat the failure as transient.
       this.logger.error(
@@ -926,6 +1165,10 @@ export class EventConsumer implements Disposable {
     }
     return factory.createSystemContext('system');
   }
+}
+
+function identityKey({ key, member }: SubscriberIdentity): string {
+  return `${key}\0${member}`;
 }
 
 function laneKey(handlerKey: string, aggregateId: string): string {
