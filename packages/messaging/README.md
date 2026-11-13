@@ -165,7 +165,7 @@ held).
   │ outbox_events │    │       events        │
   │   PENDING     │    │   PENDING/CLAIMED   │
   │      ↓        │    │   /FAILED           │
-  │   CLAIMED     │    │                     │
+  │   CLAIMED     │    │ + event_deliveries  │
   │      ↓        │    └─────────▲───────────┘
   │   SENT        │              │
   └──────┬────────┘              │
@@ -190,6 +190,58 @@ PENDING → CLAIMED (by one replica via atomic CTE+UPDATE)
 Where terminal means:
 - **Outbox**: `SENT` (on publish success) or `FAILED` (retries exhausted).
 - **Events**: *deleted* (handler success) or `FAILED` (retries exhausted).
+- **Deliveries** (`event_deliveries`, under
+  [subscriber isolation](#subscriber-isolation)): per-subscriber copies of
+  an event, *deleted* on success or `FAILED` (held or not).
+
+## How it runs
+
+There is no broker to deploy. The bus is a set of tables in a Postgres
+database, and this package is a library inside each backend. Every instance
+is a client of that database through its own `pg` pool:
+
+```
+  orders service (N instances)          notifications service (M instances)
+  ┌─────────────────────────┐           ┌─────────────────────────┐
+  │ your app + this package │           │ your app + this package │
+  │ UnitOfWork → outbox     │           │ EventConsumer           │
+  │ OutboxForwarder         │           │ (+ outbox and forwarder │
+  └────┬───────────────┬────┘           │  if it publishes too)   │
+       │ pool          │ pool           └────────────┬────────────┘
+       ▼               │                             │ pool
+  ┌───────────────┐    │    ┌──────────────────┐     │
+  │ orders DB     │    └───▶│ bus DB           │◀────┘
+  │ domain tables │         │ events           │
+  │ outbox_events │         │ event_deliveries │
+  └───────────────┘         └──────────────────┘
+```
+
+- **The outbox lives in the service's own database**, because it's written
+  in the same transaction as the domain change. Each publishing service
+  runs an `OutboxForwarder` in its instances; it reads that outbox and
+  publishes into the bus.
+- **The bus is one database the services share.** It can be the same
+  database as a service's own (one pool, simplest) or a separate one (a
+  second pool). Across two databases, forwarding is at-least-once: a crash
+  between publishing and marking the outbox row sent republishes it, and
+  [`origin_event_id`](#publisher-dedup-via-origin_event_id) turns the
+  second publish into a no-op. Per-aggregate ordering holds bus-wide, so it
+  needs one bus database for the services involved.
+- **Instances poll; nothing pushes.** Each forwarder and consumer polls every
+  `pollIntervalMs` and claims a batch. Under isolation, the consumer runs a
+  second loop for deliveries.
+- **Instances coordinate only through the database:** atomic claims,
+  claim leases, advisory locks and per-aggregate guards. There is no
+  membership, leader election or partition assignment, so scaling means
+  adding or removing instances (see
+  [Multi-replica scaling](#multi-replica-scaling)).
+- **Topics belong to one consumer.** A consumer claims only the event types
+  it registers. Two services can't both consume one event type on the same
+  bus (see [Not pub-sub fan-out](#not-pub-sub-fan-out)).
+- **Schema is yours to apply.** `getPostgresSchema()` returns the DDL for
+  the outbox and the bus (plus the optional tables you ask for); run it
+  with your migrations. With a separate bus database, apply it to both: each
+  then has one table it doesn't use.
 
 ---
 
@@ -209,14 +261,62 @@ Or pipe the string into drizzle-kit / knex / your migration tool.
 
 ### 2. Wire the outbox into your UnitOfWork
 
+With [`@quilla-be-kit/ddd`](../ddd/README.md) and
+[`@quilla-be-kit/persistence`](../persistence/README.md), nothing is
+registered by hand. Events reach the outbox in three steps:
+
+1. **The aggregate stages its events** with `addDomainEvent(...)` while it
+   changes state.
+2. **The aggregate repositories register the aggregate** with the unit of
+   work: `create` / `createMany` for new aggregates, `loadForUpdate*` for
+   loaded ones, so a later `update` or `delete` needs nothing more.
+3. **At commit, the unit of work drains** every registered aggregate's events,
+   turns each into an outbox entry with your `serialize`, and inserts them
+   with `outbox.insert(entries, trx)` in the same transaction.
+
 ```ts
-// The DDD-typed UnitOfWork: `serialize` receives domain and integration events.
-import { UnitOfWork } from '@quilla-be-kit/persistence/aggregate';
-import { PgDatabase } from '@quilla-be-kit/persistence/postgres';
+import { AggregateRoot, DomainEvent, EventKind, EventMetadata } from '@quilla-be-kit/ddd';
+import { toEventMetadataSource } from '@quilla-be-kit/execution-context';
 import type { LocalOutboxInsertInput } from '@quilla-be-kit/messaging';
 import { PgLocalOutbox } from '@quilla-be-kit/messaging/postgres';
+import { BaseUnscopedAggregateRepository, UnitOfWork } from '@quilla-be-kit/persistence/aggregate';
+import { PgDatabase } from '@quilla-be-kit/persistence/postgres';
 import { Pool } from 'pg';
 
+// 1. The aggregate stages its events while it changes state.
+class OrderPlaced extends DomainEvent<{ orderId: string; total: number }> {
+  override get name() {
+    return 'order.placed'; // the event type consumers register
+  }
+}
+// OrderCancelled ('order.cancelled') is declared the same way.
+
+class Order extends AggregateRoot<OrderProps> {
+  private constructor(props: OrderProps, id?: string) {
+    super(props, id);
+  }
+
+  static place(props: Omit<OrderProps, 'status'>): Order {
+    const order = new Order({ ...props, status: 'PLACED' });
+    order.addDomainEvent(new OrderPlaced(order.id, { orderId: order.id, total: props.total }));
+    return order;
+  }
+
+  static reconstitute(props: OrderProps, id: string): Order {
+    return new Order(props, id);
+  }
+
+  cancel(reason: string): void {
+    this.props.status = 'CANCELLED';
+    this.addDomainEvent(new OrderCancelled(this.id, { orderId: this.id, reason }));
+  }
+}
+
+// 2. The repository (with its write DAO and mapper, see the persistence
+// quickstart) registers what it creates or loads for update.
+class OrderRepository extends BaseUnscopedAggregateRepository<Order, OrderRow> {}
+
+// 3. The unit of work writes the registered aggregates' events to the outbox.
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const db = new PgDatabase({ pool });
 const outbox = new PgLocalOutbox({ pool });
@@ -225,25 +325,49 @@ const uow = new UnitOfWork<LocalOutboxInsertInput>({
   db,
   events: {
     sink: { sink: (entries, trx) => outbox.insert(entries, trx) },
-    serialize: (event) => ({
-      eventType: event.name,
-      eventVersion: 1,
-      eventKind: 'domain',
-      occurredAt: event.occurredAt, // event occurrence time, threaded through to the handler
-      payload: { payload: event.toJSON(), metadata: { /* correlationId, ... */ } },
-      aggregateId: 'aggregateId' in event ? event.aggregateId : undefined,
-    }),
+    serialize: (event) => {
+      const kind = event instanceof DomainEvent ? EventKind.DOMAIN : EventKind.INTEGRATION;
+      const metadata = EventMetadata.create({
+        kind,
+        ...toEventMetadataSource(provider.getContext()), // who and what emitted it
+      });
+      return {
+        id: event.id, // the outbox row, and the bus row's origin_event_id, carry the event's id
+        eventType: event.name,
+        eventVersion: 1,
+        eventKind: kind,
+        occurredAt: event.occurredAt,
+        aggregateId: event instanceof DomainEvent ? event.aggregateId : undefined,
+        payload: { payload: event.payload, metadata: metadata.toJSON() },
+      };
+    },
   },
 });
 
-// In a command handler:
+// In command handlers:
 await uow.transaction(async (ctx) => {
-  const order = Order.create(/* ... */);
-  ctx.registerAggregate(order);
-  await repo.save(order, ctx.trx);
-  // Aggregate rows + outbox_events rows commit atomically.
+  await orders.create(Order.place({ customerId, total }), ctx); // registers the new order
+});
+
+await uow.transaction(async (ctx) => {
+  const order = await orders.loadForUpdateById(orderId, ctx); // registers the loaded order
+  if (!order) throw new OrderNotFound(orderId);
+  order.cancel('customer request');
+  await orders.update(order, ctx);
+  // The order row and its outbox_events rows commit atomically.
 });
 ```
+
+The envelope's `payload` is what handlers receive as `entry.payload` (and
+what a descriptor's schema validates), so put the event's own payload there.
+`metadata` rebuilds the emitter's execution context in the consumer (see
+[Handler context](#handler-context)). An `aggregateId` gives the event its
+place in [per-aggregate ordering](#per-aggregate-ordering).
+
+Without an aggregate repository, register yourself:
+`ctx.registerAggregate(aggregate)` after writing through a plain DAO, or
+`ctx.registerIntegrationEvent(event)` for an event that belongs to no
+aggregate. Registering the same aggregate twice drains it once.
 
 `insert` takes any transaction object with a `query(sql, params)` method; it
 only runs statements on it and never reads the results.
