@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Pool } from 'pg';
 import type { ClaimLease } from '../event-bus/claim-lease.type.js';
+import type { ClaimOptions } from '../event-bus/claim-options.type.js';
 import { DEFAULT_LEASE_MS } from '../event-bus/defaults.js';
 import type { EventBusConsumer } from '../event-bus/event-bus-consumer.interface.js';
 import type { EventBusEntry, EventBusStatus } from '../event-bus/event-bus-entry.type.js';
@@ -9,10 +10,12 @@ import type {
   ClearHandlerOutcomesOptions,
   HandlerOutcomeStore,
 } from '../event-bus/handler-outcome-store.interface.js';
-import { ClaimDao, RELEASE_CLAIM } from './claim.dao.js';
+import type { MarkFailedOptions } from '../event-bus/mark-failed-options.type.js';
+import { CLEAR_FAILURE, ClaimDao, RELEASE_CLAIM } from './claim.dao.js';
 
 const DEFAULT_EVENTS_TABLE = 'events';
-const DEFAULT_MAX_RETRIES = 3;
+// One attempt plus one retry per DEFAULT_RETRY_DELAYS_MS step.
+const DEFAULT_MAX_RETRIES = 4;
 
 type EventsRow = {
   id: string;
@@ -29,6 +32,8 @@ type EventsRow = {
   claimed_at: Date | null;
   lease_expires_at: Date | null;
   failed_at: Date | null;
+  last_failed_by: string | null;
+  next_attempt_at: Date | null;
   seq: string | null;
   retry_count: number;
   last_error: string | null;
@@ -122,8 +127,9 @@ export class PgEventBus implements EventBusPublisher, EventBusConsumer {
     instanceId: string,
     batchSize: number,
     allowedTopics?: readonly string[],
+    options?: ClaimOptions,
   ): Promise<readonly EventBusEntry[]> {
-    const rows = await this.claims.claim<EventsRow>(instanceId, batchSize, allowedTopics);
+    const rows = await this.claims.claim<EventsRow>(instanceId, batchSize, allowedTopics, options);
     return rows.map((r) => this.rowToEntry(r));
   }
 
@@ -141,8 +147,15 @@ export class PgEventBus implements EventBusPublisher, EventBusConsumer {
     id: string,
     reason: string,
     instanceId?: string,
+    options?: MarkFailedOptions,
   ): Promise<EventBusEntry | undefined> {
-    const row = await this.claims.markFailed<EventsRow>(id, reason, this.maxRetries, instanceId);
+    const row = await this.claims.markFailed<EventsRow>(
+      id,
+      reason,
+      this.maxRetries,
+      instanceId,
+      options,
+    );
     return row && this.rowToEntry(row);
   }
 
@@ -184,7 +197,7 @@ export class PgEventBus implements EventBusPublisher, EventBusConsumer {
     if (targets.length === 0) return [];
     const { rows } = await this.claims.query<{ id: string }>(
       `UPDATE ${this.eventsTable}
-       SET status = 'PENDING', retry_count = 0, failed_at = NULL, ${RELEASE_CLAIM}
+       SET status = 'PENDING', retry_count = 0, ${CLEAR_FAILURE}, ${RELEASE_CLAIM}
        WHERE id = ANY($1) AND status = 'FAILED'
        RETURNING id`,
       [[...targets]],
@@ -214,6 +227,8 @@ export class PgEventBus implements EventBusPublisher, EventBusConsumer {
       retryCount: row.retry_count,
       ...(row.last_error !== null ? { lastError: row.last_error } : {}),
       ...(row.failed_at !== null ? { failedAt: row.failed_at } : {}),
+      ...(row.last_failed_by !== null ? { lastFailedBy: row.last_failed_by } : {}),
+      ...(row.next_attempt_at !== null ? { nextAttemptAt: row.next_attempt_at } : {}),
       createdAt: row.created_at,
       publishedAt: row.published_at,
     };

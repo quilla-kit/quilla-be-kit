@@ -41,6 +41,68 @@ describe('OutboxForwarder', () => {
     expect(reader.markedFailed).toHaveLength(0);
   });
 
+  it('claims with a failover window of twice the poll interval by default', async () => {
+    const fwd = new OutboxForwarder({
+      reader,
+      publisher,
+      sourceService: 'svc-a',
+      logger: new NoopLogger(),
+      pollIntervalMs: 500,
+    });
+
+    fwd.start();
+    await vi.advanceTimersByTimeAsync(500);
+    await fwd.dispose();
+
+    expect(reader.claimed[0]?.options).toEqual({ failoverWindowMs: 1000 });
+  });
+
+  it('hands a failure back with its retry delay, retrying at once by default', async () => {
+    publisher.publish = vi.fn(async () => {
+      throw new Error('broker down');
+    });
+    reader.enqueueBatch([makeOutboxEntry({ id: 'e1', retryCount: 0 })]);
+    reader.enqueueBatch([makeOutboxEntry({ id: 'e2', retryCount: 3 })]);
+    const fwd = new OutboxForwarder({
+      reader,
+      publisher,
+      sourceService: 'svc-a',
+      logger: new NoopLogger(),
+      retryDelaysMs: [100, 500],
+    });
+    const plain = new OutboxForwarder({
+      reader,
+      publisher,
+      sourceService: 'svc-a',
+      logger: new NoopLogger(),
+    });
+
+    fwd.start();
+    await vi.advanceTimersByTimeAsync(1000);
+    await fwd.dispose();
+    plain.start();
+    await vi.advanceTimersByTimeAsync(1000);
+    await plain.dispose();
+
+    expect(reader.markFailedOptions).toEqual([{ retryAfterMs: 100 }, { retryAfterMs: 0 }]);
+  });
+
+  it('passes failoverWindowMs through, including 0', async () => {
+    const fwd = new OutboxForwarder({
+      reader,
+      publisher,
+      sourceService: 'svc-a',
+      logger: new NoopLogger(),
+      failoverWindowMs: 0,
+    });
+
+    fwd.start();
+    await vi.advanceTimersByTimeAsync(1000);
+    await fwd.dispose();
+
+    expect(reader.claimed[0]?.options).toEqual({ failoverWindowMs: 0 });
+  });
+
   it('threads the outbox row occurredAt onto every publish', async () => {
     const occurredAt = new Date('2025-12-31T23:59:00Z');
     reader.enqueueBatch([makeOutboxEntry({ id: 'e1', occurredAt })]);

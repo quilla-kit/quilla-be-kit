@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ClaimLostError } from '../../src/event-bus/claim-lost.error.js';
-import { RELEASE_CLAIM } from '../../src/postgres/claim.dao.js';
+import { CLEAR_FAILURE, RELEASE_CLAIM } from '../../src/postgres/claim.dao.js';
 import { MissingColumnError } from '../../src/postgres/missing-column.error.js';
 import { PgEventBus } from '../../src/postgres/pg-event-bus.js';
 import { InMemoryHandlerOutcomeStore } from '../../src/testing.js';
@@ -164,13 +164,51 @@ describe('PgEventBus', () => {
       });
     });
 
+    it('takes a retrying row once due, one failover window later for the instance that failed it', async () => {
+      pool.enqueue([]);
+      const before = Date.now();
+      await bus.claim('replica-1', 10, ['order.placed'], { failoverWindowMs: 2000 });
+
+      const call = pool.clientCalls[1];
+      const due = (alias: string) =>
+        `CASE WHEN ${alias}.last_failed_by = $2 THEN $6::timestamptz ELSE $3::timestamptz END`;
+      expect(call?.sql).toContain(
+        `AND (e.next_attempt_at IS NULL OR e.next_attempt_at <= ${due('e')})`,
+      );
+      expect(call?.sql).toContain('lease_expires_at = $5');
+      const cutoff = call?.params[5] as Date;
+      expect(cutoff.getTime()).toBeGreaterThanOrEqual(before - 2000);
+      expect(cutoff.getTime()).toBeLessThanOrEqual(Date.now() - 2000);
+    });
+
+    it('skips the rest of an aggregate behind a row that is not due yet', async () => {
+      pool.enqueue([]);
+      await bus.claim('replica-1', 10, ['order.placed'], { failoverWindowMs: 2000 });
+
+      const sql = (pool.clientCalls[1]?.sql ?? '').replace(/\s+/g, ' ');
+      expect(sql).toContain(
+        "WHERE w.aggregate_id = e.aggregate_id AND w.status = 'PENDING' AND w.event_type = ANY($4) AND w.next_attempt_at > CASE WHEN w.last_failed_by = $2",
+      );
+      expect(sql).toContain('AND w.seq < e.seq');
+    });
+
+    it('waits only for next_attempt_at without a failover window', async () => {
+      pool.enqueue([]);
+      await bus.claim('replica-1', 10);
+
+      const call = pool.clientCalls[1];
+      expect(call?.sql).toContain('THEN $5::timestamptz ELSE $3::timestamptz END');
+      expect(call?.sql).toContain('lease_expires_at = $4');
+      expect(call?.params[4]).toEqual(call?.params[2]);
+    });
+
     it('omits the topic predicate when allowedTopics is not provided', async () => {
       pool.enqueue([]);
       await bus.claim('replica-1', 10);
 
       const call = pool.clientCalls[1];
       expect(call?.sql).not.toContain('event_type');
-      expect(call?.params).toHaveLength(4);
+      expect(call?.params).toHaveLength(5);
     });
 
     it('omits the topic predicate when allowedTopics is empty', async () => {
@@ -179,7 +217,7 @@ describe('PgEventBus', () => {
 
       const call = pool.clientCalls[1];
       expect(call?.sql).not.toContain('event_type');
-      expect(call?.params).toHaveLength(4);
+      expect(call?.params).toHaveLength(5);
     });
 
     it('inlines event_type = ANY($4) and passes the topic array', async () => {
@@ -188,7 +226,7 @@ describe('PgEventBus', () => {
 
       const call = pool.clientCalls[1];
       expect(call?.sql).toContain('AND e.event_type = ANY($4)');
-      expect(call?.params).toHaveLength(5);
+      expect(call?.params).toHaveLength(6);
       expect(call?.params[3]).toEqual(['order.placed', 'order.cancelled']);
       expect(call?.sql).toContain('lease_expires_at = $5');
     });
@@ -287,7 +325,7 @@ describe('PgEventBus', () => {
       expect(replayed).toEqual(['e1']);
       expect(pool.calls).toHaveLength(1);
       expect(flat(pool.calls[0]?.sql ?? '')).toContain(
-        `SET status = 'PENDING', retry_count = 0, failed_at = NULL, ${RELEASE_CLAIM}`,
+        `SET status = 'PENDING', retry_count = 0, ${CLEAR_FAILURE}, ${RELEASE_CLAIM}`,
       );
       expect(pool.calls[0]?.sql).toContain("WHERE id = ANY($1) AND status = 'FAILED'");
       expect(pool.calls[0]?.params).toEqual([['e1', 'e2']]);
@@ -426,8 +464,22 @@ describe('PgEventBus', () => {
 
       const call = pool.calls[0];
       expect(call?.sql).toContain('lease_expires_at = NULL');
-      expect(call?.sql).toContain('WHERE id = $2 AND (claimed_by = $5 OR claimed_by IS NULL)');
+      expect(call?.sql).toContain('WHERE id = $2 AND (claimed_by = $7 OR claimed_by IS NULL)');
+      expect(call?.params[6]).toBe('replica-1');
+    });
+
+    it('schedules the next attempt retryAfterMs from now', async () => {
+      pool.enqueue([], 1);
+      const before = Date.now();
+      await bus.markFailed('evt-1', 'boom', 'replica-1', { retryAfterMs: 5000 });
+
+      const call = pool.calls[0];
+      expect(call?.sql).toContain('last_failed_by = $5');
+      expect(call?.sql).toContain('next_attempt_at = $6');
       expect(call?.params[4]).toBe('replica-1');
+      const next = (call?.params[5] as Date).getTime();
+      expect(next).toBeGreaterThanOrEqual(before + 5000);
+      expect(next).toBeLessThanOrEqual(Date.now() + 5000);
     });
 
     it('unfenced markFailed ignores rowCount', async () => {

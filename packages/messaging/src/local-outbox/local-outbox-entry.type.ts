@@ -16,6 +16,10 @@ export type LocalOutboxEntry = {
   readonly retryCount: number;
   readonly lastError?: string | undefined;
   readonly failedAt?: Date | undefined;
+  // The instance whose attempt failed last.
+  readonly lastFailedBy?: string | undefined;
+  // When a retry is due (other instances); the instance that failed it waits a failover window more.
+  readonly nextAttemptAt?: Date | undefined;
   readonly publishedAt?: Date | undefined;
   readonly createdAt: Date;
 };

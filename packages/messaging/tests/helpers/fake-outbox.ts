@@ -1,11 +1,22 @@
-import { ClaimLostError, type LocalOutboxEntry, type LocalOutboxReader } from '../../src/index.js';
+import {
+  ClaimLostError,
+  type ClaimOptions,
+  type LocalOutboxEntry,
+  type LocalOutboxReader,
+  type MarkFailedOptions,
+} from '../../src/index.js';
 import { type FakeLease, failedCopy } from './fake-lease.js';
 
 export class FakeLocalOutboxReader implements LocalOutboxReader {
-  readonly claimed: { instanceId: string; batchSize: number }[] = [];
+  readonly claimed: {
+    instanceId: string;
+    batchSize: number;
+    options?: ClaimOptions | undefined;
+  }[] = [];
   readonly markedSent: { id: string; publishedAt: Date }[] = [];
   readonly markedFailed: { id: string; error: string }[] = [];
   readonly markInstanceIds: (string | undefined)[] = [];
+  readonly markFailedOptions: (MarkFailedOptions | undefined)[] = [];
   readonly claimLost = new Set<string>();
   lease?: FakeLease;
   failedStatus: 'PENDING' | 'FAILED' = 'PENDING';
@@ -17,8 +28,12 @@ export class FakeLocalOutboxReader implements LocalOutboxReader {
     this.batches.push([...entries]);
   }
 
-  async claim(instanceId: string, batchSize: number): Promise<readonly LocalOutboxEntry[]> {
-    this.claimed.push({ instanceId, batchSize });
+  async claim(
+    instanceId: string,
+    batchSize: number,
+    options?: ClaimOptions,
+  ): Promise<readonly LocalOutboxEntry[]> {
+    this.claimed.push({ instanceId, batchSize, options });
     return this.batches.shift() ?? [];
   }
 
@@ -32,7 +47,9 @@ export class FakeLocalOutboxReader implements LocalOutboxReader {
     id: string,
     error: string,
     instanceId?: string,
+    options?: MarkFailedOptions,
   ): Promise<LocalOutboxEntry | undefined> {
+    this.markFailedOptions.push(options);
     this.markInstanceIds.push(instanceId);
     if (this.claimLost.has(id)) throw new ClaimLostError(id);
     this.markedFailed.push({ id, error });

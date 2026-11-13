@@ -1,9 +1,12 @@
 import type { Pool, QueryResult, QueryResultRow } from 'pg';
 import type { ClaimLease } from '../event-bus/claim-lease.type.js';
 import { ClaimLostError } from '../event-bus/claim-lost.error.js';
+import type { ClaimOptions } from '../event-bus/claim-options.type.js';
+import type { MarkFailedOptions } from '../event-bus/mark-failed-options.type.js';
 import { withColumnHint } from './missing-column.error.js';
 
 export const RELEASE_CLAIM = 'claimed_by = NULL, claimed_at = NULL, lease_expires_at = NULL';
+export const CLEAR_FAILURE = 'failed_at = NULL, last_failed_by = NULL, next_attempt_at = NULL';
 
 export type ClaimDaoOptions = {
   readonly pool: Pool;
@@ -52,16 +55,30 @@ export class ClaimDao implements ClaimLease {
     instanceId: string,
     batchSize: number,
     topics?: readonly string[],
+    options?: ClaimOptions,
   ): Promise<R[]> {
     const now = new Date();
     const params: unknown[] = [batchSize, instanceId, now];
     const hasTopics = topics !== undefined && topics.length > 0;
     if (hasTopics) params.push([...topics]);
     params.push(this.expiryFrom(now));
+    const expiryParam = params.length;
+    params.push(new Date(now.getTime() - (options?.failoverWindowMs ?? 0)));
+    // A retrying row is due at next_attempt_at, or one failover window later for the instance
+    // that failed it.
+    const dueBy = (alias: string) =>
+      `CASE WHEN ${alias}.last_failed_by = $2 THEN $${params.length}::timestamptz ELSE $3::timestamptz END`;
     const claimSql = `WITH claimed AS (
          SELECT id FROM ${this.table} e
          WHERE e.status = 'PENDING'
            ${hasTopics ? 'AND e.event_type = ANY($4)' : ''}
+           AND (e.next_attempt_at IS NULL OR e.next_attempt_at <= ${dueBy('e')})
+           AND NOT EXISTS (
+             SELECT 1 FROM ${this.table} w
+             WHERE w.aggregate_id = e.aggregate_id AND w.status = 'PENDING'
+               ${hasTopics ? 'AND w.event_type = ANY($4)' : ''}
+               AND w.next_attempt_at > ${dueBy('w')} AND w.seq < e.seq
+           )
            AND NOT EXISTS (
              SELECT 1 FROM ${this.table} e2
              WHERE e2.aggregate_id IS NOT NULL
@@ -74,7 +91,7 @@ export class ClaimDao implements ClaimLease {
          FOR UPDATE SKIP LOCKED
        ), updated AS (
          UPDATE ${this.table} t
-         SET status = 'CLAIMED', claimed_by = $2, claimed_at = $3, lease_expires_at = $${params.length}
+         SET status = 'CLAIMED', claimed_by = $2, claimed_at = $3, lease_expires_at = $${expiryParam}
          FROM claimed c
          WHERE t.id = c.id
          RETURNING t.*
@@ -135,8 +152,11 @@ export class ClaimDao implements ClaimLease {
     reason: string,
     maxRetries: number,
     instanceId: string | undefined,
+    options?: MarkFailedOptions,
   ): Promise<R | undefined> {
-    const params: unknown[] = [reason, id, maxRetries, new Date()];
+    const now = new Date();
+    const nextAttemptAt = new Date(now.getTime() + Math.max(0, options?.retryAfterMs ?? 0));
+    const params: unknown[] = [reason, id, maxRetries, now, instanceId ?? null, nextAttemptAt];
     const owned = this.ownedBy(params, instanceId);
     const result = await this.query<R>(
       `UPDATE ${this.table}
@@ -144,6 +164,8 @@ export class ClaimDao implements ClaimLease {
            last_error = $1,
            status = CASE WHEN retry_count + 1 >= $3 THEN 'FAILED' ELSE 'PENDING' END,
            failed_at = CASE WHEN retry_count + 1 >= $3 THEN $4::timestamptz ELSE NULL END,
+           last_failed_by = $5,
+           next_attempt_at = $6,
            ${RELEASE_CLAIM}
        WHERE id = $2${owned}
        RETURNING *`,

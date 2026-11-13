@@ -1,8 +1,14 @@
 import type { ClaimLease } from '../event-bus/claim-lease.type.js';
+import type { ClaimOptions } from '../event-bus/claim-options.type.js';
+import type { MarkFailedOptions } from '../event-bus/mark-failed-options.type.js';
 import type { LocalOutboxEntry } from './local-outbox-entry.type.js';
 
 export interface LocalOutboxReader {
-  claim(instanceId: string, batchSize: number): Promise<readonly LocalOutboxEntry[]>;
+  claim(
+    instanceId: string,
+    batchSize: number,
+    options?: ClaimOptions,
+  ): Promise<readonly LocalOutboxEntry[]>;
   // With `instanceId`, throws ClaimLostError when the claim is held by another instance.
   markSent(id: string, publishedAt: Date, instanceId?: string): Promise<void>;
   // Resolves to the updated entry (`status` FAILED once retries are exhausted).
@@ -10,6 +16,7 @@ export interface LocalOutboxReader {
     id: string,
     reason: string,
     instanceId?: string,
+    options?: MarkFailedOptions,
   ): Promise<LocalOutboxEntry | undefined>;
   // Cutoff applies to claims without a lease; leased claims expire on their own deadline.
   resetStale(olderThan: Date): Promise<number>;

@@ -38,6 +38,8 @@ function claimSupport(table: string): string[] {
   return [
     addColumn(table, 'lease_expires_at', 'TIMESTAMPTZ'),
     addColumn(table, 'failed_at', 'TIMESTAMPTZ'),
+    addColumn(table, 'last_failed_by', 'TEXT'),
+    addColumn(table, 'next_attempt_at', 'TIMESTAMPTZ'),
     addColumn(table, 'seq', 'BIGINT'),
     `CREATE SEQUENCE IF NOT EXISTS ${table}_seq OWNED BY ${table}.seq;`,
     doIf(
@@ -56,6 +58,11 @@ function claimSupport(table: string): string[] {
     ),
     createIndex(`${table}_claimed_at_idx`, `${table} (claimed_at) WHERE status = 'CLAIMED'`),
     createIndex(`${table}_failed_at_idx`, `${table} (failed_at) WHERE status = 'FAILED'`),
+    // Only rows waiting for a retry: lets a claim skip the rest of their aggregate cheaply.
+    createIndex(
+      `${table}_retrying_idx`,
+      `${table} (aggregate_id, seq) WHERE status = 'PENDING' AND next_attempt_at IS NOT NULL`,
+    ),
   ];
 }
 
@@ -79,6 +86,8 @@ export function getPostgresSchema(options?: PostgresSchemaOptions): string {
   retry_count INTEGER NOT NULL,
   last_error TEXT,
   failed_at TIMESTAMPTZ,
+  last_failed_by TEXT,
+  next_attempt_at TIMESTAMPTZ,
   published_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL,
   occurred_at TIMESTAMPTZ NOT NULL
@@ -105,6 +114,8 @@ export function getPostgresSchema(options?: PostgresSchemaOptions): string {
   retry_count INTEGER NOT NULL,
   last_error TEXT,
   failed_at TIMESTAMPTZ,
+  last_failed_by TEXT,
+  next_attempt_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL,
   published_at TIMESTAMPTZ NOT NULL,
   occurred_at TIMESTAMPTZ NOT NULL
