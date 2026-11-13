@@ -16,11 +16,14 @@ import type { Logger } from '@quilla-be-kit/observability';
 import type { Disposable } from '@quilla-be-kit/runtime';
 import { ClaimLeaseManager } from './claim-lease.manager.js';
 import type { LeaseLostInfo } from './claim-lease.type.js';
+import type { ClaimOptions } from './claim-options.type.js';
 import {
   DEFAULT_BATCH_SIZE,
+  DEFAULT_FAILOVER_WINDOW_POLLS,
   DEFAULT_POLL_INTERVAL_MS,
   DEFAULT_RETRY_DELAYS_MS,
   DEFAULT_STALE_CLAIM_MS,
+  retryDelayFor,
 } from './defaults.js';
 import type { EventBusConsumer } from './event-bus-consumer.interface.js';
 import type { EventBusEntry } from './event-bus-entry.type.js';
@@ -65,11 +68,20 @@ export type EventConsumerOptions = {
   readonly logger: Logger;
   readonly pollIntervalMs?: number;
   readonly batchSize?: number;
+  /**
+   * Wait before each retry: the n-th retry waits `retryDelaysMs[n - 1]`, the last value
+   * repeating. The bus's `maxRetries` caps the attempts. The event is handed back while it waits.
+   */
   readonly retryDelaysMs?: readonly number[];
   readonly skipOwnEventKinds?: readonly string[];
   readonly staleClaimAfterMs?: number;
   readonly renewIntervalMs?: number;
   readonly instanceId?: string;
+  /**
+   * After this instance fails an event, other instances get this long to claim it first.
+   * Default: twice `pollIntervalMs`. `0` turns it off.
+   */
+  readonly failoverWindowMs?: number;
   readonly executionContext?: {
     readonly provider: ExecutionContextProvider;
   };
@@ -145,6 +157,7 @@ export class EventConsumer implements Disposable {
   private readonly skipOwnEventKinds: ReadonlySet<string>;
   private readonly staleClaimAfterMs: number;
   private readonly instanceId: string;
+  private readonly claimOptions: ClaimOptions;
   private readonly executionContext: EventConsumerOptions['executionContext'];
   private readonly onProcessed: EventConsumerOptions['onProcessed'];
   private readonly onFailed: EventConsumerOptions['onFailed'];
@@ -169,6 +182,10 @@ export class EventConsumer implements Disposable {
     this.skipOwnEventKinds = new Set(options.skipOwnEventKinds ?? []);
     this.staleClaimAfterMs = options.staleClaimAfterMs ?? DEFAULT_STALE_CLAIM_MS;
     this.instanceId = options.instanceId ?? randomUUID();
+    this.claimOptions = {
+      failoverWindowMs:
+        options.failoverWindowMs ?? DEFAULT_FAILOVER_WINDOW_POLLS * this.pollIntervalMs,
+    };
     this.executionContext = options.executionContext;
     this.onProcessed = options.onProcessed;
     this.onFailed = options.onFailed;
@@ -281,6 +298,7 @@ export class EventConsumer implements Disposable {
         batchSize: this.batchSize,
         registeredTypeCount: this.handlers.size,
         instanceId: this.instanceId,
+        failoverWindowMs: this.claimOptions.failoverWindowMs,
         leaseMs: this.leases.leaseMs,
         renewIntervalMs: this.leases.renewIntervalMs,
       },
@@ -313,7 +331,12 @@ export class EventConsumer implements Disposable {
     try {
       await this.sweepStale();
       if (this.topicKeys.length === 0) return;
-      const events = await this.bus.claim(this.instanceId, this.batchSize, this.topicKeys);
+      const events = await this.bus.claim(
+        this.instanceId,
+        this.batchSize,
+        this.topicKeys,
+        this.claimOptions,
+      );
       this.leases.begin(events);
       const outcomes = await this.loadOutcomes(events);
 
@@ -375,7 +398,7 @@ export class EventConsumer implements Disposable {
         continue;
       }
       ran++;
-      const failure = await this.executeWithRetry(event, fields, registration);
+      const failure = await this.execute(event, fields, registration);
       if (failure) failures.push(failure);
       if (key === undefined) continue;
       if (!failure) recorded.push({ key, outcome: 'done' });
@@ -403,7 +426,9 @@ export class EventConsumer implements Disposable {
     const failed = await this.leases.settle(event, 'failed', () =>
       permanent
         ? this.bus.markFailedPermanently(event.id, message, this.instanceId)
-        : this.bus.markFailed(event.id, message, this.instanceId),
+        : this.bus.markFailed(event.id, message, this.instanceId, {
+            retryAfterMs: retryDelayFor(this.retryDelaysMs, event.retryCount),
+          }),
     );
     if (failed) this.callHook('onFailed', event.id, () => this.onFailed?.(failed, { permanent }));
   }
@@ -493,59 +518,41 @@ export class EventConsumer implements Disposable {
     };
   }
 
-  private async executeWithRetry(
+  // One attempt per claim: a retry is a later claim, possibly on another instance.
+  private async execute(
     event: EventBusEntry,
     fields: HandlerEntryFields,
     { handler, requires }: Registration,
   ): Promise<HandlerFailure | undefined> {
-    const meta = { eventId: event.id, eventType: event.eventType };
-    // Rebuilding the context and checking the requirement depend only on the event.
-    let firstCtx: ExecutionContext | undefined;
+    const meta = { eventId: event.id, eventType: event.eventType, attempt: event.retryCount + 1 };
+    let ctx: ExecutionContext | undefined;
     try {
-      firstCtx = this.buildExecutionContext(event);
-      if (requires !== undefined && firstCtx) requireContext(firstCtx, requires);
+      ctx = this.buildExecutionContext(event);
+      if (requires !== undefined && ctx) requireContext(ctx, requires);
     } catch (err) {
       this.logger.error('handler context is unusable; dead-lettering', err, { meta });
       return { message: errorMessage(err), permanent: true };
     }
 
-    const maxAttempts = this.retryDelaysMs.length + 1;
-    let lastError: string | undefined;
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      if (this.stopping) return { message: lastError ?? 'shutdown in progress', permanent: false };
-      try {
-        // Each retry is a new attempt, so it gets a fresh context (and executionAttemptId).
-        const ctx = attempt === 1 ? firstCtx : this.buildExecutionContext(event);
-        const entry = createHandlerEntry(fields, () => this.readContext(ctx, requires));
-        const run = async () => handler(entry);
-        if (ctx && this.executionContext) {
-          await this.executionContext.provider.runWithContext(ctx, run);
-        } else {
-          await run();
-        }
-        return undefined;
-      } catch (err) {
-        lastError = errorMessage(err);
-        if (this.isPermanent(err, event, meta)) {
-          this.logger.error('permanent handler failure; skipping retries', err, {
-            meta: err instanceof SchemaValidationError ? { ...meta, issues: err.issues } : meta,
-          });
-          return { message: lastError, permanent: true };
-        }
-        const delayMs = this.retryDelaysMs[attempt - 1];
-        if (attempt >= maxAttempts || delayMs === undefined) {
-          this.logger.error(`handler failed after ${attempt} attempt(s)`, err, {
-            meta: { ...meta, attempt },
-          });
-          return { message: lastError, permanent: false };
-        }
-        this.logger.warn(`handler failed, retrying in ${delayMs}ms`, {
-          meta: { ...meta, attempt, maxAttempts, error: lastError },
-        });
-        await this.sleep(delayMs);
+    try {
+      const entry = createHandlerEntry(fields, () => this.readContext(ctx, requires));
+      const run = async () => handler(entry);
+      if (ctx && this.executionContext) {
+        await this.executionContext.provider.runWithContext(ctx, run);
+      } else {
+        await run();
       }
+      return undefined;
+    } catch (err) {
+      if (this.isPermanent(err, event, meta)) {
+        this.logger.error('permanent handler failure; skipping retries', err, {
+          meta: err instanceof SchemaValidationError ? { ...meta, issues: err.issues } : meta,
+        });
+        return { message: errorMessage(err), permanent: true };
+      }
+      this.logger.error('handler failed', err, { meta });
+      return { message: errorMessage(err), permanent: false };
     }
-    return { message: lastError ?? 'unknown failure', permanent: false };
   }
 
   private isPermanent(
@@ -614,10 +621,6 @@ export class EventConsumer implements Disposable {
       );
     }
     return factory.createSystemContext('system');
-  }
-
-  private sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 }
 

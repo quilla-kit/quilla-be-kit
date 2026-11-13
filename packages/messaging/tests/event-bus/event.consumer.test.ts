@@ -74,6 +74,40 @@ describe('EventConsumer', () => {
     expect(bus.marksFailed).toHaveLength(0);
   });
 
+  it('claims with a failover window of twice the poll interval by default', async () => {
+    const consumer = new EventConsumer({
+      bus,
+      consumerName: 'test',
+      sourceService: 'svc-a',
+      logger: new NoopLogger(),
+      pollIntervalMs: 500,
+    });
+    consumer.on('test.happened', async () => {});
+
+    consumer.start();
+    await vi.advanceTimersByTimeAsync(500);
+    await consumer.dispose();
+
+    expect(bus.claimed[0]?.options).toEqual({ failoverWindowMs: 1000 });
+  });
+
+  it('passes failoverWindowMs through, including 0', async () => {
+    const consumer = new EventConsumer({
+      bus,
+      consumerName: 'test',
+      sourceService: 'svc-a',
+      logger: new NoopLogger(),
+      failoverWindowMs: 0,
+    });
+    consumer.on('test.happened', async () => {});
+
+    consumer.start();
+    await vi.advanceTimersByTimeAsync(1000);
+    await consumer.dispose();
+
+    expect(bus.claimed[0]?.options).toEqual({ failoverWindowMs: 0 });
+  });
+
   it('passes the event occurredAt through to the handler entry', async () => {
     const occurredAt = new Date('2025-12-31T23:59:00Z');
     const handler = vi.fn(async () => {});
@@ -234,11 +268,9 @@ describe('EventConsumer', () => {
     expect(bus.marksDone).toEqual(['evt-1']);
   });
 
-  it('retries on failure using configured delays then markDone on success', async () => {
-    let calls = 0;
+  it('makes one attempt per claim and hands a failure back with its retry delay', async () => {
     const handler = vi.fn(async () => {
-      calls += 1;
-      if (calls < 3) throw new Error('transient');
+      throw new Error('transient');
     });
     const consumer = new EventConsumer({
       bus,
@@ -248,40 +280,59 @@ describe('EventConsumer', () => {
       retryDelaysMs: [10, 20],
     });
     consumer.on('test.happened', handler);
-    bus.enqueueBatch([makeBusEntry()]);
+    bus.enqueueBatch([makeBusEntry({ retryCount: 0 })]);
 
     consumer.start();
     await vi.advanceTimersByTimeAsync(1000);
-    await vi.advanceTimersByTimeAsync(100);
     await consumer.dispose();
 
-    expect(handler).toHaveBeenCalledTimes(3);
-    expect(bus.marksDone).toEqual(['evt-1']);
-    expect(bus.marksFailed).toHaveLength(0);
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(bus.marksFailed).toEqual([{ id: 'evt-1', reason: 'transient' }]);
+    expect(bus.markFailedOptions).toEqual([{ retryAfterMs: 10 }]);
+    expect(bus.marksDone).toHaveLength(0);
   });
 
-  it('markFailed after exhausting retries; no markDone', async () => {
-    const handler = vi.fn(async () => {
-      throw new Error('permanent');
-    });
+  it('picks the delay by attempt and repeats the last one', async () => {
     const consumer = new EventConsumer({
       bus,
       consumerName: 'test',
       sourceService: 'svc-a',
       logger: new NoopLogger(),
-      retryDelaysMs: [1, 1],
+      retryDelaysMs: [10, 20],
     });
-    consumer.on('test.happened', handler);
+    consumer.on('test.happened', async () => {
+      throw new Error('transient');
+    });
+    bus.enqueueBatch([
+      makeBusEntry({ id: 'e1', retryCount: 1 }),
+      makeBusEntry({ id: 'e2', retryCount: 5 }),
+    ]);
+
+    consumer.start();
+    await vi.advanceTimersByTimeAsync(1000);
+    await consumer.dispose();
+
+    expect(bus.markFailedOptions).toEqual([{ retryAfterMs: 20 }, { retryAfterMs: 20 }]);
+  });
+
+  it('retries at once with an empty retryDelaysMs', async () => {
+    const consumer = new EventConsumer({
+      bus,
+      consumerName: 'test',
+      sourceService: 'svc-a',
+      logger: new NoopLogger(),
+      retryDelaysMs: [],
+    });
+    consumer.on('test.happened', async () => {
+      throw new Error('transient');
+    });
     bus.enqueueBatch([makeBusEntry()]);
 
     consumer.start();
     await vi.advanceTimersByTimeAsync(1000);
-    await vi.advanceTimersByTimeAsync(100);
     await consumer.dispose();
 
-    expect(handler).toHaveBeenCalledTimes(3);
-    expect(bus.marksFailed).toEqual([{ id: 'evt-1', reason: 'permanent' }]);
-    expect(bus.marksDone).toHaveLength(0);
+    expect(bus.markFailedOptions).toEqual([{ retryAfterMs: 0 }]);
   });
 
   it('fires onProcessed for successful events only', async () => {
@@ -1485,7 +1536,7 @@ describe('EventConsumer permanent failures', () => {
     consumer.on('test.happened', handler);
     await runOnce(consumer);
 
-    expect(handler).toHaveBeenCalledTimes(3);
+    expect(handler).toHaveBeenCalledTimes(1);
     expect(bus.marksFailed).toEqual([{ id: 'evt-1', reason: 'boom' }]);
     expect(bus.marksFailedPermanently).toHaveLength(0);
   });
@@ -1915,7 +1966,7 @@ describe('EventConsumer handler outcomes', () => {
       expect(warn).not.toHaveBeenCalled();
     });
 
-    it('records finished handlers when shutdown interrupts an attempt', async () => {
+    it('finishes the event in flight when shutdown starts mid-dispatch', async () => {
       const b = vi.fn(async () => {});
       const consumer = makeConsumer();
       consumer
@@ -1930,11 +1981,9 @@ describe('EventConsumer handler outcomes', () => {
 
       await run(consumer, [makeBusEntry()]);
 
-      expect(b).not.toHaveBeenCalled();
-      expect(store.records).toEqual([
-        { eventId: 'evt-1', outcomes: [{ key: 'a', outcome: 'done' }] },
-      ]);
-      expect(bus.marksFailed).toEqual([{ id: 'evt-1', reason: 'shutdown in progress' }]);
+      expect(b).toHaveBeenCalledTimes(1);
+      expect(store.records).toEqual([]);
+      expect(bus.marksDone).toEqual(['evt-1']);
     });
   });
 });

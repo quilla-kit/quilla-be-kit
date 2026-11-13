@@ -298,10 +298,10 @@ together:
 4. **Stop the aggregate after a failure** — when an event of A fails (or
    its claim is lost), the rest of A in the same batch is skipped and
    handed back to PENDING when the batch ends (see
-   [Claim leases](#claim-leases)). The next claim takes the retried event
-   and the rest of A together, in `seq` order, so a retry comes back
-   within one poll interval. Any delay between attempts comes from
-   `retryDelaysMs`. With a lease that can't release, the skipped rows
+   [Claim leases](#claim-leases)). The failed event waits for its
+   [retry](#retries-and-failover), and claims skip the rest of A until it
+   is due; the next claim then takes the retried event and the rest of A
+   together, in `seq` order. With a lease that can't release, the skipped rows
    come back once their lease expires instead. An event that reaches
    FAILED stops blocking its aggregate. An event whose failures are all
    [permanent](#permanent-failures) reaches FAILED on that attempt: the rest
@@ -321,6 +321,69 @@ Preconditions and limits:
 
 Events with `aggregate_id IS NULL` are processed freely — no ordering
 constraint to preserve.
+
+### Retries and failover
+
+A claim makes **one attempt**. When it fails, the row goes straight back
+to PENDING with:
+
+- `next_attempt_at`: now plus the retry delay. The n-th retry waits
+  `retryDelaysMs[n - 1]`, and the last value repeats. No replica claims
+  the row before then.
+- `last_failed_by`: the failing replica's `instanceId`. That replica
+  waits a further `failoverWindowMs`, so another replica retries first. A
+  fault confined to one replica, such as a broken connection or missing
+  config, doesn't use up the retry budget there.
+
+The row's `maxRetries` (on `PgEventBus` / `PgLocalOutbox`) caps the
+attempts across all replicas. Nothing is held while a retry waits: no
+claim, no lease, no sleeping handler.
+
+- **Defaults:** `EventConsumer` waits 1 s, 5 s, then 15 s
+  (`DEFAULT_RETRY_DELAYS_MS`), and `PgEventBus` allows 4 attempts.
+  `OutboxForwarder` retries on the next poll unless you give it
+  `retryDelaysMs`. `failoverWindowMs` defaults to twice `pollIntervalMs`
+  on both; set it at least as long as the *other* replicas' poll
+  interval. `0` turns it off.
+- **Single replica:** it retries once the delay and the window have
+  passed. Failover only delays a retry, it never blocks the row.
+- **Ordering:** a waiting row holds the rest of its aggregate, as any
+  earlier PENDING row does. Claims skip that aggregate outright (through
+  a small index of waiting rows), so they don't claim its later rows only
+  to hand them back.
+- `bus.replay(ids)` clears both columns, so a replayed row can go to any
+  replica straight away. `entry.lastFailedBy` and `entry.nextAttemptAt`
+  tell `onFailed` which replica failed and when the retry is due.
+
+```ts
+const bus = new PgEventBus({ pool, maxRetries: 6 }); // 6 attempts in all, across replicas
+
+new EventConsumer({
+  bus,
+  consumerName: 'notifications',
+  sourceService: 'notifications',
+  logger,
+  pollIntervalMs: 1000,
+  retryDelaysMs: [1000, 10_000, 60_000], // retries 3–5 also wait 60 s
+  failoverWindowMs: 5000, // the failing replica waits 5 s longer than the others
+  onFailed: (entry) => {
+    if (entry.status === 'FAILED') return alertDeadLetter(entry);
+    logger.warn('event will be retried', {
+      meta: {
+        eventId: entry.id,
+        attempt: entry.retryCount,
+        failedOn: entry.lastFailedBy, // instanceId of the replica that failed
+        retryAt: entry.nextAttemptAt, // when other replicas may retry it
+      },
+    });
+  },
+});
+```
+
+With `retryDelaysMs: []` a failure is retried on the next poll, by another
+replica if one polls within the failover window. A negative delay counts
+as 0. A [permanent failure](#permanent-failures) skips the schedule and
+dead-letters at once.
 
 ### Claim leases
 
@@ -387,7 +450,8 @@ run may have happened.
 FAILED rows stay in the main table with full context — `status='FAILED'`,
 `retry_count`, `last_error`, `failed_at`. Query them to inspect, and replay
 them with `bus.replay(ids)`: it returns FAILED rows to PENDING with a fresh
-retry budget (`retry_count = 0`, `failed_at = NULL`, claim cleared;
+retry budget (`retry_count = 0`, `failed_at = NULL`, claim and
+[retry schedule](#retries-and-failover) cleared;
 `last_error` is kept until the next failure), leaves rows in any other
 status alone, and resolves to the ids it replayed. One less table to
 reason about.
@@ -428,10 +492,10 @@ row whose claim then turns out to be lost. `onFailed` isn't called when
 the claim was lost. In both cases `onLeaseLost` reports the loss. A hook
 that throws is logged and doesn't affect the batch.
 
-Each attempt the bus records counts toward `maxRetries`, and each attempt
-runs the handler up to `retryDelaysMs.length + 1` times in process. A
-schema-validation failure skips the in-process retries but still counts
-one bus attempt per claim.
+Each failed attempt counts toward `maxRetries` (see
+[Retries and failover](#retries-and-failover)). A schema-validation
+failure is [permanent](#permanent-failures): it dead-letters on its first
+attempt.
 
 ### At-least-once delivery — handlers must be idempotent
 
@@ -908,7 +972,7 @@ All knobs with sensible defaults. Defaults are exported for composition.
 new PgLocalOutbox({
   pool,
   tableName: 'outbox_events',   // override if you prefix tables per-service
-  maxRetries: 3,                // flips status to FAILED after N failed markFailed calls
+  maxRetries: 3,                // attempts before FAILED (each failed markFailed counts one)
   leaseMs: 60_000,              // DEFAULT_LEASE_MS — claim lease duration
 });
 ```
@@ -923,7 +987,7 @@ transaction you pass, so a commit's events still land or roll back together.
 new PgEventBus({
   pool,
   eventsTableName: 'events',
-  maxRetries: 3,
+  maxRetries: 4,                // attempts before FAILED: one plus a retry per default delay
   leaseMs: 60_000,              // DEFAULT_LEASE_MS — claim lease duration
 });
 ```
@@ -946,6 +1010,8 @@ new OutboxForwarder({
   staleClaimAfterMs: 5 * 60_000, // recovery cutoff for claims without a lease
   renewIntervalMs: 20_000,       // defaults to a third of the reader's lease; 0 disables
   instanceId: 'replica-<id>',    // defaults to randomUUID(); must be unique per process
+  retryDelaysMs: [1000, 5000],   // wait before each retry, last repeats; default []: next poll
+  failoverWindowMs: 2000,        // defaults to 2 × pollIntervalMs; 0 disables (see Retries and failover)
   onFailed: (entry) => bumpMetric(entry), // entry.status === 'FAILED' when dead-lettered
   onLeaseLost: (info) => bumpMetric(info),
 });
@@ -958,6 +1024,7 @@ import {
   DEFAULT_RETRY_DELAYS_MS,
   DEFAULT_POLL_INTERVAL_MS,
   DEFAULT_BATCH_SIZE,
+  DEFAULT_FAILOVER_WINDOW_POLLS, // failoverWindowMs defaults to this × pollIntervalMs
 } from '@quilla-be-kit/messaging';
 
 new EventConsumer({
@@ -967,11 +1034,12 @@ new EventConsumer({
   logger,
   pollIntervalMs: 1000,
   batchSize: 100,
-  retryDelaysMs: [1000, 5000, 15000], // length = max retry attempts
+  retryDelaysMs: [1000, 5000, 15000], // wait before each retry, last repeats; the bus's maxRetries caps attempts
   skipOwnEventKinds: ['integration'],
   staleClaimAfterMs: 5 * 60_000,     // recovery cutoff for claims without a lease
   renewIntervalMs: 20_000,           // defaults to a third of the bus's lease; 0 disables
   instanceId: 'replica-<id>',        // must be unique per process
+  failoverWindowMs: 2000,            // defaults to 2 × pollIntervalMs; 0 disables (see Retries and failover)
   executionContext: { provider }, // optional: reconstruct + scope per handler; required by `requires` and entry.getContext()
   isPermanentFailure: (error, { entry }) => false, // dead-letter app errors a retry can't fix
   handlerOutcomes: new PgHandlerOutcomeStore({ pool }), // optional: redeliveries run only unfinished handlers
@@ -1014,6 +1082,42 @@ locked. On an existing table that lacks a later version's indexes, it
 builds them without `CONCURRENTLY`, which scans the whole table and blocks
 writes while it runs: for production tables, apply the upgrade SQL below
 instead.
+
+### Upgrading to 0.14.0 (retries and failover)
+
+0.14.0 adds two nullable columns and one partial index to both tables.
+Adding a nullable column without a default only touches the catalog, but
+it still needs a brief exclusive lock, so set a `lock_timeout`. Build the
+index without blocking writes (adjust the table names):
+
+```sql
+SET LOCAL lock_timeout = '5s';
+ALTER TABLE events ADD COLUMN IF NOT EXISTS last_failed_by TEXT;
+ALTER TABLE events ADD COLUMN IF NOT EXISTS next_attempt_at TIMESTAMPTZ;
+ALTER TABLE outbox_events ADD COLUMN IF NOT EXISTS last_failed_by TEXT;
+ALTER TABLE outbox_events ADD COLUMN IF NOT EXISTS next_attempt_at TIMESTAMPTZ;
+```
+
+```sql
+CREATE INDEX CONCURRENTLY IF NOT EXISTS events_retrying_idx
+  ON events (aggregate_id, seq) WHERE status = 'PENDING' AND next_attempt_at IS NOT NULL;
+CREATE INDEX CONCURRENTLY IF NOT EXISTS outbox_events_retrying_idx
+  ON outbox_events (aggregate_id, seq) WHERE status = 'PENDING' AND next_attempt_at IS NOT NULL;
+```
+
+Apply it before deploying 0.14.0: a 0.14.0 claim or `markFailed` on a
+table without the columns throws `MissingColumnError`.
+
+Behaviour changes:
+- **One attempt per claim.** `retryDelaysMs` now spaces bus attempts
+  instead of in-process retries, and `maxRetries` counts every attempt.
+  The `PgEventBus` default moved from 3 to 4. If you set `maxRetries`
+  for the old model, where each bus attempt ran
+  `retryDelaysMs.length + 1` handler attempts, raise it to keep the same
+  total.
+- **Mixed versions.** Older replicas ignore the new columns: they may
+  retry a waiting row early, or keep retrying in process. Finish the
+  rollout before relying on the schedule.
 
 ### Upgrading to 0.13.0 (per-handler outcomes)
 
@@ -1179,7 +1283,9 @@ orphaned rows.
 
 ### Indexes created
 
-- **Both tables** — `(failed_at) WHERE status = 'FAILED'` for `cleanupFailed`.
+- **Both tables** — `(failed_at) WHERE status = 'FAILED'` for `cleanupFailed`,
+  and `(aggregate_id, seq) WHERE status = 'PENDING' AND next_attempt_at IS
+  NOT NULL` so claims skip aggregates behind a waiting retry.
 - **Outbox** — partial index on `(seq NULLS FIRST, created_at) WHERE status = 'PENDING'`
   for the forwarder's claim query, `(aggregate_id, status) WHERE aggregate_id
   IS NOT NULL AND status = 'CLAIMED'` and `(aggregate_id, seq NULLS FIRST)
@@ -1320,9 +1426,9 @@ import type {
 
 class KafkaBus implements EventBusPublisher, EventBusConsumer {
   async publish(event) { /* produce to topic; return generated id */ }
-  async claim(instanceId, batchSize, allowedTopics) { /* pull + transition; filter by allowedTopics */ }
+  async claim(instanceId, batchSize, allowedTopics, options) { /* pull + transition; filter by allowedTopics; options.failoverWindowMs is a hint you may ignore */ }
   async markDone(id, instanceId) { /* commit offset */ }
-  async markFailed(id, reason, instanceId) { /* retry or DLQ; return the updated entry */ }
+  async markFailed(id, reason, instanceId, options) { /* retry after options.retryAfterMs, or DLQ; return the updated entry */ }
   async markFailedPermanently(id, reason, instanceId) { /* DLQ now, no redelivery */ }
   async resetStale(olderThan) { /* broker-specific recovery */ }
 }
@@ -1357,6 +1463,15 @@ const forwarder = new OutboxForwarder({
 - `markFailed` resolves to the updated entry, so `onFailed` can tell a
   dead letter (`status: 'FAILED'`) from a retry. Resolve to `undefined`
   when the broker can't report it; `onFailed` is then skipped.
+- `markFailed(id, reason, instanceId, { retryAfterMs })` — make the
+  message available again no sooner than `retryAfterMs` from now (SQS:
+  change its visibility timeout; RabbitMQ: a delayed requeue). A broker
+  that can only redeliver at once may ignore it; the retry then simply
+  comes sooner.
+- `claim(instanceId, batchSize, allowedTopics, { failoverWindowMs })` — a
+  hint to keep a message away from the instance that just failed it for
+  that long. Ignore it when the broker has no notion of who failed a
+  message; nothing breaks, failover just doesn't happen.
 - `instanceId` on `markDone` / `markFailed` — when the broker reports that
   an ack didn't count (the claim moved elsewhere), throw `ClaimLostError`
   so the consumer reports it via `onLeaseLost` and carries on. Detect it

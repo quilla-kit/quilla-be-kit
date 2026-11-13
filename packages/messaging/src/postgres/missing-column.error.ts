@@ -1,7 +1,13 @@
 import { InternalError } from '@quilla-be-kit/errors';
 
 const UNDEFINED_COLUMN = '42703';
-const KIT_COLUMNS = ['lease_expires_at', 'failed_at', 'seq'] as const;
+const KIT_COLUMNS = [
+  'lease_expires_at',
+  'failed_at',
+  'seq',
+  'last_failed_by',
+  'next_attempt_at',
+] as const;
 
 export class MissingColumnError extends InternalError {
   override readonly code = 'MISSING_COLUMN';

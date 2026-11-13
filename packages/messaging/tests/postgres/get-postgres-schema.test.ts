@@ -121,6 +121,19 @@ describe('getPostgresSchema', () => {
     expect(sql).not.toMatch(/ADD COLUMN seq BIGINT DEFAULT/);
   });
 
+  it('adds the retry schedule columns and index, each step catalog-checked', () => {
+    const sql = getPostgresSchema();
+    expect(sql.match(/last_failed_by TEXT,/g) ?? []).toHaveLength(2);
+    expect(sql.match(/next_attempt_at TIMESTAMPTZ,/g) ?? []).toHaveLength(2);
+    for (const table of ['outbox_events', 'events']) {
+      expect(sql).toContain(`ALTER TABLE ${table} ADD COLUMN last_failed_by TEXT;`);
+      expect(sql).toContain(`ALTER TABLE ${table} ADD COLUMN next_attempt_at TIMESTAMPTZ;`);
+      expect(sql).toContain(
+        `INDEX ${table}_retrying_idx ON ${table} (aggregate_id, seq) WHERE status = 'PENDING' AND next_attempt_at IS NOT NULL`,
+      );
+    }
+  });
+
   it('orders claims through seq indexes and guards the outbox per aggregate', () => {
     const sql = getPostgresSchema();
     expect(sql).toContain("IF to_regclass('outbox_events_seq_idx') IS NULL");

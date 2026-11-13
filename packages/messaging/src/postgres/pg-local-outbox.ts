@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import type { Pool } from 'pg';
 import type { ClaimLease } from '../event-bus/claim-lease.type.js';
+import type { ClaimOptions } from '../event-bus/claim-options.type.js';
 import { DEFAULT_LEASE_MS } from '../event-bus/defaults.js';
+import type { MarkFailedOptions } from '../event-bus/mark-failed-options.type.js';
 import type {
   LocalOutboxEntry,
   LocalOutboxInsertInput,
@@ -33,6 +35,8 @@ type OutboxRow = {
   claimed_at: Date | null;
   lease_expires_at: Date | null;
   failed_at: Date | null;
+  last_failed_by: string | null;
+  next_attempt_at: Date | null;
   seq: string | null;
   retry_count: number;
   last_error: string | null;
@@ -125,8 +129,12 @@ export class PgLocalOutbox implements LocalOutboxWriter, LocalOutboxReader {
 
   // Same per-aggregate guard as the bus, so one aggregate's entries are forwarded by one replica
   // at a time and reach the bus in seq order.
-  async claim(instanceId: string, batchSize: number): Promise<readonly LocalOutboxEntry[]> {
-    const rows = await this.claims.claim<OutboxRow>(instanceId, batchSize);
+  async claim(
+    instanceId: string,
+    batchSize: number,
+    options?: ClaimOptions,
+  ): Promise<readonly LocalOutboxEntry[]> {
+    const rows = await this.claims.claim<OutboxRow>(instanceId, batchSize, undefined, options);
     return rows.map((r) => this.rowToEntry(r));
   }
 
@@ -146,8 +154,15 @@ export class PgLocalOutbox implements LocalOutboxWriter, LocalOutboxReader {
     id: string,
     reason: string,
     instanceId?: string,
+    options?: MarkFailedOptions,
   ): Promise<LocalOutboxEntry | undefined> {
-    const row = await this.claims.markFailed<OutboxRow>(id, reason, this.maxRetries, instanceId);
+    const row = await this.claims.markFailed<OutboxRow>(
+      id,
+      reason,
+      this.maxRetries,
+      instanceId,
+      options,
+    );
     return row && this.rowToEntry(row);
   }
 
@@ -180,6 +195,8 @@ export class PgLocalOutbox implements LocalOutboxWriter, LocalOutboxReader {
       retryCount: row.retry_count,
       ...(row.last_error !== null ? { lastError: row.last_error } : {}),
       ...(row.failed_at !== null ? { failedAt: row.failed_at } : {}),
+      ...(row.last_failed_by !== null ? { lastFailedBy: row.last_failed_by } : {}),
+      ...(row.next_attempt_at !== null ? { nextAttemptAt: row.next_attempt_at } : {}),
       ...(row.published_at !== null ? { publishedAt: row.published_at } : {}),
       createdAt: row.created_at,
     };

@@ -3,10 +3,13 @@ import type { Logger } from '@quilla-be-kit/observability';
 import type { Disposable } from '@quilla-be-kit/runtime';
 import { ClaimLeaseManager } from '../event-bus/claim-lease.manager.js';
 import type { LeaseLostInfo } from '../event-bus/claim-lease.type.js';
+import type { ClaimOptions } from '../event-bus/claim-options.type.js';
 import {
   DEFAULT_BATCH_SIZE,
+  DEFAULT_FAILOVER_WINDOW_POLLS,
   DEFAULT_POLL_INTERVAL_MS,
   DEFAULT_STALE_CLAIM_MS,
+  retryDelayFor,
 } from '../event-bus/defaults.js';
 import type { EventBusPublisher } from '../event-bus/event-bus-publisher.interface.js';
 import type { LocalOutboxEntry } from './local-outbox-entry.type.js';
@@ -19,9 +22,19 @@ export type OutboxForwarderOptions = {
   readonly logger: Logger;
   readonly pollIntervalMs?: number;
   readonly batchSize?: number;
+  /**
+   * Wait before each retry: the n-th retry waits `retryDelaysMs[n - 1]`, the last value
+   * repeating. Default `[]`: retry on the next poll. The reader's `maxRetries` caps the attempts.
+   */
+  readonly retryDelaysMs?: readonly number[];
   readonly staleClaimAfterMs?: number;
   readonly renewIntervalMs?: number;
   readonly instanceId?: string;
+  /**
+   * After this instance fails an entry, other instances get this long to claim it first.
+   * Default: twice `pollIntervalMs`. `0` turns it off.
+   */
+  readonly failoverWindowMs?: number;
   // After each failed attempt is recorded; `entry.status === 'FAILED'` means dead-lettered.
   // Not called when the claim was lost (onLeaseLost reports it).
   readonly onFailed?: (entry: LocalOutboxEntry) => void;
@@ -36,8 +49,10 @@ export class OutboxForwarder implements Disposable {
   private readonly logger: Logger;
   private readonly pollIntervalMs: number;
   private readonly batchSize: number;
+  private readonly retryDelaysMs: readonly number[];
   private readonly staleClaimAfterMs: number;
   private readonly instanceId: string;
+  private readonly claimOptions: ClaimOptions;
   private readonly leases: ClaimLeaseManager;
   private readonly onFailed: ((entry: LocalOutboxEntry) => void) | undefined;
 
@@ -52,8 +67,13 @@ export class OutboxForwarder implements Disposable {
     this.logger = options.logger;
     this.pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     this.batchSize = options.batchSize ?? DEFAULT_BATCH_SIZE;
+    this.retryDelaysMs = options.retryDelaysMs ?? [];
     this.staleClaimAfterMs = options.staleClaimAfterMs ?? DEFAULT_STALE_CLAIM_MS;
     this.instanceId = options.instanceId ?? randomUUID();
+    this.claimOptions = {
+      failoverWindowMs:
+        options.failoverWindowMs ?? DEFAULT_FAILOVER_WINDOW_POLLS * this.pollIntervalMs,
+    };
     this.onFailed = options.onFailed;
     this.leases = new ClaimLeaseManager({
       lease: options.reader.lease,
@@ -73,6 +93,7 @@ export class OutboxForwarder implements Disposable {
         batchSize: this.batchSize,
         sourceService: this.sourceService,
         instanceId: this.instanceId,
+        failoverWindowMs: this.claimOptions.failoverWindowMs,
         leaseMs: this.leases.leaseMs,
         renewIntervalMs: this.leases.renewIntervalMs,
       },
@@ -101,7 +122,7 @@ export class OutboxForwarder implements Disposable {
   private async tick(): Promise<void> {
     try {
       await this.sweepStale();
-      const entries = await this.reader.claim(this.instanceId, this.batchSize);
+      const entries = await this.reader.claim(this.instanceId, this.batchSize, this.claimOptions);
       if (entries.length === 0) return;
       this.leases.begin(entries);
 
@@ -139,7 +160,9 @@ export class OutboxForwarder implements Disposable {
             meta: { outboxId: entry.id, eventType: entry.eventType },
           });
           const failed = await this.leases.settle(entry, 'failed', () =>
-            this.reader.markFailed(entry.id, reason, this.instanceId),
+            this.reader.markFailed(entry.id, reason, this.instanceId, {
+              retryAfterMs: retryDelayFor(this.retryDelaysMs, entry.retryCount),
+            }),
           );
           if (failed) this.notifyFailed(failed);
         }

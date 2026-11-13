@@ -184,6 +184,17 @@ describe('PgLocalOutbox', () => {
         occurredAt: OCCURRED_AT,
       });
     });
+
+    it('passes the failover window to the claim', async () => {
+      pool.enqueue([]);
+      await outbox.claim('replica-1', 10, { failoverWindowMs: 2000 });
+
+      const call = pool.clientCalls[1];
+      expect(call?.sql).toContain(
+        'CASE WHEN e.last_failed_by = $2 THEN $5::timestamptz ELSE $3::timestamptz END',
+      );
+      expect((call?.params[4] as Date).getTime()).toBe((call?.params[2] as Date).getTime() - 2000);
+    });
   });
 
   describe('markSent', () => {
@@ -210,6 +221,22 @@ describe('PgLocalOutbox', () => {
       );
       expect(call?.sql).toContain('claimed_by = NULL');
       expect(call?.params.slice(0, 3)).toEqual(['transient error', 'e1', 3]);
+    });
+
+    it('records the failing instance and retries at once by default', async () => {
+      pool.enqueue([], 1);
+      await outbox.markFailed('e1', 'boom', 'replica-1');
+
+      const call = pool.calls[0];
+      expect(call?.sql).toContain('last_failed_by = $5');
+      expect(call?.sql).toContain('next_attempt_at = $6');
+      expect(call?.params[4]).toBe('replica-1');
+      expect(call?.params[5]).toEqual(call?.params[3]);
+    });
+
+    it('records no failing instance when unfenced', async () => {
+      await outbox.markFailed('e1', 'boom');
+      expect(pool.calls[0]?.params[4]).toBeNull();
     });
   });
 
@@ -302,7 +329,7 @@ describe('PgLocalOutbox', () => {
       await expect(outbox.markFailed('e1', 'boom', 'replica-1')).rejects.toSatisfy(
         ClaimLostError.is,
       );
-      expect(pool.calls[0]?.params[4]).toBe('replica-1');
+      expect(pool.calls[0]?.params[6]).toBe('replica-1');
     });
 
     it('writes lease_expires_at = NULL as the last insert column', async () => {

@@ -1,9 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import {
   ClaimLostError,
+  type ClaimOptions,
   type EventBusConsumer,
   type EventBusEntry,
   type EventBusPublisher,
+  type MarkFailedOptions,
 } from '../../src/index.js';
 import { type FakeLease, failedCopy } from './fake-lease.js';
 
@@ -37,10 +39,12 @@ export class FakeEventBusConsumer implements EventBusConsumer {
     instanceId: string;
     batchSize: number;
     allowedTopics?: readonly string[] | undefined;
+    options?: ClaimOptions | undefined;
   }[] = [];
   readonly marksDone: string[] = [];
   readonly marksFailed: { id: string; reason: string }[] = [];
   readonly marksFailedPermanently: { id: string; reason: string }[] = [];
+  readonly markFailedOptions: (MarkFailedOptions | undefined)[] = [];
   readonly markInstanceIds: (string | undefined)[] = [];
   readonly claimLost = new Set<string>();
   lease?: FakeLease;
@@ -57,8 +61,9 @@ export class FakeEventBusConsumer implements EventBusConsumer {
     instanceId: string,
     batchSize: number,
     allowedTopics?: readonly string[],
+    options?: ClaimOptions,
   ): Promise<readonly EventBusEntry[]> {
-    this.claimed.push({ instanceId, batchSize, allowedTopics });
+    this.claimed.push({ instanceId, batchSize, allowedTopics, options });
     const next = this.batches.shift() ?? [];
     if (!allowedTopics || allowedTopics.length === 0) return next;
     const allowed = new Set(allowedTopics);
@@ -75,7 +80,9 @@ export class FakeEventBusConsumer implements EventBusConsumer {
     id: string,
     reason: string,
     instanceId?: string,
+    options?: MarkFailedOptions,
   ): Promise<EventBusEntry | undefined> {
+    this.markFailedOptions.push(options);
     return this.recordFailure(this.marksFailed, this.failedStatus, id, reason, instanceId);
   }
 

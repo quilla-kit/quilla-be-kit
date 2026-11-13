@@ -2,6 +2,8 @@ export type { EventBusEntry, EventBusStatus } from './event-bus-entry.type.js';
 export type { EventBusPublisher } from './event-bus-publisher.interface.js';
 export type { EventBusConsumer } from './event-bus-consumer.interface.js';
 export type { ClaimLease, LeaseLostInfo, LeaseLostStage } from './claim-lease.type.js';
+export type { ClaimOptions } from './claim-options.type.js';
+export type { MarkFailedOptions } from './mark-failed-options.type.js';
 export { ClaimLostError } from './claim-lost.error.js';
 export {
   EventConsumer,
@@ -37,4 +39,5 @@ export {
   DEFAULT_POLL_INTERVAL_MS,
   DEFAULT_BATCH_SIZE,
   DEFAULT_LEASE_MS,
+  DEFAULT_FAILOVER_WINDOW_POLLS,
 } from './defaults.js';
