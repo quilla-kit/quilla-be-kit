@@ -1,5 +1,11 @@
 # @quilla-be-kit/execution-context
 
+## 0.6.2
+
+### Patch Changes
+
+- 9ded995: README: the "Emitting event metadata" example puts the event's own payload in the envelope (`event.payload`, not `event.toJSON()`), matching what `@quilla-be-kit/messaging` handlers and descriptor schemas receive.
+
 ## 0.6.1
 
 ### Patch Changes
