@@ -406,6 +406,24 @@ describe('ClaimLeaseManager', () => {
       expect(() => manager.reportLost(ENTRY, 'done')).not.toThrow();
       expect(error).toHaveBeenCalledWith('onLeaseLost hook threw', expect.any(Error));
     });
+
+    it('logs the entry under the identity logIds gives, and the hook still gets its own id', () => {
+      const warn = vi.spyOn(logger, 'warn');
+      const onLeaseLost = vi.fn();
+      const manager = makeManager({
+        onLeaseLost,
+        logIds: (entry) => ({ eventId: 'evt-9', deliveryId: entry.id }),
+      });
+      manager.reportLost(ENTRY, 'renew');
+      expect(warn).toHaveBeenCalledWith('claim lease lost; event may run more than once', {
+        meta: { eventId: 'evt-9', deliveryId: 'evt-1', eventType: 'test.happened', stage: 'renew' },
+      });
+      expect(onLeaseLost).toHaveBeenCalledWith({
+        id: 'evt-1',
+        eventType: 'test.happened',
+        stage: 'renew',
+      });
+    });
   });
 
   describe('orderKey', () => {

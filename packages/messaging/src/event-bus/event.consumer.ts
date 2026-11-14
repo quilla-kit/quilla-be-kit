@@ -311,6 +311,7 @@ export class EventConsumer implements Disposable {
         onLeaseLost: options.onLeaseLost,
         orderKey: (d) =>
           d.aggregateId === undefined ? undefined : laneKey(d.handlerKey, d.aggregateId),
+        logIds: deliveryIds,
       }),
     };
     this.isolated = options.isolation ? this.delivery : undefined;
@@ -616,14 +617,16 @@ export class EventConsumer implements Disposable {
         });
         continue;
       }
-      const failure = await this.execute(event, fields, registration);
+      const failure = await this.execute(event, fields, registration, { eventId: event.id });
       if (!failure) continue;
       if (failure.permanent) permanent.add(identityKey({ key, member: registration.member }));
       queued.push(this.firstFailure(registration, failure, event));
     }
 
     if (queued.length === 0) {
-      this.callHook('onProcessed', event.id, () => this.onProcessed?.(event, { source: 'event' }));
+      this.callHook('onProcessed', { eventId: event.id }, () =>
+        this.onProcessed?.(event, { source: 'event' }),
+      );
       await this.leases.settle(event, 'done', () => this.bus.markDone(event.id, this.instanceId));
       return;
     }
@@ -688,7 +691,7 @@ export class EventConsumer implements Disposable {
       held: delivery.holdsLane,
       stuck: delivery.retryCount >= this.stuckAfter(delivery.handlerKey),
     } as const;
-    this.callHook('onFailed', delivery.id, () => this.onFailed?.(delivery, info));
+    this.callHook('onFailed', deliveryIds(delivery), () => this.onFailed?.(delivery, info));
   }
 
   private async deliveryTick({ queue, leases }: DeliveryWork): Promise<void> {
@@ -712,7 +715,7 @@ export class EventConsumer implements Disposable {
           // pointed this work at a member of another event type.
           this.logger.error('delivery claimed for a member that does not handle it', undefined, {
             meta: {
-              deliveryId: delivery.id,
+              ...deliveryIds(delivery),
               handlerKey: delivery.handlerKey,
               member: delivery.member,
               eventType: delivery.eventType,
@@ -739,9 +742,9 @@ export class EventConsumer implements Disposable {
     const key = delivery.handlerKey;
     // Handlers see the event's id on every attempt, so idempotency keys stay stable.
     const fields = { ...this.entryFields(delivery), id: delivery.eventId };
-    const failure = await this.execute(delivery, fields, registration);
+    const failure = await this.execute(delivery, fields, registration, deliveryIds(delivery));
     if (!failure) {
-      this.callHook('onProcessed', delivery.id, () =>
+      this.callHook('onProcessed', deliveryIds(delivery), () =>
         this.onProcessed?.(delivery, {
           source: 'delivery',
           handlerKey: key,
@@ -912,7 +915,7 @@ export class EventConsumer implements Disposable {
         continue;
       }
       ran++;
-      const failure = await this.execute(event, fields, registration);
+      const failure = await this.execute(event, fields, registration, { eventId: event.id });
       if (failure) {
         failures.push(failure);
         failingKeys.push(registration.key);
@@ -923,7 +926,9 @@ export class EventConsumer implements Disposable {
     }
 
     if (failures.length === 0 && !skippedDead) {
-      this.callHook('onProcessed', event.id, () => this.onProcessed?.(event, { source: 'event' }));
+      this.callHook('onProcessed', { eventId: event.id }, () =>
+        this.onProcessed?.(event, { source: 'event' }),
+      );
       await this.leases.settle(event, 'done', () => this.bus.markDone(event.id, this.instanceId));
       return;
     }
@@ -955,7 +960,7 @@ export class EventConsumer implements Disposable {
         held: false,
         stuck: failed.retryCount >= stuckAfter,
       } as const;
-      this.callHook('onFailed', event.id, () => this.onFailed?.(failed, info));
+      this.callHook('onFailed', { eventId: event.id }, () => this.onFailed?.(failed, info));
     }
   }
 
@@ -1017,11 +1022,11 @@ export class EventConsumer implements Disposable {
     }
   }
 
-  private callHook(name: string, eventId: string, call: () => void): void {
+  private callHook(name: string, ids: LogIds, call: () => void): void {
     try {
       call();
     } catch (err) {
-      this.logger.error(`${name} hook threw`, err, { meta: { eventId } });
+      this.logger.error(`${name} hook threw`, err, { meta: ids });
     }
   }
 
@@ -1057,9 +1062,10 @@ export class EventConsumer implements Disposable {
     event: EventBusEntry,
     fields: HandlerEntryFields,
     { handler, requires, key, member }: Registration,
+    ids: LogIds,
   ): Promise<HandlerFailure | undefined> {
     const meta = {
-      eventId: event.id,
+      ...ids,
       eventType: event.eventType,
       attempt: event.retryCount + 1,
       ...(key !== undefined ? { handlerKey: key, member } : {}),
@@ -1165,6 +1171,13 @@ export class EventConsumer implements Disposable {
     }
     return factory.createSystemContext('system');
   }
+}
+
+type LogIds = { readonly eventId: string; readonly deliveryId?: string };
+
+// A delivery's own id is not the event's: log both, so retries correlate with the first attempt.
+function deliveryIds(delivery: DeliveryEntry): LogIds {
+  return { eventId: delivery.eventId, deliveryId: delivery.id };
 }
 
 function identityKey({ key, member }: SubscriberIdentity): string {

@@ -16,6 +16,8 @@ export type ClaimLeaseManagerOptions<E extends ClaimedEntry = ClaimedEntry> = {
   readonly onLeaseLost: ((info: LeaseLostInfo) => void) | undefined;
   /** What must run in order; entries sharing it are blocked together. Default: the aggregate. */
   readonly orderKey?: (entry: E) => string | undefined;
+  /** How an entry is identified in log lines. Default: `{ eventId: entry.id }`. */
+  readonly logIds?: (entry: E) => Readonly<Record<string, string>>;
 };
 
 function resolveRenewInterval(
@@ -49,6 +51,7 @@ export class ClaimLeaseManager<E extends ClaimedEntry = ClaimedEntry> {
   private readonly logger: Logger;
   private readonly onLeaseLost: ((info: LeaseLostInfo) => void) | undefined;
   private readonly orderKey: (entry: E) => string | undefined;
+  private readonly logIds: (entry: E) => Readonly<Record<string, string>>;
   private readonly confirmedAt = new Map<string, number>();
   private readonly reported = new Set<string>();
   private readonly openAggregates = new Set<string>();
@@ -68,6 +71,7 @@ export class ClaimLeaseManager<E extends ClaimedEntry = ClaimedEntry> {
     this.logger = options.logger;
     this.onLeaseLost = options.onLeaseLost;
     this.orderKey = options.orderKey ?? ((entry) => entry.aggregateId);
+    this.logIds = options.logIds ?? ((entry) => ({ eventId: entry.id }));
   }
 
   warnIfDisabled(): void {
@@ -113,7 +117,7 @@ export class ClaimLeaseManager<E extends ClaimedEntry = ClaimedEntry> {
     // Never started here, so it can't run twice: not a lost lease. A failed renew fails open.
     if (held && !held.includes(entry.id)) {
       this.logger.debug('claim expired before dispatch; skipping', {
-        meta: { eventId: entry.id, eventType: entry.eventType },
+        meta: { ...this.logIds(entry), eventType: entry.eventType },
       });
       return false;
     }
@@ -152,7 +156,7 @@ export class ClaimLeaseManager<E extends ClaimedEntry = ClaimedEntry> {
     if (this.reported.has(entry.id)) return;
     this.reported.add(entry.id);
     this.logger.warn('claim lease lost; event may run more than once', {
-      meta: { eventId: entry.id, eventType: entry.eventType, stage },
+      meta: { ...this.logIds(entry), eventType: entry.eventType, stage },
     });
     try {
       this.onLeaseLost?.({ id: entry.id, eventType: entry.eventType, stage });
