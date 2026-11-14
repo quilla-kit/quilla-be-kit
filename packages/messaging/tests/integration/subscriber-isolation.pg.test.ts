@@ -173,6 +173,44 @@ describe.skipIf(!PG_URL)('Postgres subscriber isolation (integration)', () => {
     expect((await queue.claim('b', 10, 'svc', [MAIL], window)).map((d) => d.id)).toEqual([id]);
   });
 
+  it('alternates replicas on each retry by default, then holds the lane', async () => {
+    const handledBy: string[] = [];
+    function start(instanceId: string) {
+      const c = new EventConsumer({
+        bus,
+        consumerName: 'svc',
+        sourceService: 'svc-b',
+        logger: new NoopLogger(),
+        instanceId,
+        isolation: true,
+        pollIntervalMs: 100, // the default failover window is two polls: 200 ms
+        retryDelaysMs: [50],
+      });
+      c.subscriber('mail', { retry: { maxAttempts: 3 }, deadLetter: 'hold' }).on(
+        'user.disabled',
+        async () => {
+          handledBy.push(instanceId);
+          throw new Error('smtp down');
+        },
+      );
+      disposables.push(c);
+      return c;
+    }
+
+    await publish('agg-1', 0);
+    start('b').start();
+    await waitFor(() => handledBy.length === 1, 2000);
+    start('a').start();
+    await waitFor(async () => {
+      const { rows } = await pool.query<{ held: boolean }>(
+        `SELECT holds_lane AS held FROM ${tables.deliveriesTable} WHERE status = 'FAILED'`,
+      );
+      return rows[0]?.held === true;
+    }, 5000);
+
+    expect(handledBy).toEqual(['b', 'a', 'b']);
+  });
+
   it("a healthy subscriber isn't held up by a failing one, and the failing one keeps order", async () => {
     const order: string[] = [];
     let mailDown = true;

@@ -229,7 +229,9 @@ is a client of that database through its own `pg` pool:
   needs one bus database for the services involved.
 - **Instances poll; nothing pushes.** Each forwarder and consumer polls every
   `pollIntervalMs` and claims a batch. Under isolation, the consumer runs a
-  second loop for deliveries.
+  second loop for deliveries. A loop never overlaps itself: a poll that
+  comes while a batch is still running is skipped, so the next claim comes
+  on the first poll after the batch ends, even when the batch was full.
 - **Instances coordinate only through the database:** atomic claims,
   claim leases, advisory locks and per-aggregate guards. There is no
   membership, leader election or partition assignment, so scaling means
@@ -1524,6 +1526,13 @@ handled for longer than the lease is re-dispatched.
 after one renewal interval hands its unstarted rows back (see
 [Claim leases](#claim-leases)), so a large batch behind a slow handler
 doesn't hold rows other replicas could run.
+
+How work spreads across replicas follows from that. The first replica to
+poll after rows arrive claims up to `batchSize` of them, and it claims
+again only on its first poll after the batch ends. So one replica claims
+at most `batchSize` rows per poll interval, and a backlog spreads across
+replicas once it exceeds `batchSize`. Rows that arrive one at a time go to
+whichever replica polls first; nothing balances them.
 
 ---
 
