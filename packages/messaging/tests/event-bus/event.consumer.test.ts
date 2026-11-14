@@ -2347,6 +2347,116 @@ describe('EventConsumer isolation', () => {
       );
     }
 
+    it('logs a failed delivery under its event id, with the delivery id beside it', async () => {
+      const error = vi.spyOn(logger, 'error');
+      const c = consumer({ isPermanentFailure: (err) => (err as Error).message === 'fatal' });
+      c.on(
+        'test.happened',
+        async (e) => {
+          throw new Error(e.aggregateId === 'a' ? 'down' : 'fatal');
+        },
+        { key: 'mail' },
+      );
+      deliveries.enqueueBatch([
+        makeDelivery({ id: 'd-1', eventId: 'evt-1', handlerKey: 'mail', aggregateId: 'a' }),
+        makeDelivery({ id: 'd-2', eventId: 'evt-2', handlerKey: 'mail', aggregateId: 'b' }),
+      ]);
+
+      await runOnce(c);
+
+      expect(error).toHaveBeenCalledWith('handler failed', expect.any(Error), {
+        meta: expect.objectContaining({ eventId: 'evt-1', deliveryId: 'd-1', attempt: 2 }),
+      });
+      expect(error).toHaveBeenCalledWith(
+        'permanent handler failure; skipping retries',
+        expect.any(Error),
+        { meta: expect.objectContaining({ eventId: 'evt-2', deliveryId: 'd-2' }) },
+      );
+    });
+
+    it('logs a throwing hook under the event id, with the delivery id beside it', async () => {
+      const error = vi.spyOn(logger, 'error');
+      const c = consumer({
+        onProcessed: () => {
+          throw new Error('hook bug');
+        },
+      }).on('test.happened', async () => {}, { key: 'mail' });
+      deliveries.enqueueBatch([makeDelivery({ id: 'd-1', eventId: 'evt-1', handlerKey: 'mail' })]);
+
+      await runOnce(c);
+
+      expect(error).toHaveBeenCalledWith('onProcessed hook threw', expect.any(Error), {
+        meta: { eventId: 'evt-1', deliveryId: 'd-1' },
+      });
+    });
+
+    it('never logs a delivery id as the event id, whatever the outcome', async () => {
+      const logged: { message: string; meta: Record<string, unknown> }[] = [];
+      for (const level of ['debug', 'info', 'warn', 'error'] as const) {
+        vi.spyOn(logger, level).mockImplementation((message: string, ...rest: unknown[]) => {
+          const params = rest.at(-1) as { meta?: Record<string, unknown> } | undefined;
+          if (params?.meta) logged.push({ message, meta: params.meta });
+        });
+      }
+      const hookBug = () => {
+        throw new Error('hook bug');
+      };
+      // Only the delivery carrying metadata rebuilds its context, and that fails.
+      const factory = {
+        ...executionContextFactory,
+        createFromEventMetadata: () => {
+          throw new Error('corrupt metadata');
+        },
+      };
+      const c = consumer({
+        onProcessed: hookBug,
+        onFailed: hookBug,
+        isPermanentFailure: (err) => (err as Error).message === 'fatal',
+        executionContext: { provider: new AsyncExecutionContextProvider({ factory }) },
+      }).on(
+        'test.happened',
+        async (e) => {
+          if (e.aggregateId === 'retry') throw new Error('down');
+          if (e.aggregateId === 'dead') throw new Error('fatal');
+        },
+        { key: 'mail' },
+      );
+      const outcomes = ['ok', 'retry', 'dead', 'lost', 'ctx'];
+      deliveries.enqueueBatch(
+        outcomes.map((o) =>
+          makeDelivery({
+            id: `d-${o}`,
+            eventId: `evt-${o}`,
+            handlerKey: 'mail',
+            aggregateId: o,
+            ...(o === 'ctx' ? { payload: { payload: {}, metadata: { actorType: 'user' } } } : {}),
+          }),
+        ),
+      );
+      deliveries.claimLost.add('d-lost');
+
+      await runOnce(c);
+
+      const byDelivery = logged.filter(({ meta }) => meta.deliveryId !== undefined);
+      expect(new Set(byDelivery.map(({ message }) => message))).toEqual(
+        new Set([
+          'onProcessed hook threw',
+          'handler failed',
+          'onFailed hook threw',
+          'permanent handler failure; skipping retries',
+          'claim lease lost; event may run more than once',
+          'handler context is unusable; dead-lettering',
+        ]),
+      );
+      for (const { meta } of logged) {
+        if (meta.eventId === undefined) continue;
+        expect(String(meta.eventId)).toMatch(/^evt-/);
+        if (meta.deliveryId !== undefined) {
+          expect(meta.eventId).toBe(String(meta.deliveryId).replace(/^d-/, 'evt-'));
+        }
+      }
+    });
+
     it("schedules the retry by the subscriber's policy", async () => {
       const c = failing(consumer({ retryDelaysMs: [1, 2] }), {
         delaysMs: [5_000, 60_000],
