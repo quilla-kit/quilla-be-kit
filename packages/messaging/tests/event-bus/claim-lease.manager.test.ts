@@ -407,6 +407,18 @@ describe('ClaimLeaseManager', () => {
       expect(error).toHaveBeenCalledWith('onLeaseLost hook threw', expect.any(Error));
     });
 
+    it('contains a rejecting async hook', async () => {
+      const error = vi.spyOn(logger, 'error');
+      const manager = makeManager({
+        onLeaseLost: async () => {
+          throw new Error('hook bug');
+        },
+      });
+      manager.reportLost(ENTRY, 'done');
+      await Promise.resolve();
+      expect(error).toHaveBeenCalledWith('onLeaseLost hook threw', expect.any(Error));
+    });
+
     it('logs the entry under the identity logIds gives, and the hook still gets its own id', () => {
       const warn = vi.spyOn(logger, 'warn');
       const onLeaseLost = vi.fn();

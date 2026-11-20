@@ -158,10 +158,16 @@ export class ClaimLeaseManager<E extends ClaimedEntry = ClaimedEntry> {
     this.logger.warn('claim lease lost; event may run more than once', {
       meta: { ...this.logIds(entry), eventType: entry.eventType, stage },
     });
+    const report = (err: unknown) => this.logger.error('onLeaseLost hook threw', err);
     try {
-      this.onLeaseLost?.({ id: entry.id, eventType: entry.eventType, stage });
+      const result: unknown = this.onLeaseLost?.({
+        id: entry.id,
+        eventType: entry.eventType,
+        stage,
+      });
+      if (result instanceof Promise) result.catch(report);
     } catch (err) {
-      this.logger.error('onLeaseLost hook threw', err);
+      report(err);
     }
   }
 

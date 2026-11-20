@@ -33,6 +33,7 @@ export {
   type EventConsumerOptions,
   type EventFailureInfo,
   type EventProcessedInfo,
+  type HandlerAttemptInfo,
   type HandlerOptions,
   type SubscriberInfo,
   type EventHandler,
