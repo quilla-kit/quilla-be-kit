@@ -1,5 +1,11 @@
 # @quilla-be-kit/messaging
 
+## 0.18.0
+
+### Minor Changes
+
+- a24649d: Renames `EventConsumer`'s `onHandlerAttempt` option, added in 0.17.0, to `onAttemptFinished`, so it reads like the other hooks (`onProcessed`, `onFailed`, `onLeaseLost`) and makes clear it fires after the attempt. Its arguments (`HandlerAttemptInfo`) and behaviour are unchanged. Rename the option where you pass it.
+
 ## 0.17.0
 
 ### Minor Changes
