@@ -175,10 +175,13 @@ export class OutboxForwarder implements Disposable {
   }
 
   private notifyFailed(entry: LocalOutboxEntry): void {
-    try {
-      this.onFailed?.(entry);
-    } catch (err) {
+    const report = (err: unknown) =>
       this.logger.error('onFailed hook threw', err, { meta: { outboxId: entry.id } });
+    try {
+      const result: unknown = this.onFailed?.(entry);
+      if (result instanceof Promise) result.catch(report);
+    } catch (err) {
+      report(err);
     }
   }
 

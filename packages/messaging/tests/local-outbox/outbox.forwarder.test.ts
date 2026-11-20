@@ -346,6 +346,30 @@ describe('OutboxForwarder', () => {
       });
     });
 
+    it('contains a rejecting async onFailed hook', async () => {
+      const logger = new NoopLogger();
+      const error = vi.spyOn(logger, 'error');
+      publisher.publishError = new Error('bus down');
+      reader.enqueueBatch([makeOutboxEntry({ id: 'e1' })]);
+      const fwd = new OutboxForwarder({
+        reader,
+        publisher,
+        sourceService: 'svc-a',
+        logger,
+        onFailed: async () => {
+          throw new Error('hook bug');
+        },
+      });
+
+      fwd.start();
+      await vi.advanceTimersByTimeAsync(1000);
+      await fwd.dispose();
+
+      expect(error).toHaveBeenCalledWith('onFailed hook threw', expect.any(Error), {
+        meta: { outboxId: 'e1' },
+      });
+    });
+
     it('does not call onFailed when the claim was lost', async () => {
       const onFailed = vi.fn();
       publisher.publishError = new Error('bus down');

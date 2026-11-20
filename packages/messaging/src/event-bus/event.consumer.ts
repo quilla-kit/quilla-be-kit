@@ -106,6 +106,10 @@ type PollLoop = { readonly timer: ReturnType<typeof setInterval>; inflight: Prom
 const NO_OUTCOMES: ReadonlyMap<string, readonly HandlerOutcome[]> = new Map();
 
 type HandlerFailure = { readonly message: string; readonly permanent: boolean };
+type AttemptResult =
+  | { readonly outcome: 'done' }
+  | { readonly outcome: 'failed'; readonly permanent: boolean; readonly error: unknown };
+type AttemptTiming = { readonly startedAt: Date; readonly durationMs: number };
 
 /**
  * `source` says what `entry` is: the bus event, or (under isolation) one subscriber's delivery,
@@ -127,6 +131,18 @@ export type EventFailureInfo = EventProcessedInfo & {
   readonly held: boolean;
   readonly stuck: boolean;
 };
+
+/**
+ * One handler attempt, with its own result; `onProcessed` and `onFailed` report what was
+ * recorded. `attempt` counts the entry's attempts in its current retry budget: it can repeat
+ * after a lost claim and restarts on replay. `durationMs` includes rebuilding the context.
+ */
+export type HandlerAttemptInfo = EventProcessedInfo & {
+  readonly member: string;
+  readonly attempt: number;
+  readonly startedAt: Date;
+  readonly durationMs: number;
+} & AttemptResult;
 
 export type EventConsumerOptions = {
   readonly bus: EventBusConsumer;
@@ -165,6 +181,11 @@ export type EventConsumerOptions = {
     readonly provider: ExecutionContextProvider;
   };
   readonly onProcessed?: (entry: EventBusEntry, info: EventProcessedInfo) => void;
+  /**
+   * Observes each handler attempt; it can't change the attempt or what happens next.
+   * Called synchronously and not awaited; reported even when recording the result then fails.
+   */
+  readonly onHandlerAttempt?: (entry: EventBusEntry, info: HandlerAttemptInfo) => void;
   // After each failed attempt is recorded; `entry.status === 'FAILED'` means dead-lettered.
   // Not called when the claim was lost (onLeaseLost reports it). Under isolation, failures are
   // reported on the deliveries they created.
@@ -237,6 +258,7 @@ export class EventConsumer implements Disposable {
   private readonly claimOptions: ClaimOptions;
   private readonly executionContext: EventConsumerOptions['executionContext'];
   private readonly onProcessed: EventConsumerOptions['onProcessed'];
+  private readonly onHandlerAttempt: EventConsumerOptions['onHandlerAttempt'];
   private readonly onFailed: EventConsumerOptions['onFailed'];
   private readonly isPermanentFailure: EventConsumerOptions['isPermanentFailure'];
   private readonly handlerOutcomes: HandlerOutcomeStore | undefined;
@@ -277,6 +299,7 @@ export class EventConsumer implements Disposable {
     };
     this.executionContext = options.executionContext;
     this.onProcessed = options.onProcessed;
+    this.onHandlerAttempt = options.onHandlerAttempt;
     this.onFailed = options.onFailed;
     this.isPermanentFailure = options.isPermanentFailure;
     this.handlerOutcomes = options.handlerOutcomes;
@@ -617,7 +640,13 @@ export class EventConsumer implements Disposable {
         });
         continue;
       }
-      const failure = await this.execute(event, fields, registration, { eventId: event.id });
+      const failure = await this.execute(
+        event,
+        fields,
+        registration,
+        { eventId: event.id },
+        'event',
+      );
       if (!failure) continue;
       if (failure.permanent) permanent.add(identityKey({ key, member: registration.member }));
       queued.push(this.firstFailure(registration, failure, event));
@@ -742,7 +771,13 @@ export class EventConsumer implements Disposable {
     const key = delivery.handlerKey;
     // Handlers see the event's id on every attempt, so idempotency keys stay stable.
     const fields = { ...this.entryFields(delivery), id: delivery.eventId };
-    const failure = await this.execute(delivery, fields, registration, deliveryIds(delivery));
+    const failure = await this.execute(
+      delivery,
+      fields,
+      registration,
+      deliveryIds(delivery),
+      'delivery',
+    );
     if (!failure) {
       this.callHook('onProcessed', deliveryIds(delivery), () =>
         this.onProcessed?.(delivery, {
@@ -915,7 +950,13 @@ export class EventConsumer implements Disposable {
         continue;
       }
       ran++;
-      const failure = await this.execute(event, fields, registration, { eventId: event.id });
+      const failure = await this.execute(
+        event,
+        fields,
+        registration,
+        { eventId: event.id },
+        'event',
+      );
       if (failure) {
         failures.push(failure);
         failingKeys.push(registration.key);
@@ -1022,12 +1063,35 @@ export class EventConsumer implements Disposable {
     }
   }
 
-  private callHook(name: string, ids: LogIds, call: () => void): void {
+  // Hooks are typed sync, but an async one must not become an unhandled rejection.
+  private callHook(name: string, ids: LogIds, call: () => unknown): void {
+    const report = (err: unknown) => this.logger.error(`${name} hook threw`, err, { meta: ids });
     try {
-      call();
+      const result = call();
+      if (result instanceof Promise) result.catch(report);
     } catch (err) {
-      this.logger.error(`${name} hook threw`, err, { meta: ids });
+      report(err);
     }
+  }
+
+  private reportAttempt(
+    entry: EventBusEntry,
+    ids: LogIds,
+    source: EventProcessedInfo['source'],
+    { key, member }: Registration,
+    timing: AttemptTiming | undefined,
+    result: AttemptResult,
+  ): void {
+    if (!timing) return;
+    const info: HandlerAttemptInfo = {
+      source,
+      ...(key !== undefined ? { handlerKey: key } : {}),
+      member,
+      attempt: entry.retryCount + 1,
+      ...timing,
+      ...result,
+    };
+    this.callHook('onHandlerAttempt', ids, () => this.onHandlerAttempt?.(entry, info));
   }
 
   private async sweepStale(target: Pick<EventBusConsumer, 'resetStale'>): Promise<void> {
@@ -1061,21 +1125,35 @@ export class EventConsumer implements Disposable {
   private async execute(
     event: EventBusEntry,
     fields: HandlerEntryFields,
-    { handler, requires, key, member }: Registration,
+    registration: Registration,
     ids: LogIds,
+    source: EventProcessedInfo['source'],
   ): Promise<HandlerFailure | undefined> {
+    const { handler, requires, key, member } = registration;
     const meta = {
       ...ids,
       eventType: event.eventType,
       attempt: event.retryCount + 1,
       ...(key !== undefined ? { handlerKey: key, member } : {}),
     };
+    const startedAt = this.onHandlerAttempt ? new Date() : undefined;
+    const t0 = startedAt ? performance.now() : 0;
+    // Read before classifying and logging, so only the attempt's own work is timed.
+    const timing = (): AttemptTiming | undefined =>
+      startedAt && { startedAt, durationMs: performance.now() - t0 };
+
     let ctx: ExecutionContext | undefined;
     try {
       ctx = this.buildExecutionContext(event);
       if (requires !== undefined && ctx) requireContext(ctx, requires);
     } catch (err) {
+      const timed = timing();
       this.logger.error('handler context is unusable; dead-lettering', err, { meta });
+      this.reportAttempt(event, ids, source, registration, timed, {
+        outcome: 'failed',
+        permanent: true,
+        error: err,
+      });
       return { message: errorMessage(err), permanent: true };
     }
 
@@ -1087,17 +1165,25 @@ export class EventConsumer implements Disposable {
       } else {
         await run();
       }
-      return undefined;
     } catch (err) {
-      if (this.isPermanent(err, event, meta, key)) {
+      const timed = timing();
+      const permanent = this.isPermanent(err, event, meta, key);
+      if (permanent) {
         this.logger.error('permanent handler failure; skipping retries', err, {
           meta: err instanceof SchemaValidationError ? { ...meta, issues: err.issues } : meta,
         });
-        return { message: errorMessage(err), permanent: true };
+      } else {
+        this.logger.error('handler failed', err, { meta });
       }
-      this.logger.error('handler failed', err, { meta });
-      return { message: errorMessage(err), permanent: false };
+      this.reportAttempt(event, ids, source, registration, timed, {
+        outcome: 'failed',
+        permanent,
+        error: err,
+      });
+      return { message: errorMessage(err), permanent };
     }
+    this.reportAttempt(event, ids, source, registration, timing(), { outcome: 'done' });
+    return undefined;
   }
 
   private isPermanent(

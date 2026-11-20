@@ -694,7 +694,8 @@ new EventConsumer({
 runs after the handlers and before `markDone`, so it can still fire for a
 row whose claim then turns out to be lost. `onFailed` isn't called when
 the claim was lost. In both cases `onLeaseLost` reports the loss. A hook
-that throws is logged and doesn't affect the batch.
+that throws, or an async hook that rejects, is logged and doesn't affect
+the batch. Hooks aren't awaited.
 
 Each failed attempt counts toward `maxRetries` (see
 [Retries and failover](#retries-and-failover)). A schema-validation
@@ -1217,6 +1218,9 @@ on an event's first attempt is reported on the delivery it created.
 (the subscriber's `stuckAfterAttempts` is reached; reported on every attempt
 from then on, and a replay starts the count again). Hooks fire per recorded
 attempt: a lost claim can repeat one, and a crash can skip one.
+[`onHandlerAttempt`](#per-handler-timing) uses the same `source`: a failed
+first attempt is reported on the event, and `onFailed` on the delivery it
+created, so join the two on the event id.
 
 **Operating deliveries.** `bus.deliveries` is a `PgDeliveryQueue`:
 
@@ -1513,6 +1517,7 @@ new EventConsumer({
   deliveryBatchSize: 10,             // deliveries claimed per poll
   stuckAfterAttempts: 5,             // default of each subscriber's: onFailed reports `stuck` from then on
   onProcessed: (entry, { source }) => bumpMetric(entry), // source: 'event' | 'delivery'
+  onHandlerAttempt: (entry, { member, durationMs, outcome }) => bumpMetric(entry), // every handler attempt (see Per-handler timing)
   onFailed: (entry, { permanent, source, handlerKey, member, held, stuck }) => bumpMetric(entry), // entry.status === 'FAILED' when dead-lettered
   onLeaseLost: ({ id, eventType, stage }) => bumpMetric({ id, eventType, stage }),
 });
@@ -1918,8 +1923,8 @@ processing chatter:
 | --- | --- |
 | `info` | Lifecycle transitions: `starting`, `stopped`. One-shot per component per replica. |
 | `debug` | Per-tick / per-batch processing: `forwarding N event(s)`, `registered event types`, `handed back N unstarted claim(s)`, `claim expired before dispatch; skipping`, `skipping handler; outcome already recorded`. High frequency. |
-| `warn` | Recoverable anomalies: handler retry, stale-claim sweep hits, lost claim leases, renewal disabled at start, transient handler failures, dead-lettering without running a handler (per-handler outcomes), queued deliveries of an unregistered member that block no lane, holds a subscriber no longer wants. |
-| `error` | Terminal failures: handler exhausted retries, schema validation failed, tick or delivery tick crashed, a hook threw, a hand-back failed, loading or recording handler outcomes failed, preparing deliveries failed, lanes blocked by an unregistered member, a delivery claimed for a member that doesn't handle its event type. |
+| `warn` | Recoverable anomalies: handler retry, stale-claim sweep hits, lost claim leases, renewal disabled at start, dead-lettering without running a handler (per-handler outcomes), queued deliveries of an unregistered member that block no lane, holds a subscriber no longer wants. |
+| `error` | Failures: a handler attempt failed (transient or permanent), handler exhausted retries, schema validation failed, tick or delivery tick crashed, a hook threw, a hand-back failed, loading or recording handler outcomes failed, preparing deliveries failed, lanes blocked by an unregistered member, a delivery claimed for a member that doesn't handle its event type. |
 
 `info` also reports deliveries moved to a renamed subscriber (`previousKeys`).
 
@@ -1942,6 +1947,58 @@ expect(consumer.registeredEventTypes).toContain('user.created');
 In production, set the logger level to `info` (default in most
 deployments). For debugging event flow, bump a specific replica to
 `debug` to see per-tick detail without changing code.
+
+### Per-handler timing
+
+`onHandlerAttempt` reports every handler attempt, with or without
+isolation. It only observes: the attempt has already finished, and nothing
+the hook does changes its outcome, retries or ordering. To change what a
+handler does (wrap it, skip it, retry inside it), wrap the handler function
+itself. It is reported even when recording the result then fails, such as
+after a lost claim:
+
+```ts
+new EventConsumer({
+  // ...
+  onHandlerAttempt: (entry, info) => {
+    const tags = { handler: info.handlerKey ?? info.member, outcome: info.outcome };
+    metrics.histogram('handler.duration_ms', info.durationMs, tags);
+    metrics.histogram('handler.publish_lag_ms', info.startedAt.getTime() - entry.publishedAt.getTime(), tags);
+    if (entry.claimedAt) {
+      metrics.histogram('handler.claim_wait_ms', info.startedAt.getTime() - entry.claimedAt.getTime(), tags);
+    }
+  },
+});
+```
+
+| `info` field | Meaning |
+| --- | --- |
+| `source`, `handlerKey`, `member` | Which handler ran, as for `onProcessed`. `member` defaults to the event type, so give handlers without a `key` a `member` to tell them apart. |
+| `attempt` | `entry.retryCount + 1`: the entry's attempt within its retry budget. It can repeat after a lost claim, restarts on replay, and counts the entry, not the handler: without per-handler outcomes, a handler that succeeded runs again when another handler of the event fails. |
+| `startedAt`, `durationMs` | When the attempt started and how long it took, including rebuilding its execution context, but not classifying a failure. |
+| `outcome` | `'done'`, or `'failed'` with `permanent` and the raw `error`. This is the attempt's own result: `onProcessed` and `onFailed` report what was recorded (a retry or a dead letter). |
+
+Waits come from the entry:
+
+- **Publish to start:** `startedAt - entry.publishedAt`. The bus sets
+  `publishedAt` itself, whatever `createdAt` or `occurredAt` the publisher
+  gave, and a delivery keeps its event's. It is the publishing process's
+  clock, so across hosts it is as exact as their clocks agree.
+- **Claim to start:** `startedAt - entry.claimedAt`: the wait behind
+  earlier work in the claimed batch. A row handed back and claimed again
+  starts over, so use publish to start for the whole wait.
+- **Retry lateness:** `startedAt - entry.nextAttemptAt`: how long after it
+  was due a retry ran. The instance that failed it waits a further
+  `failoverWindowMs`, so its own retries include that.
+- **Outbox lag:** `entry.publishedAt - entry.createdAt`, when the outbox
+  writer leaves `createdAt` to `PgLocalOutbox` (it defaults to the insert
+  time and the forwarder carries it to the bus).
+
+The hook isn't called when no handler runs: work queued behind a blocked
+lane, a handler skipped by its recorded outcome, or a skipped own event.
+It runs synchronously between handlers, so keep it cheap; an async hook
+isn't awaited, and a hook that throws or rejects is logged. `error` is the
+error as thrown, without the logger's obfuscation.
 
 ---
 
@@ -2007,6 +2064,9 @@ const forwarder = new OutboxForwarder({
   `HandlerOutcomeStore` is a separate port, so a Kafka or SQS consumer can
   keep its outcomes in any database. Clear an event's outcomes when the
   adapter replays it.
+- Fill in `claimedAt` and `publishedAt` on claimed entries when the broker
+  knows them; [per-handler timing](#per-handler-timing) measures waits
+  from them.
 - `markFailed` resolves to the updated entry, so `onFailed` can tell a
   dead letter (`status: 'FAILED'`) from a retry. Resolve to `undefined`
   when the broker can't report it; `onFailed` is then skipped.
