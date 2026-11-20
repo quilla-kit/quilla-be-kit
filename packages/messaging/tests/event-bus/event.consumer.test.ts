@@ -3057,7 +3057,7 @@ describe('EventConsumer subscribers', () => {
   });
 });
 
-describe('EventConsumer onHandlerAttempt', () => {
+describe('EventConsumer onAttemptFinished', () => {
   let bus: FakeEventBusConsumer;
   let deliveries: FakeDeliveryQueue;
   let logger: NoopLogger;
@@ -3112,16 +3112,16 @@ describe('EventConsumer onHandlerAttempt', () => {
   const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
   it('reports each handler of an event, in registration order', async () => {
-    const onHandlerAttempt = vi.fn();
-    const c = makeConsumer({ onHandlerAttempt })
+    const onAttemptFinished = vi.fn();
+    const c = makeConsumer({ onAttemptFinished })
       .on('test.happened', async () => {}, { member: 'projection' })
       .on('test.happened', async () => {}, { member: 'mail' });
     bus.enqueueBatch([makeBusEntry()]);
 
     await runOnce(c);
 
-    expect(onHandlerAttempt).toHaveBeenCalledTimes(2);
-    expect(onHandlerAttempt.mock.calls.map(([, info]) => info)).toEqual([
+    expect(onAttemptFinished).toHaveBeenCalledTimes(2);
+    expect(onAttemptFinished.mock.calls.map(([, info]) => info)).toEqual([
       {
         source: 'event',
         member: 'projection',
@@ -3139,13 +3139,13 @@ describe('EventConsumer onHandlerAttempt', () => {
         outcome: 'done',
       },
     ]);
-    expect(onHandlerAttempt.mock.calls[0]?.[0]).toMatchObject({ id: 'evt-1' });
+    expect(onAttemptFinished.mock.calls[0]?.[0]).toMatchObject({ id: 'evt-1' });
   });
 
   it("times the handler's own work, not the failure classifier", async () => {
-    const onHandlerAttempt = vi.fn();
+    const onAttemptFinished = vi.fn();
     const c = makeConsumer({
-      onHandlerAttempt,
+      onAttemptFinished,
       isPermanentFailure: (err) => {
         vi.advanceTimersByTime(500);
         return err instanceof Gone;
@@ -3158,7 +3158,7 @@ describe('EventConsumer onHandlerAttempt', () => {
 
     await runOnce(c, 2000);
 
-    expect(onHandlerAttempt).toHaveBeenCalledWith(expect.objectContaining({ id: 'evt-1' }), {
+    expect(onAttemptFinished).toHaveBeenCalledWith(expect.objectContaining({ id: 'evt-1' }), {
       source: 'event',
       member: 'test.happened',
       attempt: 3,
@@ -3171,15 +3171,15 @@ describe('EventConsumer onHandlerAttempt', () => {
   });
 
   it('reports a transient failure with its error', async () => {
-    const onHandlerAttempt = vi.fn();
-    const c = makeConsumer({ onHandlerAttempt }).on('test.happened', async () => {
+    const onAttemptFinished = vi.fn();
+    const c = makeConsumer({ onAttemptFinished }).on('test.happened', async () => {
       throw new Error('smtp down');
     });
     bus.enqueueBatch([makeBusEntry()]);
 
     await runOnce(c);
 
-    expect(onHandlerAttempt.mock.calls[0]?.[1]).toMatchObject({
+    expect(onAttemptFinished.mock.calls[0]?.[1]).toMatchObject({
       outcome: 'failed',
       permanent: false,
       error: new Error('smtp down'),
@@ -3187,7 +3187,7 @@ describe('EventConsumer onHandlerAttempt', () => {
   });
 
   it('reports an attempt whose context cannot be rebuilt, though the handler never ran', async () => {
-    const onHandlerAttempt = vi.fn();
+    const onAttemptFinished = vi.fn();
     const factory = {
       ...executionContextFactory,
       createFromEventMetadata: () => {
@@ -3196,7 +3196,7 @@ describe('EventConsumer onHandlerAttempt', () => {
     };
     const handler = vi.fn(async () => {});
     const c = makeConsumer({
-      onHandlerAttempt,
+      onAttemptFinished,
       executionContext: { provider: new AsyncExecutionContextProvider({ factory }) },
     }).on('test.happened', handler);
     bus.enqueueBatch([makeBusEntry({ payload: { payload: {}, metadata: { actorType: 'user' } } })]);
@@ -3204,7 +3204,7 @@ describe('EventConsumer onHandlerAttempt', () => {
     await runOnce(c);
 
     expect(handler).not.toHaveBeenCalled();
-    expect(onHandlerAttempt.mock.calls[0]?.[1]).toMatchObject({
+    expect(onAttemptFinished.mock.calls[0]?.[1]).toMatchObject({
       outcome: 'failed',
       permanent: true,
       error: new Error('corrupt metadata'),
@@ -3212,35 +3212,35 @@ describe('EventConsumer onHandlerAttempt', () => {
   });
 
   it('is still reported when the claim is lost at settle', async () => {
-    const onHandlerAttempt = vi.fn();
+    const onAttemptFinished = vi.fn();
     bus.claimLost.add('evt-1');
-    const c = makeConsumer({ onHandlerAttempt }).on('test.happened', async () => {});
+    const c = makeConsumer({ onAttemptFinished }).on('test.happened', async () => {});
     bus.enqueueBatch([makeBusEntry()]);
 
     await runOnce(c);
 
-    expect(onHandlerAttempt).toHaveBeenCalledTimes(1);
+    expect(onAttemptFinished).toHaveBeenCalledTimes(1);
     expect(bus.marksDone).toEqual([]);
   });
 
   it('skips handlers whose outcome is already recorded', async () => {
-    const onHandlerAttempt = vi.fn();
+    const onAttemptFinished = vi.fn();
     const store = new FakeOutcomeStore();
     await store.record('evt-1', [{ key: 'bridge', outcome: 'done' }]);
-    const c = makeConsumer({ onHandlerAttempt, handlerOutcomes: store })
+    const c = makeConsumer({ onAttemptFinished, handlerOutcomes: store })
       .on('test.happened', async () => {}, { key: 'bridge' })
       .on('test.happened', async () => {}, { key: 'email' });
     bus.enqueueBatch([makeBusEntry({ retryCount: 1 })]);
 
     await runOnce(c);
 
-    expect(onHandlerAttempt).toHaveBeenCalledTimes(1);
-    expect(onHandlerAttempt.mock.calls[0]?.[1]).toMatchObject({ handlerKey: 'email', attempt: 2 });
+    expect(onAttemptFinished).toHaveBeenCalledTimes(1);
+    expect(onAttemptFinished.mock.calls[0]?.[1]).toMatchObject({ handlerKey: 'email', attempt: 2 });
   });
 
   it('reports the event attempt and the later delivery attempt under isolation', async () => {
-    const onHandlerAttempt = vi.fn();
-    const c = isolated({ onHandlerAttempt }).on(
+    const onAttemptFinished = vi.fn();
+    const c = isolated({ onAttemptFinished }).on(
       'test.happened',
       async () => {
         throw new Error('down');
@@ -3253,7 +3253,7 @@ describe('EventConsumer onHandlerAttempt', () => {
 
     await runOnce(c);
 
-    const infos = onHandlerAttempt.mock.calls.map(([entry, info]) => ({ id: entry.id, ...info }));
+    const infos = onAttemptFinished.mock.calls.map(([entry, info]) => ({ id: entry.id, ...info }));
     expect(infos).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ id: 'evt-1', source: 'event', handlerKey: 'mail', attempt: 1 }),
@@ -3263,38 +3263,38 @@ describe('EventConsumer onHandlerAttempt', () => {
   });
 
   it('reports deliveries drained without isolation', async () => {
-    const onHandlerAttempt = vi.fn();
+    const onAttemptFinished = vi.fn();
     bus.deliveries = deliveries;
-    const c = makeConsumer({ onHandlerAttempt }).on('test.happened', async () => {}, {
+    const c = makeConsumer({ onAttemptFinished }).on('test.happened', async () => {}, {
       key: 'mail',
     });
     deliveries.enqueueBatch([makeDelivery({ id: 'd-1', handlerKey: 'mail' })]);
 
     await runOnce(c);
 
-    expect(onHandlerAttempt).toHaveBeenCalledWith(
+    expect(onAttemptFinished).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'd-1' }),
       expect.objectContaining({ source: 'delivery', outcome: 'done' }),
     );
   });
 
   it('is not called for a member queued behind its blocked lane', async () => {
-    const onHandlerAttempt = vi.fn();
+    const onAttemptFinished = vi.fn();
     const handler = vi.fn(async () => {});
     deliveries.lanes = [{ handlerKey: 'mail', aggregateId: 'agg-1' }];
-    const c = isolated({ onHandlerAttempt }).on('test.happened', handler, { key: 'mail' });
+    const c = isolated({ onAttemptFinished }).on('test.happened', handler, { key: 'mail' });
     bus.enqueueBatch([makeBusEntry({ aggregateId: 'agg-1' })]);
 
     await runOnce(c);
 
     expect(handler).not.toHaveBeenCalled();
-    expect(onHandlerAttempt).not.toHaveBeenCalled();
+    expect(onAttemptFinished).not.toHaveBeenCalled();
   });
 
   it('contains a throwing or rejecting hook, so the event still settles', async () => {
     const error = vi.spyOn(logger, 'error');
     const c = makeConsumer({
-      onHandlerAttempt: () => {
+      onAttemptFinished: () => {
         throw new Error('sync hook bug');
       },
       onProcessed: async () => {
@@ -3306,7 +3306,7 @@ describe('EventConsumer onHandlerAttempt', () => {
     await runOnce(c);
 
     expect(bus.marksDone).toEqual(['evt-1']);
-    expect(error).toHaveBeenCalledWith('onHandlerAttempt hook threw', expect.any(Error), {
+    expect(error).toHaveBeenCalledWith('onAttemptFinished hook threw', expect.any(Error), {
       meta: { eventId: 'evt-1' },
     });
     expect(error).toHaveBeenCalledWith('onProcessed hook threw', expect.any(Error), {

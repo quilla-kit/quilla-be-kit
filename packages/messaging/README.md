@@ -1218,7 +1218,7 @@ on an event's first attempt is reported on the delivery it created.
 (the subscriber's `stuckAfterAttempts` is reached; reported on every attempt
 from then on, and a replay starts the count again). Hooks fire per recorded
 attempt: a lost claim can repeat one, and a crash can skip one.
-[`onHandlerAttempt`](#per-handler-timing) uses the same `source`: a failed
+[`onAttemptFinished`](#per-handler-timing) uses the same `source`: a failed
 first attempt is reported on the event, and `onFailed` on the delivery it
 created, so join the two on the event id.
 
@@ -1517,7 +1517,7 @@ new EventConsumer({
   deliveryBatchSize: 10,             // deliveries claimed per poll
   stuckAfterAttempts: 5,             // default of each subscriber's: onFailed reports `stuck` from then on
   onProcessed: (entry, { source }) => bumpMetric(entry), // source: 'event' | 'delivery'
-  onHandlerAttempt: (entry, { member, durationMs, outcome }) => bumpMetric(entry), // every handler attempt (see Per-handler timing)
+  onAttemptFinished: (entry, { member, durationMs, outcome }) => bumpMetric(entry), // every handler attempt (see Per-handler timing)
   onFailed: (entry, { permanent, source, handlerKey, member, held, stuck }) => bumpMetric(entry), // entry.status === 'FAILED' when dead-lettered
   onLeaseLost: ({ id, eventType, stage }) => bumpMetric({ id, eventType, stage }),
 });
@@ -1569,6 +1569,12 @@ locked. On an existing table that lacks a later version's indexes, it
 builds them without `CONCURRENTLY`, which scans the whole table and blocks
 writes while it runs: for production tables, apply the upgrade SQL below
 instead.
+
+### Upgrading to 0.18.0 (`onAttemptFinished`)
+
+The `onHandlerAttempt` option added in 0.17.0 is renamed `onAttemptFinished`,
+so it reads like the other hooks. Its arguments and behaviour are
+unchanged; rename the option where you pass it.
 
 ### Upgrading to 0.16.0 (subscribers)
 
@@ -1950,7 +1956,7 @@ deployments). For debugging event flow, bump a specific replica to
 
 ### Per-handler timing
 
-`onHandlerAttempt` reports every handler attempt, with or without
+`onAttemptFinished` reports every handler attempt, with or without
 isolation. It only observes: the attempt has already finished, and nothing
 the hook does changes its outcome, retries or ordering. To change what a
 handler does (wrap it, skip it, retry inside it), wrap the handler function
@@ -1960,7 +1966,7 @@ after a lost claim:
 ```ts
 new EventConsumer({
   // ...
-  onHandlerAttempt: (entry, info) => {
+  onAttemptFinished: (entry, info) => {
     const tags = { handler: info.handlerKey ?? info.member, outcome: info.outcome };
     metrics.histogram('handler.duration_ms', info.durationMs, tags);
     metrics.histogram('handler.publish_lag_ms', info.startedAt.getTime() - entry.publishedAt.getTime(), tags);

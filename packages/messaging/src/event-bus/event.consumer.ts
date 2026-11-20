@@ -185,7 +185,7 @@ export type EventConsumerOptions = {
    * Observes each handler attempt; it can't change the attempt or what happens next.
    * Called synchronously and not awaited; reported even when recording the result then fails.
    */
-  readonly onHandlerAttempt?: (entry: EventBusEntry, info: HandlerAttemptInfo) => void;
+  readonly onAttemptFinished?: (entry: EventBusEntry, info: HandlerAttemptInfo) => void;
   // After each failed attempt is recorded; `entry.status === 'FAILED'` means dead-lettered.
   // Not called when the claim was lost (onLeaseLost reports it). Under isolation, failures are
   // reported on the deliveries they created.
@@ -258,7 +258,7 @@ export class EventConsumer implements Disposable {
   private readonly claimOptions: ClaimOptions;
   private readonly executionContext: EventConsumerOptions['executionContext'];
   private readonly onProcessed: EventConsumerOptions['onProcessed'];
-  private readonly onHandlerAttempt: EventConsumerOptions['onHandlerAttempt'];
+  private readonly onAttemptFinished: EventConsumerOptions['onAttemptFinished'];
   private readonly onFailed: EventConsumerOptions['onFailed'];
   private readonly isPermanentFailure: EventConsumerOptions['isPermanentFailure'];
   private readonly handlerOutcomes: HandlerOutcomeStore | undefined;
@@ -299,7 +299,7 @@ export class EventConsumer implements Disposable {
     };
     this.executionContext = options.executionContext;
     this.onProcessed = options.onProcessed;
-    this.onHandlerAttempt = options.onHandlerAttempt;
+    this.onAttemptFinished = options.onAttemptFinished;
     this.onFailed = options.onFailed;
     this.isPermanentFailure = options.isPermanentFailure;
     this.handlerOutcomes = options.handlerOutcomes;
@@ -1091,7 +1091,7 @@ export class EventConsumer implements Disposable {
       ...timing,
       ...result,
     };
-    this.callHook('onHandlerAttempt', ids, () => this.onHandlerAttempt?.(entry, info));
+    this.callHook('onAttemptFinished', ids, () => this.onAttemptFinished?.(entry, info));
   }
 
   private async sweepStale(target: Pick<EventBusConsumer, 'resetStale'>): Promise<void> {
@@ -1136,7 +1136,7 @@ export class EventConsumer implements Disposable {
       attempt: event.retryCount + 1,
       ...(key !== undefined ? { handlerKey: key, member } : {}),
     };
-    const startedAt = this.onHandlerAttempt ? new Date() : undefined;
+    const startedAt = this.onAttemptFinished ? new Date() : undefined;
     const t0 = startedAt ? performance.now() : 0;
     // Read before classifying and logging, so only the attempt's own work is timed.
     const timing = (): AttemptTiming | undefined =>
