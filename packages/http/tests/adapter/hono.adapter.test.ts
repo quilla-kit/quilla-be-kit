@@ -1,6 +1,7 @@
 import { NotFoundError } from '@quilla-be-kit/errors';
 import { AsyncExecutionContextProvider } from '@quilla-be-kit/execution-context';
-import { describe, expect, it } from 'vitest';
+import { type Logger, NoopLogger } from '@quilla-be-kit/observability';
+import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { type HonoServeHandle, HonoServer } from '../../src/adapter/hono/hono.server.js';
 import { Controller, Get, GetPublic, Post, ValidateRequest } from '../../src/decorator/index.js';
@@ -19,6 +20,10 @@ import type { ResponseSerializer } from '../../src/request/response-serializer.i
 import type { AuthMiddlewareStack } from '../../src/router/auth-middleware-stack.type.js';
 import { Router } from '../../src/router/router.js';
 import type { CorsOptions } from '../../src/server/cors.type.js';
+import {
+  type ErrorLogLevelPolicy,
+  defaultErrorLogLevel,
+} from '../../src/server/error-log-level.policy.js';
 import type { HttpConventions } from '../../src/server/http-conventions.type.js';
 import type { RequestValidator } from '../../src/validator/request-validator.interface.js';
 import type { ValidatedRequest } from '../../src/validator/validated-request.type.js';
@@ -59,6 +64,8 @@ function buildServer(options: {
   cors?: CorsOptions;
   conventions?: HttpConventions;
   provider?: AsyncExecutionContextProvider;
+  logger?: Logger;
+  errorLogLevel?: ErrorLogLevelPolicy;
 }): {
   server: HonoServer;
   fetch: (req: Request) => Promise<Response>;
@@ -84,6 +91,8 @@ function buildServer(options: {
     ...(options.validator ? { requestValidator: options.validator } : {}),
     ...(options.cors ? { cors: options.cors } : {}),
     ...(options.conventions ? { conventions: options.conventions } : {}),
+    ...(options.logger ? { logger: options.logger } : {}),
+    ...(options.errorLogLevel ? { errorLogLevel: options.errorLogLevel } : {}),
     serve: noopServe as never,
   });
   server.bootstrap();
@@ -751,5 +760,237 @@ describe('HttpRequest.getContext', () => {
       userId: 'u-1',
       session: { scopeId: 's-1', userId: 'u-1' },
     });
+  });
+});
+
+@Controller('/boom')
+class FailingController {
+  @GetPublic('/')
+  async fail(_req: HttpRequest): Promise<HttpResponse> {
+    throw new Error('database unreachable');
+  }
+}
+
+function spyLogger() {
+  const logger = new NoopLogger();
+  const spies = {
+    debug: vi.spyOn(logger, 'debug'),
+    info: vi.spyOn(logger, 'info'),
+    warn: vi.spyOn(logger, 'warn'),
+    error: vi.spyOn(logger, 'error'),
+  };
+  const httpErrorCalls = (level: keyof typeof spies, message = 'HTTP error') =>
+    spies[level].mock.calls.filter(([logged]) => logged === message);
+  const allHttpErrorCalls = () =>
+    (Object.keys(spies) as (keyof typeof spies)[]).flatMap((level) => httpErrorCalls(level));
+  return { logger, httpErrorCalls, allHttpErrorCalls };
+}
+
+const getMissingUser = (fetch: (req: Request) => Promise<Response>) =>
+  fetch(new Request('http://localhost/users/missing'));
+
+describe('HonoServer error logging', () => {
+  it('logs a 4xx at warn with name, message and code but no error object', async () => {
+    const { logger, httpErrorCalls } = spyLogger();
+    const { fetch } = buildServer({ logger });
+
+    const res = await getMissingUser(fetch);
+
+    expect(res.status).toBe(404);
+    expect(httpErrorCalls('warn')).toEqual([
+      [
+        'HTTP error',
+        {
+          meta: {
+            httpCode: 404,
+            error: { name: 'NotFoundError', message: 'user not found', code: 'NOT_FOUND' },
+          },
+        },
+      ],
+    ]);
+    expect(httpErrorCalls('error')).toEqual([]);
+  });
+
+  it('keeps validation details out of the 4xx entry', async () => {
+    const { logger, httpErrorCalls } = spyLogger();
+    const validator: RequestValidator = {
+      validate: () => ({ success: false, error: [{ path: 'name', message: 'required' }] }),
+    };
+    const { fetch } = buildServer({ logger, validator });
+
+    const res = await fetch(
+      new Request('http://localhost/users', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'secret-input' }),
+      }),
+    );
+
+    expect(res.status).toBe(400);
+    const calls = httpErrorCalls('warn');
+    expect(calls).toHaveLength(1);
+    expect(JSON.stringify(calls[0])).not.toContain('required');
+    expect(JSON.stringify(calls[0])).not.toContain('issues');
+  });
+
+  it('logs a 5xx at error with the thrown error', async () => {
+    const { logger, httpErrorCalls } = spyLogger();
+    const { fetch } = buildServer({ logger, controllers: [new FailingController()] });
+
+    const res = await fetch(new Request('http://localhost/boom'));
+
+    expect(res.status).toBe(500);
+    expect(httpErrorCalls('error')).toEqual([
+      [
+        'HTTP error',
+        expect.objectContaining({ message: 'database unreachable' }),
+        { meta: { httpCode: 500 } },
+      ],
+    ]);
+    expect(httpErrorCalls('warn')).toEqual([]);
+  });
+
+  it('never logs an unknown route nor consults the policy', async () => {
+    const { logger, allHttpErrorCalls } = spyLogger();
+    const errorLogLevel = vi.fn(defaultErrorLogLevel);
+    const { fetch } = buildServer({ logger, errorLogLevel });
+
+    const res = await fetch(new Request('http://localhost/wp-admin'));
+
+    expect(res.status).toBe(404);
+    expect(allHttpErrorCalls()).toEqual([]);
+    expect(errorLogLevel).not.toHaveBeenCalled();
+  });
+
+  it('skips logging when the policy returns off', async () => {
+    const { logger, allHttpErrorCalls } = spyLogger();
+    const { fetch } = buildServer({ logger, errorLogLevel: () => 'off' });
+
+    await getMissingUser(fetch);
+
+    expect(allHttpErrorCalls()).toEqual([]);
+  });
+
+  it('logs at the level the policy returns', async () => {
+    const { logger, httpErrorCalls } = spyLogger();
+    const { fetch } = buildServer({
+      logger,
+      errorLogLevel: (resolved, err) =>
+        resolved.httpCode === 404 ? 'info' : defaultErrorLogLevel(resolved, err),
+    });
+
+    await getMissingUser(fetch);
+
+    expect(httpErrorCalls('info')).toHaveLength(1);
+    expect(httpErrorCalls('warn')).toEqual([]);
+  });
+
+  it('passes the full error when the policy raises a 4xx to error', async () => {
+    const { logger, httpErrorCalls } = spyLogger();
+    const { fetch } = buildServer({ logger, errorLogLevel: () => 'error' });
+
+    await getMissingUser(fetch);
+
+    expect(httpErrorCalls('error')).toEqual([
+      ['HTTP error', expect.any(NotFoundError), { meta: { httpCode: 404 } }],
+    ]);
+  });
+
+  it('hands the policy the status a custom errorResolver resolved', async () => {
+    const { logger, httpErrorCalls } = spyLogger();
+    const errorLogLevel = vi.fn(defaultErrorLogLevel);
+    const { fetch } = buildServer({
+      logger,
+      errorLogLevel,
+      conventions: { errorResolver: fixedErrorResolver(503, 'down') },
+    });
+
+    const res = await getMissingUser(fetch);
+
+    expect(res.status).toBe(503);
+    expect(errorLogLevel).toHaveBeenCalledTimes(1);
+    expect(errorLogLevel.mock.calls[0]?.[0].httpCode).toBe(503);
+    expect(errorLogLevel.mock.calls[0]?.[1]).toBeInstanceOf(NotFoundError);
+    expect(httpErrorCalls('error')).toHaveLength(1);
+  });
+
+  it('falls back to the default level when the policy throws, keeping the response', async () => {
+    const { logger, httpErrorCalls } = spyLogger();
+    const policyFailure = new Error('policy bug');
+    const errorLogLevel = vi.fn<ErrorLogLevelPolicy>(() => {
+      throw policyFailure;
+    });
+    const { fetch } = buildServer({ logger, errorLogLevel });
+
+    const res = await getMissingUser(fetch);
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({
+      error: { name: 'NotFoundError', message: 'user not found' },
+    });
+    expect(errorLogLevel).toHaveBeenCalledTimes(1);
+    expect(httpErrorCalls('error', 'HTTP error log policy failed')).toEqual([
+      ['HTTP error log policy failed', policyFailure, { meta: { httpCode: 404 } }],
+    ]);
+    expect(httpErrorCalls('warn')).toHaveLength(1);
+  });
+
+  it('falls back to the default level when the policy returns an unknown level', async () => {
+    const { logger, httpErrorCalls } = spyLogger();
+    const { fetch } = buildServer({
+      logger,
+      errorLogLevel: () => 'fatal' as unknown as 'error',
+    });
+
+    const res = await getMissingUser(fetch);
+
+    expect(res.status).toBe(404);
+    expect(httpErrorCalls('warn')).toHaveLength(1);
+  });
+
+  it('answers a generic 500 once when the errorResolver throws', async () => {
+    const { logger, httpErrorCalls } = spyLogger();
+    const resolverFailure = new Error('resolver bug');
+    const resolve = vi.fn((): ResolvedHttpError => {
+      throw resolverFailure;
+    });
+    const { fetch } = buildServer({
+      logger,
+      cors: { origins: ['http://app.test'] },
+      conventions: { errorResolver: { resolve } },
+    });
+
+    const res = await getMissingUser(fetch);
+
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({
+      error: { name: 'InternalError', message: 'Internal server error' },
+    });
+    expect(resolve).toHaveBeenCalledTimes(1);
+    expect(httpErrorCalls('error', 'HTTP error handling failed')).toEqual([
+      ['HTTP error handling failed', resolverFailure, { meta: { httpCode: 500 } }],
+    ]);
+    expect(httpErrorCalls('error')).toEqual([
+      ['HTTP error', expect.any(NotFoundError), { meta: { httpCode: 500 } }],
+    ]);
+  });
+
+  it('answers a generic 500 once when the responseSerializer throws on an error body', async () => {
+    const { logger, httpErrorCalls } = spyLogger();
+    const serialize = vi.fn((r: HttpJsonResponse): unknown => {
+      if (r.error) throw new Error('serializer bug');
+      return r.payload;
+    });
+    const { fetch } = buildServer({ logger, conventions: { responseSerializer: { serialize } } });
+
+    const res = await getMissingUser(fetch);
+
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({
+      error: { name: 'InternalError', message: 'Internal server error' },
+    });
+    expect(serialize).toHaveBeenCalledTimes(1);
+    expect(httpErrorCalls('error', 'HTTP error handling failed')).toHaveLength(1);
+    expect(httpErrorCalls('error')).toHaveLength(1);
   });
 });
