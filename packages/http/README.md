@@ -750,7 +750,8 @@ const server = new HonoServer({
   port: 3000,
   router,                 // HonoServer reads the execution-context provider from Router
   requestValidator,       // optional — required only if any route uses @ValidateRequest
-  logger,                 // optional — used for startup/shutdown/error logs
+  logger,                 // optional — used for startup/shutdown/error logs (see Error logging)
+  errorLogLevel,          // optional — picks the log level per handled error
   conventions,            // optional — override the error / success wire shapes (see below)
   serve: honoServe,
 });
@@ -835,9 +836,45 @@ Every JSON response the server emits goes through these, including the two no ha
   envelope applies to both. A serializer returning `undefined` yields a bodyless error response,
   the same as on the success path.
 
-Unknown routes are **not** logged: a request for a path that doesn't exist is a client mistake,
-and routing it through `logger.error` makes scanners noisy enough to bury real failures. Binary
-and stream responses still never touch the serializer.
+Binary and stream responses still never touch the serializer.
+
+#### Error logging
+
+When a `logger` is configured, every handled error is logged as `'HTTP error'` at a level picked
+from its **resolved** status, so a custom `ErrorResolver` decides the level too:
+
+| Resolved status | Level | Entry |
+|---|---|---|
+| below 500 | `warn` | `meta: { httpCode, error: { name, message, code } }`: no stack, no error details |
+| 500 and above | `error` | the full error, passed to the logger's error serializer, plus `meta: { httpCode }` |
+
+`code` is present for `QuillaError`s. The error message is logged as-is in `meta`, which the
+logger never obfuscates.
+
+Unknown routes are **never** logged and never reach `errorLogLevel`.
+
+Override the level per error with `errorLogLevel(resolved, err)`. It returns a `LogLevel`, or
+`'off'` to skip the entry. Any level other than `error` produces the stack-free entry above.
+Delegate to the exported default for the cases you don't change:
+
+```ts
+import { defaultErrorLogLevel, type ErrorLogLevelPolicy } from '@quilla-be-kit/http';
+
+const errorLogLevel: ErrorLogLevelPolicy = (resolved, err) => {
+  if (resolved.httpCode === 401 || resolved.httpCode === 403) return 'info';
+  if (resolved.httpCode === 404) return 'off';
+  return defaultErrorLogLevel(resolved, err);
+};
+```
+
+If the policy throws or returns an unknown level, the error is logged at the default level, and
+a thrown policy error is logged at `error` as `'HTTP error log policy failed'`. The response is
+never affected.
+
+If the `ErrorResolver` or `ResponseSerializer` itself throws while handling an error, the server
+answers `500` with `{ "error": { "name": "InternalError", "message": "Internal server error" } }`,
+bypassing the configured conventions. It logs the failure as `'HTTP error handling failed'` and
+the original error as `'HTTP error'`, both at `error`.
 
 #### Error status mapping
 

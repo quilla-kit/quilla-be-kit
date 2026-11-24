@@ -3,7 +3,7 @@ import { Hono } from 'hono';
 import type { Context, Next } from 'hono';
 import { cors } from 'hono/cors';
 import { DefaultErrorResolver } from '../../error/default.resolver.js';
-import type { ErrorResolver } from '../../error/error-resolver.interface.js';
+import type { ErrorResolver, ResolvedHttpError } from '../../error/error-resolver.interface.js';
 import { RouteNotFoundError } from '../../error/route-not-found.error.js';
 import { DefaultRequestDeserializer } from '../../request/default.deserializer.js';
 import { DefaultResponseSerializer } from '../../request/default.serializer.js';
@@ -11,12 +11,22 @@ import { HttpAttributes } from '../../request/http-attributes.js';
 import type { NormalizedRoute } from '../../router/normalized-route.type.js';
 import type { Router } from '../../router/router.js';
 import type { CorsOptions } from '../../server/cors.type.js';
+import {
+  type ErrorLogLevelPolicy,
+  defaultErrorLogLevel,
+  logHttpError,
+} from '../../server/error-log-level.policy.js';
 import type { HttpConventions } from '../../server/http-conventions.type.js';
 import type { WebServer } from '../../server/web-server.interface.js';
 import type { RequestValidator } from '../../validator/request-validator.interface.js';
 import { getRequestAttributes } from './get-request-attributes.js';
 import { HonoMiddlewareAdapter } from './hono-middleware.adapter.js';
 import { HonoRequestAdapter } from './hono-request.adapter.js';
+
+// Bypasses the configured conventions, which may be what failed.
+const FALLBACK_ERROR_BODY = {
+  error: { name: 'InternalError', message: 'Internal server error' },
+} as const;
 
 export type HonoServeHandle = {
   close(): Promise<void>;
@@ -30,6 +40,7 @@ export type HonoServerOptions = {
   readonly serve: HonoServeFn;
   readonly requestValidator?: RequestValidator;
   readonly logger?: Logger;
+  readonly errorLogLevel?: ErrorLogLevelPolicy;
   readonly cors?: CorsOptions;
   readonly conventions?: HttpConventions;
 };
@@ -39,11 +50,13 @@ export class HonoServer implements WebServer {
   private readonly requestAdapter: HonoRequestAdapter;
   private readonly middlewareAdapter: HonoMiddlewareAdapter;
   private readonly errorResolver: ErrorResolver;
+  private readonly errorLogLevel: ErrorLogLevelPolicy;
   private bootstrapped = false;
   private handle: HonoServeHandle | undefined;
 
   constructor(private readonly options: HonoServerOptions) {
     this.errorResolver = options.conventions?.errorResolver ?? new DefaultErrorResolver();
+    this.errorLogLevel = options.errorLogLevel ?? defaultErrorLogLevel;
     const responseSerializer =
       options.conventions?.responseSerializer ?? new DefaultResponseSerializer();
     const requestDeserializer =
@@ -60,15 +73,30 @@ export class HonoServer implements WebServer {
     if (this.bootstrapped) return;
     this.bootstrapped = true;
 
+    // Must never throw: Hono re-enters onError once per middleware layer a
+    // throw crosses, so a failing resolver or serializer would otherwise run
+    // repeatedly and leave the response to the runtime.
     this.app.onError((err, c) => {
-      this.options.logger?.error('HTTP error', err instanceof Error ? err : undefined);
-      return this.renderError(c, err);
+      try {
+        const resolved = this.errorResolver.resolve(err);
+        const response = this.renderError(c, resolved);
+        if (this.options.logger)
+          logHttpError(this.options.logger, this.errorLogLevel, err, resolved);
+        return response;
+      } catch (handlingError) {
+        const meta = { httpCode: 500 };
+        this.options.logger?.error('HTTP error handling failed', handlingError, { meta });
+        this.options.logger?.error('HTTP error', err, { meta });
+        return c.json(FALLBACK_ERROR_BODY, 500);
+      }
     });
 
     // An unmatched route is the one response no handler produces; resolving it
     // like any other error keeps it on the configured conventions rather than
-    // Hono's plain-text default.
-    this.app.notFound((c) => this.renderError(c, new RouteNotFoundError()));
+    // Hono's plain-text default. It is never logged.
+    this.app.notFound((c) =>
+      this.renderError(c, this.errorResolver.resolve(new RouteNotFoundError())),
+    );
 
     if (this.options.cors) {
       const { origins, exposeHeaders } = this.options.cors;
@@ -112,8 +140,7 @@ export class HonoServer implements WebServer {
     this.options.logger?.info('HTTP server closed');
   }
 
-  private renderError(c: Context, err: unknown): Response {
-    const { httpCode, body } = this.errorResolver.resolve(err);
+  private renderError(c: Context, { httpCode, body }: ResolvedHttpError): Response {
     return this.requestAdapter.writeResponse(c, { ...body, httpCode });
   }
 
